@@ -265,9 +265,10 @@ def drawArucoFrame():
 def findArucoMarkers(img, markerSize=4, totalMarkers=250,draw=True):
     imgGray = cv2.cvtColor(img,cv2.COLOR_BGR2GRAY)
     key = getattr(aruco,f'DICT_{markerSize}X{markerSize}_{totalMarkers}')
-    arucoDict = aruco.Dictionary_get(key)
-    arucoParam = aruco.DetectorParameters_create()
-    bboxs, ids, _ = aruco.detectMarkers(imgGray, arucoDict, parameters=arucoParam)
+    arucoDict = aruco.getPredefinedDictionary(key)
+    arucoParam = aruco.DetectorParameters()
+    detector = aruco.ArucoDetector(arucoDict, arucoParam)
+    bboxs, ids, _ = detector.detectMarkers(imgGray)
     # print(ids,bboxs)
     coords = []
     if (ids is None):

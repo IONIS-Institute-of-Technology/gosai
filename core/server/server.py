@@ -255,6 +255,3 @@ def create_flask_api(server: Server):
     def dashboard_path(path):
         return send_from_directory("templates/dashboard", path)
 
-    @server.app.route(f"/{server.base_path}/core/<path:path>")
-    def core_path(path):
-        return send_from_directory("../", path)

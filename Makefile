@@ -5,7 +5,7 @@ include home/.env
 IMNAME = ${USER}/${REPO}
 TAG = ${PLATFORM}-${DEVICE}-${VERSION}
 REDIS_REPO = redis
-REDIS_IMNAME = docker.io/bitnami/redis:7.0
+REDIS_IMNAME = redis:7-alpine
 
 boot:
 	-docker rm $(REPO)-$(REDIS_REPO)
