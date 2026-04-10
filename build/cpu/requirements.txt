@@ -21,6 +21,7 @@ samplerate
 gTTS>=2.2.3
 faster-whisper
 tokenizers
+torch
 transformers
 ctranslate2
 
