@@ -1,0 +1,17 @@
+{
+  "name": "interactive-pool",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build src/main.ts --target=browser --format=esm --outdir dist --external @gosai/sdk",
+    "dev": "bun run build --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@gosai/sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

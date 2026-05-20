@@ -1,0 +1,51 @@
+# Dependencies
+node_modules/
+.bun/
+
+# Build outputs
+dist/
+out/
+build/
+*.tsbuildinfo
+
+# Electron
+release/
+release-builds/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Runtime
+.gosai/
+gosai-data/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Lockfiles to keep (uncomment to ignore)
+# bun.lock
+# python/uv.lock
+
+# Temp
+*.tmp
+.cache/

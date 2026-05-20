@@ -1,0 +1,17 @@
+{
+  "name": "calibration",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build src/calibrate.ts --target=browser --format=esm --outdir dist --external @gosai/sdk",
+    "dev": "bun run build --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@gosai/sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "name": "gosai",
+  "version": "0.1.0",
+  "private": true,
+  "description": "GOSAI - General-purpose Operating System for Augmented Interfaces",
+  "license": "GPL-3.0",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "templates/*"
+  ],
+  "scripts": {
+    "dev": "concurrently --kill-others --stream --elide-lines=0 --names server,desktop --prefix-colors cyan,magenta 'bun run dev:server' 'bun run dev:desktop'",
+    "dev:server": "bun run --filter @gosai/server dev",
+    "dev:desktop": "bun run --filter @gosai/desktop dev",
+    "build": "bun run --filter '@gosai/*' build",
+    "build:shared": "bun run --filter @gosai/shared build",
+    "build:server": "bun run --filter @gosai/server build",
+    "build:sdk": "bun run --filter @gosai/sdk build",
+    "build:desktop": "bun run --filter @gosai/desktop build",
+    "build:apps": "bun run --filter 'apps/*' build && bun run --filter 'templates/*' build",
+    "build:server-bin": "mkdir -p packages/desktop/release/server && bun build packages/server/src/index.ts --compile --outfile packages/desktop/release/server/gosai-server",
+    "package:mac": "bun run build && bun run build:apps && bun run build:server-bin && bun --filter @gosai/desktop run dist:mac",
+    "package:linux": "bun run build && bun run build:apps && bun run build:server-bin && bun --filter @gosai/desktop run dist:linux",
+    "typecheck": "bun run --filter '@gosai/*' typecheck",
+    "test": "bun run --filter '@gosai/*' test",
+    "lint": "bun run --filter '@gosai/*' lint",
+    "clean": "bun run --filter '@gosai/*' clean && rm -rf node_modules",
+    "python:sync": "cd python && uv sync",
+    "python:lint": "cd python && uv run ruff check src",
+    "python:test": "cd python && uv run pytest -q"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "concurrently": "^9.1.2",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "bun": ">=1.2.0",
+    "node": ">=20.19.0"
+  },
+  "packageManager": "bun@1.3.13"
+}

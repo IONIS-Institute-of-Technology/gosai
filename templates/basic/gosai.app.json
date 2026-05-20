@@ -1,0 +1,18 @@
+{
+  "slug": "hello-gosai",
+  "name": "Hello GOSAI",
+  "version": "0.1.0",
+  "description": "Minimal GOSAI app showing experience lifecycle, driver subscription, and canvas rendering.",
+  "author": "GOSAI",
+  "default": "main",
+  "experiences": [
+    {
+      "slug": "main",
+      "name": "Main",
+      "description": "Bouncing dot driven by heartbeat ticks.",
+      "entry": "dist/main.js",
+      "drivers": ["heartbeat"]
+    }
+  ],
+  "startup": ["main"]
+}

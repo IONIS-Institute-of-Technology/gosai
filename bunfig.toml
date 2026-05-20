@@ -1,0 +1,10 @@
+# Bun workspace configuration
+[install]
+# Use exact versions for reproducibility
+exact = false
+
+# Hoist dependencies to root node_modules where possible
+linker = "hoisted"
+
+[install.scopes]
+# No private registries needed

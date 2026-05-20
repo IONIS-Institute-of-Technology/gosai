@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' http://127.0.0.1:* http://localhost:*; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: http: https:; img-src 'self' data: blob: http://127.0.0.1:* http://localhost:*; media-src 'self' blob:;" />
+    <title>GOSAI App</title>
+    <script type="importmap">
+      {
+        "imports": {
+          "@gosai/sdk": "http://127.0.0.1:7777/sdk-runtime.js"
+        }
+      }
+    </script>
+  </head>
+  <body class="bg-black text-white antialiased overflow-hidden">
+    <div id="root"></div>
+    <script type="module" src="./src/app-host/main.tsx"></script>
+  </body>
+</html>

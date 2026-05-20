@@ -1,0 +1,17 @@
+{
+  "name": "hello-gosai",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build src/main.ts --target=browser --format=esm --outfile dist/main.js --external @gosai/sdk",
+    "dev": "bun build src/main.ts --target=browser --format=esm --outfile dist/main.js --external @gosai/sdk --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@gosai/sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

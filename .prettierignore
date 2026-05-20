@@ -1,0 +1,8 @@
+node_modules/
+dist/
+out/
+build/
+.venv/
+__pycache__/
+*.tsbuildinfo
+bun.lock

@@ -1,0 +1,19 @@
+{
+  "slug": "interactive-pool",
+  "name": "Interactive Pool",
+  "version": "1.0.0",
+  "description": "Augmented-reality pool table: projects interactive visuals onto a billiard table using camera-detected balls, hands, and cue. Includes always-on overlays (balls, cue, hands), a gesture-driven menu, and several launchable experiences (rabbits game, affine functions, triangle geometry, univers, ambient display, and a live ball-stream relay).",
+  "author": "GOSAI",
+  "default": "main",
+  "experiences": [
+    {
+      "slug": "main",
+      "name": "Interactive Pool",
+      "description": "Main composited experience. Always shows the ball, cue, and hand overlays and listens for the two-hand menu gesture to launch sub-layers.",
+      "entry": "dist/main.js",
+      "drivers": ["ball", "hand_pose"],
+      "exclusive": false
+    }
+  ],
+  "startup": ["main"]
+}
