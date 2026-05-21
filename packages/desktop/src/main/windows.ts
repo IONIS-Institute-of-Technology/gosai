@@ -50,7 +50,6 @@ export interface OpenControlWindowOptions {
 
 const isDev = !app.isPackaged;
 const isMac = process.platform === 'darwin';
-const isLinux = process.platform === 'linux';
 
 export class WindowRegistry {
   private dashboard: BrowserWindow | null = null;
@@ -127,9 +126,8 @@ export class WindowRegistry {
       width: bounds.width,
       height: bounds.height,
       frame: false,
-      fullscreen: false,
+      fullscreen: wantsFullscreen,
       ...(isMac ? { simpleFullscreen: false } : {}),
-      kiosk: false,
       backgroundColor: '#000000',
       autoHideMenuBar: true,
       show: false,
@@ -148,7 +146,9 @@ export class WindowRegistry {
       if (shown || win.isDestroyed()) return;
       shown = true;
       if (fallbackTimer) clearTimeout(fallbackTimer);
-      this.showAppHostWindow(win, display, wantsFullscreen);
+      win.show();
+      win.focus();
+      if (wantsFullscreen && isMac) win.setKiosk(true);
     };
 
     win.once('ready-to-show', showWindow);
@@ -383,38 +383,6 @@ export class WindowRegistry {
       if (found) return found;
     }
     return screen.getPrimaryDisplay();
-  }
-
-  private showAppHostWindow(
-    win: BrowserWindow,
-    display: Display,
-    wantsFullscreen: boolean,
-  ): void {
-    if (win.isDestroyed()) return;
-
-    win.setBounds(display.bounds);
-    win.show();
-    win.focus();
-
-    if (!wantsFullscreen) return;
-
-    setImmediate(() => {
-      if (win.isDestroyed()) return;
-
-      win.setFullScreen(true);
-
-      if (!isLinux) {
-        win.setKiosk(true);
-      } else {
-        setTimeout(() => {
-          if (win.isDestroyed() || win.isFullScreen()) return;
-          win.maximize();
-          win.focus();
-        }, 1000);
-      }
-
-      win.focus();
-    });
   }
 
   private summarizeDisplay(d: Display): DisplaySummary {
