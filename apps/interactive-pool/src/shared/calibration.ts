@@ -101,11 +101,14 @@ export async function loadCalibration(
 /**
  * Configure the `ball` driver from the loaded calibration:
  *
- *   - `set_background`: empty-surface JPEG for background subtraction
- *   - `set_homography`: camera -> surface reference space (falls back to the
- *     legacy camera -> display matrix when surface is unavailable)
- *   - `set_output_size`: warpPerspective output size, matched to the canvas
- *     reference resolution so emitted ball positions live in our render space
+ *   - `set_homography`: camera -> surface reference space so YOLO detections
+ *     are warped into our 1920×1080 reference space (falls back to the legacy
+ *     camera -> display matrix when surface is unavailable)
+ *   - `set_output_size`: target reference resolution so the warped coordinates
+ *     and radius scaling match our render space
+ *
+ * The YOLO-based ball driver does not require a background image; the
+ * `set_background` call is kept for backward compatibility but is a no-op.
  */
 export async function configureBallDriver(
   rt: ExperienceRuntimeContext,
@@ -121,13 +124,6 @@ export async function configureBallDriver(
     ? (cal.surfaceSize ?? fallbackSize)
     : fallbackSize;
 
-  // Background can be missing (e.g. user aborted the background step); the
-  // ball driver no-ops silently in that case, which is acceptable.
-  if (cal.backgroundJpeg) {
-    await rt.drivers
-      .execute('ball', 'set_background', cal.backgroundJpeg)
-      .catch((err) => rt.log.warn('ball.set_background failed', { err: String(err) }));
-  }
   await rt.drivers
     .execute('ball', 'set_homography', homography)
     .catch((err) => rt.log.warn('ball.set_homography failed', { err: String(err) }));

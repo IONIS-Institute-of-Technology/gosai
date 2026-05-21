@@ -10,21 +10,16 @@ authors = [{ name = "GOSAI" }]
 dependencies = [
     "numpy>=2.1.0",
     "msgpack>=1.1.0",
-]
-
-[project.optional-dependencies]
-cv = [
     "opencv-contrib-python>=4.10.0",
     "mediapipe>=0.10.18",
     "pillow>=11.0.0",
-]
-audio = [
+    "ultralytics>=8.3.0",
+    "onnxruntime>=1.20.0",
     "sounddevice>=0.5.0",
     "soundfile>=0.13.0",
 ]
-ml = [
-    "onnxruntime>=1.20.0",
-]
+
+[project.optional-dependencies]
 realsense = [
     "pyrealsense2>=2.55.0",
 ]

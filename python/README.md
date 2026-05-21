@@ -7,7 +7,13 @@ Python runtime for GOSAI: the driver bridge process and the Python SDK
 
 ```bash
 uv sync
-uv sync --extra cv --extra audio   # add optional groups as needed
+```
+
+For optional hardware-specific drivers, add extras as needed:
+
+```bash
+uv sync --extra realsense   # Intel RealSense depth camera
+uv sync --extra speech       # Whisper-based speech recognition (requires torch)
 ```
 
 ## Run the bridge directly (for development)

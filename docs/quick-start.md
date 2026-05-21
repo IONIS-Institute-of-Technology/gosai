@@ -14,15 +14,14 @@ bun run build:sdk                  # builds /sdk-runtime.js for app-host windows
 bun run build:apps                 # builds built-in app entry bundles
 ```
 
-For drivers that need OpenCV/MediaPipe (camera, calibration, hand_pose,
-pose, ball), also run:
+All Python driver dependencies (OpenCV, MediaPipe, Ultralytics, audio) are
+installed automatically by `python:sync`. For optional hardware-specific
+drivers, add extras:
 
 ```bash
-cd python && uv sync --extra cv
+cd python && uv sync --extra realsense   # Intel RealSense depth camera
+cd python && uv sync --extra speech      # Whisper speech recognition (requires torch)
 ```
-
-The audio drivers need `--extra audio`, the speech drivers need
-`--extra speech`.
 
 ## 2. Run dev mode
 
