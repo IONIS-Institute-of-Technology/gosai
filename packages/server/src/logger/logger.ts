@@ -1,6 +1,6 @@
 import { appendFileSync, statSync, renameSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { LogEntry, LogLevel } from '@gosai/shared';
+import { enrichLogMessage, type LogEntry, type LogLevel } from '@gosai/shared';
 
 const LEVELS: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
 
@@ -61,12 +61,13 @@ export class Logger {
 
   log(source: string, level: LogLevel, message: string, data?: Record<string, unknown>): void {
     if (LEVELS[level] < LEVELS[this.minLevel]) return;
+    const enriched = enrichLogMessage(message, data);
     const entry: LogEntry = {
       timestamp: Date.now(),
       level,
       source,
-      message,
-      ...(data !== undefined ? { data } : {}),
+      message: enriched.message,
+      ...(enriched.data !== undefined ? { data: enriched.data } : {}),
     };
     this.persist(entry);
     this.broadcast(entry);

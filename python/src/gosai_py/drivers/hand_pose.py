@@ -32,6 +32,7 @@ already cached.
 from __future__ import annotations
 
 import os
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -96,6 +97,7 @@ class HandPoseDriver(BaseProcessor):
 
     def __init__(self, context: DriverContext) -> None:
         super().__init__(context)
+        self._detector_lock = threading.Lock()
         self._detector: Any = None
         self._mp_image_cls: Any = None
         self._mp_image_format: Any = None
@@ -148,11 +150,10 @@ class HandPoseDriver(BaseProcessor):
 
     def cleanup(self) -> None:
         super().cleanup()
-        if self._detector is not None:
-            try:
-                self._detector.close()
-            except Exception as exc:
-                self.log("warn", f"hand_pose: detector close failed: {exc!r}")
+        # Drop the detector without calling close(). MediaPipe's native
+        # teardown can SIGSEGV when close races with in-flight inference or
+        # camera callbacks; the bridge process exits shortly after anyway.
+        with self._detector_lock:
             self._detector = None
 
     def execute(self, action: str, data: Any) -> Any:
@@ -213,7 +214,11 @@ class HandPoseDriver(BaseProcessor):
         return {"ok": True, "width": w, "height": h}
 
     def on_data(self, driver: str, event: str, data: Any) -> None:
-        if self._detector is None or not isinstance(data, dict):
+        if self.stop_requested() or not isinstance(data, dict):
+            return
+        with self._detector_lock:
+            detector = self._detector
+        if detector is None:
             return
         encoded = data.get("jpeg_base64")
         if not isinstance(encoded, str):
@@ -234,6 +239,8 @@ class HandPoseDriver(BaseProcessor):
         # configured ``_frame_size`` overrides this when the caller wants to
         # pin a specific resolution.
         cam_h, cam_w = frame.shape[:2]
+        if self._frame_size is None:
+            self._frame_size = (cam_w, cam_h)
 
         start = time.perf_counter()
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -257,7 +264,10 @@ class HandPoseDriver(BaseProcessor):
         mp_image = self._mp_image_cls(image_format=self._mp_image_format, data=rgb)
         ts_ms = int(time.time() * 1000)
         try:
-            result = self._detector.detect_for_video(mp_image, ts_ms)
+            with self._detector_lock:
+                if self._detector is None or self.stop_requested():
+                    return
+                result = detector.detect_for_video(mp_image, ts_ms)
         except Exception as exc:
             self.log("warn", f"hand_pose: detect failed: {exc!r}")
             return

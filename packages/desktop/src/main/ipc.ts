@@ -37,6 +37,14 @@ export function registerIpc(ctx: IpcContext): void {
   ipcMain.handle(IPC_CHANNELS.AppHostList, () => ctx.windows.listAppHosts());
 
   ipcMain.handle(
+    IPC_CHANNELS.ExperienceEnd,
+    (_ev, args: { appSlug: string; experienceSlug: string }) => {
+      ctx.windows.endExperience(args.appSlug, args.experienceSlug);
+      return { ok: true };
+    },
+  );
+
+  ipcMain.handle(
     IPC_CHANNELS.ControlWindowOpen,
     (
       _ev,

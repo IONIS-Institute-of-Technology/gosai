@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { RunningExperience } from '@gosai/shared';
 import { useServer } from '../../lib/server-context.js';
+import { stopExperienceFully } from '../../lib/stop-experience.js';
 import { isNotConnectedError } from '../../lib/server-client.js';
 import { Panel } from '../components/Panel.js';
 import { EmptyState } from '../components/EmptyState.js';
@@ -62,11 +63,8 @@ export function ExperiencesPanel(): React.ReactElement {
 
   const stop = async (appSlug: string, experienceSlug: string): Promise<void> => {
     try {
-      await client.request('experience:stop', { appSlug, experienceSlug });
-      const match = windows.find(
-        (w) => w.appSlug === appSlug && w.experienceSlug === experienceSlug,
-      );
-      if (match) await window.gosai?.appHost.close(match.windowId);
+      await stopExperienceFully(client, appSlug, experienceSlug);
+      void refreshWindows();
     } catch (err) {
       if (!isNotConnectedError(err)) {
         setError(err instanceof Error ? err.message : String(err));

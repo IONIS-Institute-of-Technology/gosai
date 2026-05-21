@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { LogEntry, LogLevel } from '@gosai/shared';
+import { formatLogData, type LogEntry, type LogLevel } from '@gosai/shared';
 import { useServer } from '../../lib/server-context.js';
 import { Panel } from '../components/Panel.js';
 
@@ -54,8 +54,11 @@ export function LogsPanel(): React.ReactElement {
     return logs.filter((entry) => {
       if (level !== 'all' && entry.level !== level) return false;
       if (!text) return true;
+      const dataText = entry.data ? formatLogData(entry.data).toLowerCase() : '';
       return (
-        entry.source.toLowerCase().includes(text) || entry.message.toLowerCase().includes(text)
+        entry.source.toLowerCase().includes(text) ||
+        entry.message.toLowerCase().includes(text) ||
+        dataText.includes(text)
       );
     });
   }, [logs, level, filter]);
@@ -115,7 +118,14 @@ export function LogsPanel(): React.ReactElement {
                 <td className="whitespace-nowrap px-2 py-0.5 align-top text-neutral-500">
                   {entry.source}
                 </td>
-                <td className="px-2 py-0.5 text-neutral-300">{entry.message}</td>
+                <td className="px-2 py-0.5 text-neutral-300">
+                  <div className="whitespace-pre-wrap break-words">{entry.message}</div>
+                  {entry.data && Object.keys(entry.data).length > 0 ? (
+                    <pre className="mt-0.5 whitespace-pre-wrap break-words text-neutral-500">
+                      {formatLogData(entry.data)}
+                    </pre>
+                  ) : null}
+                </td>
               </tr>
             ))}
           </tbody>

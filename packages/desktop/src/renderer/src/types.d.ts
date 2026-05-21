@@ -42,6 +42,9 @@ interface DashboardApi {
       Array<{ windowId: number; appSlug: string; experienceSlug: string; displayId: number }>
     >;
   };
+  experience: {
+    end(args: { appSlug: string; experienceSlug: string }): Promise<{ ok: true }>;
+  };
   controlWindow: {
     open(args: {
       appSlug: string;

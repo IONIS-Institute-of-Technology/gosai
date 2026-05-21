@@ -13,5 +13,6 @@ export const IPC_CHANNELS = {
   ControlWindowHide: 'gosai:control-window:hide',
   ControlWindowShow: 'gosai:control-window:show',
 
+  ExperienceEnd: 'gosai:experience:end',
   ExperienceEnded: 'gosai:experience:ended',
 } as const;

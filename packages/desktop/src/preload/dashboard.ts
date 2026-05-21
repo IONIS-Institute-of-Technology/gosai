@@ -44,6 +44,11 @@ const api = {
       >,
   },
 
+  experience: {
+    end: (args: { appSlug: string; experienceSlug: string }) =>
+      ipcRenderer.invoke(IPC_CHANNELS.ExperienceEnd, args) as Promise<{ ok: true }>,
+  },
+
   controlWindow: {
     open: (args: {
       appSlug: string;

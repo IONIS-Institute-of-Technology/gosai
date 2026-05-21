@@ -95,6 +95,9 @@ export class PythonBridge {
       ...(process.env as Record<string, string>),
       ...(this.options.env ?? {}),
       PYTHONUNBUFFERED: '1',
+      // MediaPipe / TensorFlow write verbose native logs to stderr.
+      GLOG_minloglevel: '2',
+      TF_CPP_MIN_LOG_LEVEL: '2',
     };
 
     this.process = Bun.spawn({
@@ -231,10 +234,14 @@ export class PythonBridge {
         const lines = text.split('\n');
         leftover = lines.pop() ?? '';
         for (const line of lines) {
-          if (line.trim().length > 0) {
-            this.options.logger.warn('python stderr', { line });
-          }
+          const trimmed = line.trim();
+          if (trimmed.length === 0) continue;
+          this.logStderrLine(trimmed);
         }
+      }
+      const tail = leftover.trim();
+      if (tail.length > 0) {
+        this.logStderrLine(tail);
       }
     } catch (err) {
       this.options.logger.error('stderr read failed', { err: String(err) });
@@ -256,7 +263,7 @@ export class PythonBridge {
     try {
       msg = JSON.parse(line) as BridgeResponse;
     } catch {
-      this.options.logger.warn('invalid JSON from bridge', { line });
+      this.options.logger.warn(`invalid JSON from bridge: ${line}`);
       return;
     }
 
@@ -300,7 +307,7 @@ export class PythonBridge {
         this.options.onPerformance(msg.source, msg.metric, msg.value, msg.ts);
         return;
       default:
-        this.options.logger.warn('unknown bridge message', { line });
+        this.options.logger.warn(`unknown bridge message: ${line}`);
     }
   }
 
@@ -319,6 +326,18 @@ export class PythonBridge {
     this.options.onExit?.(exitCode, signalCode);
   }
 
+  private logStderrLine(line: string): void {
+    if (isPythonTracebackLine(line)) {
+      this.options.logger.error(line);
+      return;
+    }
+    if (classifyNativeStderrLine(line) === 'debug') {
+      this.options.logger.debug(line);
+    } else {
+      this.options.logger.warn(line);
+    }
+  }
+
   private failAllPending(err: Error): void {
     for (const [id, pending] of this.pending.entries()) {
       clearTimeout(pending.timer);
@@ -330,4 +349,30 @@ export class PythonBridge {
 
 function cryptoId(): string {
   return crypto.randomUUID();
+}
+
+function isPythonTracebackLine(line: string): boolean {
+  return (
+    line.startsWith('Traceback (most recent call last)') ||
+    line.startsWith('  File ') ||
+    /^[\w.]+Error:/.test(line) ||
+    /^[\w.]+Exception:/.test(line) ||
+    line === 'During handling of the above exception, another exception occurred:'
+  );
+}
+
+/** absl/glog and MediaPipe often print INFO/W lines to stderr. */
+function classifyNativeStderrLine(line: string): 'debug' | 'warn' {
+  if (/^[IWEF]\d{4}\s/.test(line)) return 'debug';
+  if (line.startsWith('INFO:') || line.startsWith('WARNING:')) return 'debug';
+  if (
+    line.includes('init-domain.cc') ||
+    line.includes('gl_context.cc') ||
+    line.includes('TensorFlow Lite XNNPACK') ||
+    line.includes('inference_feedback_manager.cc') ||
+    line.includes('landmark_projection_calculator.cc')
+  ) {
+    return 'debug';
+  }
+  return 'warn';
 }

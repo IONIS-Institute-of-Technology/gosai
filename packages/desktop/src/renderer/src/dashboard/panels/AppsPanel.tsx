@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { InstalledApp, RunningExperience } from '@gosai/shared';
+import { CALIBRATION_SLUG, pickDisplay } from '../../lib/calibration-wizard.js';
+import { stopAllAppExperiences, stopExperienceFully } from '../../lib/stop-experience.js';
 import { useServer } from '../../lib/server-context.js';
 import { isNotConnectedError } from '../../lib/server-client.js';
 import { Panel } from '../components/Panel.js';
 import { EmptyState } from '../components/EmptyState.jsx';
-
-const CALIBRATION_SLUG = 'calibration';
 
 export function AppsPanel(): React.ReactElement {
   const { client, status } = useServer();
@@ -80,6 +80,8 @@ export function AppsPanel(): React.ReactElement {
     }
   };
 
+  const userApps = apps.filter((app) => app.manifest.slug !== CALIBRATION_SLUG);
+
   return (
     <div className="space-y-6 p-6">
       <Panel title="Install an app">
@@ -110,12 +112,12 @@ export function AppsPanel(): React.ReactElement {
         </div>
       </Panel>
 
-      <Panel title={`Installed (${apps.length})`}>
-        {apps.length === 0 ? (
+      <Panel title={`Installed (${userApps.length})`}>
+        {userApps.length === 0 ? (
           <EmptyState message="No apps installed yet" />
         ) : (
           <ul className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {apps.map((app) => (
+            {userApps.map((app) => (
               <AppCard
                 key={app.manifest.slug}
                 app={app}
@@ -141,7 +143,6 @@ interface AppCardProps {
 function AppCard({ app, running, onUninstall, onError }: AppCardProps): React.ReactElement {
   const { client } = useServer();
   const [menuOpen, setMenuOpen] = useState(false);
-  const isCalibration = app.manifest.slug === CALIBRATION_SLUG;
   const experiences = app.manifest.experiences;
   const defaultExp =
     experiences.find((e) => e.slug === app.manifest.default) ?? experiences[0] ?? null;
@@ -182,7 +183,7 @@ function AppCard({ app, running, onUninstall, onError }: AppCardProps): React.Re
 
   const stopExperience = async (experienceSlug: string): Promise<void> => {
     try {
-      await client.request('experience:stop', { appSlug: app.manifest.slug, experienceSlug });
+      await stopExperienceFully(client, app.manifest.slug, experienceSlug);
     } catch (err) {
       if (!isNotConnectedError(err)) {
         onError(err instanceof Error ? err.message : String(err));
@@ -190,17 +191,15 @@ function AppCard({ app, running, onUninstall, onError }: AppCardProps): React.Re
     }
   };
 
-  const startCalibration = async (): Promise<void> => {
+  const stopApp = async (): Promise<void> => {
     try {
-      await runCalibrationWizard(client, app.manifest.slug);
+      await stopAllAppExperiences(client, app.manifest.slug, running);
     } catch (err) {
       if (!isNotConnectedError(err)) {
         onError(err instanceof Error ? err.message : String(err));
       }
     }
   };
-
-  const primaryRunning = defaultExp ? running.some((r) => r.experienceSlug === defaultExp.slug) : false;
 
   return (
     <li
@@ -237,30 +236,26 @@ function AppCard({ app, running, onUninstall, onError }: AppCardProps): React.Re
       ) : null}
 
       <div className="mt-4 flex items-stretch gap-2">
-        {isCalibration ? (
-          <button
-            type="button"
-            onClick={() => void startCalibration()}
-            className="flex-1 rounded border border-amber-900/50 bg-amber-950/40 px-4 py-2 text-sm font-medium text-amber-200 transition-colors hover:bg-amber-900/40"
-          >
-            Calibrate
-          </button>
-        ) : defaultExp ? (
+        {defaultExp ? (
           <button
             type="button"
             onClick={() =>
-              primaryRunning
-                ? void stopExperience(defaultExp.slug)
+              anyRunning
+                ? void stopApp()
                 : void startExperience(defaultExp.slug)
             }
             className={`flex-1 rounded border px-4 py-2 text-sm font-medium transition-colors ${
-              primaryRunning
+              anyRunning
                 ? 'border-red-900/50 bg-red-950/40 text-red-200 hover:bg-red-900/40'
                 : 'border-green-900/50 bg-green-950/40 text-green-200 hover:bg-green-900/40'
             }`}
             title={defaultExp.name}
           >
-            {primaryRunning ? `Stop ${defaultExp.name}` : `Start ${defaultExp.name}`}
+            {anyRunning
+              ? running.length > 1
+                ? `Stop ${app.manifest.name}`
+                : `Stop ${defaultExp.name}`
+              : `Start ${defaultExp.name}`}
           </button>
         ) : (
           <span className="flex-1 rounded border border-neutral-800 bg-neutral-950/50 px-4 py-2 text-center text-xs text-neutral-500">
@@ -268,7 +263,7 @@ function AppCard({ app, running, onUninstall, onError }: AppCardProps): React.Re
           </span>
         )}
 
-        {experiences.length > 1 || (isCalibration && experiences.length >= 1) ? (
+        {experiences.length > 1 ? (
           <button
             type="button"
             onClick={() => setMenuOpen((v) => !v)}
@@ -323,138 +318,11 @@ function AppCard({ app, running, onUninstall, onError }: AppCardProps): React.Re
         </div>
       ) : null}
 
-      {anyRunning && !isCalibration ? (
+      {anyRunning ? (
         <p className="mt-3 font-mono text-[10px] uppercase tracking-wider text-neutral-500">
           running: {running.map((r) => r.experienceSlug).join(', ')}
         </p>
       ) : null}
     </li>
   );
-}
-
-async function pickDisplay(
-  client: WizardClient,
-): Promise<{ id: number; label: string } | null> {
-  const api = window.gosai;
-  if (!api) return null;
-  const { displays, primary } = await api.displays.list();
-  if (displays.length <= 1) return primary;
-
-  try {
-    const config = (await client.request('config:get')) as { displayId?: number | null };
-    if (config.displayId != null) {
-      const match = displays.find((d) => d.id === config.displayId);
-      if (match) return match;
-    }
-  } catch {
-    // Fall through to primary if config fetch fails.
-  }
-  return primary;
-}
-
-interface WizardClient {
-  request<T = unknown>(type: string, payload?: unknown): Promise<T>;
-  on(event: string, listener: (payload: unknown) => void): () => void;
-}
-
-async function runCalibrationWizard(
-  client: WizardClient,
-  appSlug: string,
-): Promise<void> {
-  const api = window.gosai;
-  if (!api) throw new Error('Electron API unavailable');
-
-  const experienceSlug = 'calibrate';
-  await client.request('experience:start', { appSlug, experienceSlug });
-
-  const display = await pickDisplay(client);
-  if (!display) throw new Error('No display available for calibration');
-
-  // Open control before the projector so macOS does not tear down the
-  // fullscreen window when the always-on-top control window is created.
-  const control = await api.controlWindow.open({
-    appSlug,
-    experienceSlug,
-    projectorDisplayId: display.id,
-    title: 'Calibration · Control',
-    width: 960,
-    height: 720,
-  });
-
-  const projector = await api.appHost.open({
-    displayId: display.id,
-    appSlug,
-    experienceSlug,
-    fullscreen: true,
-  });
-
-  let finished = false;
-  const finish = async (): Promise<void> => {
-    if (finished) return;
-    finished = true;
-    offStep();
-    offWizardFinished();
-    offExperienceEnded();
-    try {
-      await api.controlWindow.close(control.windowId);
-    } catch {
-      // ignore
-    }
-    try {
-      await api.appHost.close(projector.windowId);
-    } catch {
-      // ignore
-    }
-    try {
-      await client.request('experience:stop', { appSlug, experienceSlug });
-    } catch {
-      // ignore
-    }
-  };
-
-  const offStep = (await listenForApp(client, `app:${appSlug}:wizard:step`, async (payload) => {
-    const data = payload as { step?: string };
-    if (!data?.step) return;
-    if (data.step === 'background') {
-      try {
-        await api.controlWindow.hide(control.windowId);
-      } catch {
-        // ignore
-      }
-    } else {
-      try {
-        await api.controlWindow.show(control.windowId);
-      } catch {
-        // ignore
-      }
-    }
-  })) as () => void;
-
-  const offWizardFinished = (await listenForApp(
-    client,
-    `app:${appSlug}:wizard:finished`,
-    () => finish(),
-  )) as () => void;
-
-  const offExperienceEnded = api.onExperienceEnded((payload) => {
-    if (payload.appSlug === appSlug && payload.experienceSlug === experienceSlug) {
-      void finish();
-    }
-  });
-}
-
-/**
- * Wraps `client.on(event, listener)` so the caller can `await` the
- * subscription returning the unsubscribe handle. The dashboard's
- * ServerClient `.on` returns the unsubscribe function synchronously, so
- * we just normalise here.
- */
-async function listenForApp(
-  client: WizardClient,
-  event: string,
-  listener: (payload: unknown) => void | Promise<void>,
-): Promise<() => void> {
-  return client.on(event, (payload) => {
-    void listener(payload);
-  });
 }

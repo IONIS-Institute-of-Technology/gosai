@@ -39,13 +39,25 @@ class BaseProcessor(BaseDriver):
             self._subscriptions.append((driver, event, cb))
             self._context.subscribe(driver, event, cb)
 
-    def cleanup(self) -> None:
+    def _bridge_stop(self, timeout: float = 5.0) -> None:
+        # Tear down subscriptions before signalling stop so upstream drivers
+        # (e.g. camera) cannot invoke on_data while this thread is joining or
+        # native resources are being released.
+        self._teardown_subscriptions()
+        super()._bridge_stop(timeout)
+
+    def _teardown_subscriptions(self) -> None:
         for driver, event, cb in self._subscriptions:
             try:
                 self._context.unsubscribe(driver, event, cb)
             except Exception as exc:
-                self.log("warn", f"cleanup unsubscribe {driver}.{event} failed: {exc!r}")
+                self.log("warn", f"unsubscribe {driver}.{event} failed: {exc!r}")
         self._subscriptions.clear()
+
+    def cleanup(self) -> None:
+        # Subscriptions are cleared in _bridge_stop; keep cleanup for subclasses
+        # that release native handles after the worker thread has exited.
+        pass
 
     def on_data(self, driver: str, event: str, data: Any) -> None:
         """Override to react to subscribed events."""

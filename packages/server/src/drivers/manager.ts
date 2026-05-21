@@ -173,6 +173,18 @@ export class DriverManager {
       await this.releaseDependencies(name, info);
       return stopped;
     } catch (err) {
+      if (!this.bridge.isRunning()) {
+        const stopped: DriverInfo = {
+          ...next,
+          state: 'available',
+          subscribers: [],
+        };
+        this.drivers.set(name, stopped);
+        this.broadcastState(stopped);
+        this.broadcastList();
+        this.log.warn('driver stop skipped; bridge already exited', { driver: name });
+        return stopped;
+      }
       this.log.error('failed to stop driver', { driver: name, err: String(err) });
       throw err;
     }

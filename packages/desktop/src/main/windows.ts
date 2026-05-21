@@ -312,7 +312,7 @@ export class WindowRegistry {
 
     this.controlWindows.set(handle.id, handle);
     win.on('close', () => {
-      this.endExperience(opts.appSlug, opts.experienceSlug, handle.id);
+      this.endExperienceInternal(opts.appSlug, opts.experienceSlug, handle.id);
     });
 
     return handle;
@@ -358,7 +358,12 @@ export class WindowRegistry {
     }));
   }
 
-  private endExperience(
+  /** Tear down all app-host and control windows for an experience and stop it on the server. */
+  endExperience(appSlug: string, experienceSlug: string): void {
+    this.endExperienceInternal(appSlug, experienceSlug);
+  }
+
+  private endExperienceInternal(
     appSlug: string,
     experienceSlug: string,
     exceptWindowId?: number,
