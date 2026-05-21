@@ -19,8 +19,16 @@ import {
   WIZARD_EVENTS,
   type MarkerImage,
   type MarkerSlot,
+  type MarkerTransform,
+  type MarkerTransformEvent,
   type StepEvent,
   type WizardStep,
+  DEFAULT_MARKER_TRANSFORM,
+  PAN_STEP,
+  ZOOM_STEP,
+  MIN_SCALE,
+  MAX_SCALE,
+  applyTransformToLayout,
   makeMarkerLayout,
   setBodyFullscreen,
 } from './shared.js';
@@ -33,8 +41,11 @@ export interface ProjectorState {
   previewImg: HTMLImageElement;
   step: WizardStep;
   layout: MarkerSlot[];
+  transform: MarkerTransform;
   eventSubs: AppEventsSubscription[];
   driverSubs: DriverSubscription[];
+  keyHandler: ((e: KeyboardEvent) => void) | null;
+  wheelHandler: ((e: WheelEvent) => void) | null;
 }
 
 export function initProjectorState(): ProjectorState {
@@ -71,8 +82,11 @@ export function initProjectorState(): ProjectorState {
     previewImg,
     step: 'markers',
     layout: [],
+    transform: { ...DEFAULT_MARKER_TRANSFORM },
     eventSubs: [],
     driverSubs: [],
+    keyHandler: null,
+    wheelHandler: null,
   };
 }
 
@@ -82,7 +96,6 @@ export async function startProjector(
 ): Promise<void> {
   rt.log.info('projector role starting');
 
-  // Pre-render markers once so step transitions feel instant.
   const width = window.innerWidth;
   const height = window.innerHeight;
   state.layout = makeMarkerLayout(width, height, 9);
@@ -109,9 +122,79 @@ export async function startProjector(
     state.markerLayer.appendChild(img);
   }
 
-  // Tell the calibration driver where each marker is on the display so it can
-  // compute the homography once the control window asks for it.
   await rt.drivers.execute('calibration', 'set_marker_layout', state.layout);
+
+  // --- Pan / Zoom controls (active during 'markers' step) ---
+
+  const applyMarkerTransform = (): void => {
+    const { offsetX, offsetY, scale } = state.transform;
+    const cx = width / 2;
+    const cy = height / 2;
+    state.markerLayer.style.transformOrigin = `${cx}px ${cy}px`;
+    state.markerLayer.style.transform =
+      `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
+    updateTransformStatus(state);
+  };
+
+  const syncLayoutToDriver = (): void => {
+    const transformed = applyTransformToLayout(state.layout, state.transform, width, height);
+    void rt.drivers.execute('calibration', 'set_marker_layout', transformed);
+  };
+
+  const onTransformChange = (): void => {
+    applyMarkerTransform();
+    syncLayoutToDriver();
+    void rt.events.emit(WIZARD_EVENTS.MarkerTransform, {
+      transform: state.transform,
+    } satisfies MarkerTransformEvent);
+  };
+
+  state.keyHandler = (e: KeyboardEvent): void => {
+    if (state.step !== 'markers') return;
+    let handled = true;
+    switch (e.code) {
+      case 'ArrowLeft':
+        state.transform.offsetX -= PAN_STEP;
+        break;
+      case 'ArrowRight':
+        state.transform.offsetX += PAN_STEP;
+        break;
+      case 'ArrowUp':
+        state.transform.offsetY -= PAN_STEP;
+        break;
+      case 'ArrowDown':
+        state.transform.offsetY += PAN_STEP;
+        break;
+      default:
+        handled = false;
+    }
+    if (handled) {
+      e.preventDefault();
+      onTransformChange();
+    }
+  };
+
+  state.wheelHandler = (e: WheelEvent): void => {
+    if (state.step !== 'markers') return;
+    e.preventDefault();
+    const direction = e.deltaY < 0 ? 1 : -1;
+    const newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, state.transform.scale + direction * ZOOM_STEP));
+    state.transform.scale = newScale;
+    onTransformChange();
+  };
+
+  document.addEventListener('keydown', state.keyHandler);
+  document.addEventListener('wheel', state.wheelHandler, { passive: false });
+
+  // Accept transform updates from the control window.
+  state.eventSubs.push(
+    rt.events.on(WIZARD_EVENTS.MarkerTransform, (payload) => {
+      const data = payload as MarkerTransformEvent;
+      state.transform = { ...data.transform };
+      applyMarkerTransform();
+      syncLayoutToDriver();
+    }),
+  );
 
   // Camera feed for the live preview step.
   state.driverSubs.push(
@@ -131,15 +214,23 @@ export async function startProjector(
     }),
   );
 
-  // Default to the markers step. The control window will broadcast its own
-  // first step once it's ready; this avoids a brief flash of black.
   applyStep(state, 'markers');
 }
 
 export async function stopProjector(state: ProjectorState): Promise<void> {
   for (const s of state.eventSubs) s.unsubscribe();
   for (const s of state.driverSubs) s.unsubscribe();
+  if (state.keyHandler) document.removeEventListener('keydown', state.keyHandler);
+  if (state.wheelHandler) document.removeEventListener('wheel', state.wheelHandler);
   state.root.remove();
+}
+
+function updateTransformStatus(state: ProjectorState): void {
+  if (state.step !== 'markers') return;
+  const { offsetX, offsetY, scale } = state.transform;
+  const zoomPct = Math.round(scale * 100);
+  state.status.textContent =
+    `markers projected · ↔ ${offsetX} ↕ ${offsetY} · zoom ${zoomPct}%  [arrows: pan · scroll: zoom]`;
 }
 
 function applyStep(state: ProjectorState, step: WizardStep, message?: string): void {
@@ -154,7 +245,7 @@ function applyStep(state: ProjectorState, step: WizardStep, message?: string): v
 
   switch (step) {
     case 'markers':
-      state.status.textContent = message ?? 'aim camera at projection · markers projected';
+      updateTransformStatus(state);
       break;
     case 'pool-corners':
       state.status.textContent = message ?? 'pick pool corners on the control window';
@@ -163,10 +254,8 @@ function applyStep(state: ProjectorState, step: WizardStep, message?: string): v
       state.status.textContent = message ?? 'computing homography…';
       break;
     case 'background':
-      // Status hidden; pure black for clean background capture.
       break;
     case 'preview':
-      // Status hidden; live feed visible.
       break;
     case 'done':
       state.status.textContent = message ?? 'calibration complete';

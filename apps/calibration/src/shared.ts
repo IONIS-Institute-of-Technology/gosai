@@ -81,6 +81,8 @@ export const WIZARD_EVENTS = {
   Aborted: 'wizard:aborted',
   /** Emitted when the entire flow completes. Dashboard closes windows. */
   Finished: 'wizard:finished',
+  /** Emitted to sync marker pan/zoom between control and projector windows. */
+  MarkerTransform: 'wizard:marker-transform',
 } as const;
 
 export interface StepEvent {
@@ -92,6 +94,47 @@ export interface StepEvent {
 export interface CornersEvent {
   /** Pool / table corners in *camera image* normalised coords (0..1). */
   points: Point2D[];
+}
+
+export interface MarkerTransform {
+  /** Horizontal offset in pixels. */
+  offsetX: number;
+  /** Vertical offset in pixels. */
+  offsetY: number;
+  /** Scale factor (1 = no zoom). */
+  scale: number;
+}
+
+export interface MarkerTransformEvent {
+  transform: MarkerTransform;
+}
+
+export const DEFAULT_MARKER_TRANSFORM: MarkerTransform = { offsetX: 0, offsetY: 0, scale: 1 };
+
+/** PAN_STEP is in pixels per arrow key press; ZOOM_STEP is the multiplicative factor per wheel tick. */
+export const PAN_STEP = 20;
+export const ZOOM_STEP = 0.05;
+export const MIN_SCALE = 0.2;
+export const MAX_SCALE = 3.0;
+
+/**
+ * Recompute marker screen positions after applying a transform (pan + zoom).
+ * The transform is applied relative to the viewport centre.
+ */
+export function applyTransformToLayout(
+  layout: MarkerSlot[],
+  transform: MarkerTransform,
+  viewportW: number,
+  viewportH: number,
+): MarkerSlot[] {
+  const cx = viewportW / 2;
+  const cy = viewportH / 2;
+  return layout.map((slot) => ({
+    ...slot,
+    x: cx + (slot.x - cx) * transform.scale + transform.offsetX,
+    y: cy + (slot.y - cy) * transform.scale + transform.offsetY,
+    size: slot.size * transform.scale,
+  }));
 }
 
 export function makeMarkerLayout(width: number, height: number, count = 9): MarkerSlot[] {

@@ -28,8 +28,15 @@ import {
   STORAGE_KEYS,
   type CornersEvent,
   type FocusQuad,
+  type MarkerTransform,
+  type MarkerTransformEvent,
   type Point2D,
   type WizardStep,
+  DEFAULT_MARKER_TRANSFORM,
+  PAN_STEP,
+  ZOOM_STEP,
+  MIN_SCALE,
+  MAX_SCALE,
   setBodyFullscreen,
 } from './shared.js';
 
@@ -61,9 +68,12 @@ export interface ControlState {
   draggingIdx: number;
   detectedMarkers: number;
   totalMarkers: number;
+  /** Mirror of the projector's marker transform for forwarding inputs. */
+  markerTransform: MarkerTransform;
   eventSubs: AppEventsSubscription[];
   driverSubs: DriverSubscription[];
   keyHandler: ((e: KeyboardEvent) => void) | null;
+  wheelHandler: ((e: WheelEvent) => void) | null;
   downHandler: ((e: MouseEvent) => void) | null;
   moveHandler: ((e: MouseEvent) => void) | null;
   upHandler: ((e: MouseEvent) => void) | null;
@@ -84,7 +94,7 @@ const STEP_TITLES: Record<WizardStep, string> = {
 
 const STEP_HELP: Record<WizardStep, string> = {
   markers:
-    'Aim the camera so all 9 markers are visible. Move it until the detection count reads 9/9. Press [Space] / Next when ready.',
+    'Aim the camera so all 9 markers are visible. Use [Arrow keys] to pan and [Scroll wheel] to zoom the pattern to fit the surface. Press [Space] / Next when ready.',
   'pool-corners':
     'Click to place corners (top-left → clockwise). Drag an existing corner to adjust it. Press [r] to reset all, [Space] / Next when 4 corners are placed.',
   compute: 'Computing the camera→display homography. This should only take a moment.',
@@ -192,9 +202,11 @@ export function initControlState(): ControlState {
     draggingIdx: -1,
     detectedMarkers: 0,
     totalMarkers: 9,
+    markerTransform: { ...DEFAULT_MARKER_TRANSFORM },
     eventSubs: [],
     driverSubs: [],
     keyHandler: null,
+    wheelHandler: null,
     downHandler: null,
     moveHandler: null,
     upHandler: null,
@@ -270,12 +282,30 @@ export async function startControl(
   state.keyHandler = (e: KeyboardEvent) => void onKey(rt, state, e);
   document.addEventListener('keydown', state.keyHandler);
 
+  state.wheelHandler = (e: WheelEvent): void => {
+    if (state.step !== 'markers') return;
+    e.preventDefault();
+    const direction = e.deltaY < 0 ? 1 : -1;
+    state.markerTransform.scale = Math.min(
+      MAX_SCALE,
+      Math.max(MIN_SCALE, state.markerTransform.scale + direction * ZOOM_STEP),
+    );
+    void rt.events.emit(WIZARD_EVENTS.MarkerTransform, {
+      transform: state.markerTransform,
+    } satisfies MarkerTransformEvent);
+  };
+  document.addEventListener('wheel', state.wheelHandler, { passive: false });
+
   state.dom.nextBtn.addEventListener('click', () => void advance(rt, state));
   state.dom.backBtn.addEventListener('click', () => void revert(rt, state));
   state.dom.abortBtn.addEventListener('click', () => void abort(rt, state));
   state.dom.resetBtn.addEventListener('click', () => resetCorners(rt, state));
 
   state.eventSubs.push(
+    rt.events.on(WIZARD_EVENTS.MarkerTransform, (payload) => {
+      const data = payload as MarkerTransformEvent;
+      state.markerTransform = { ...data.transform };
+    }),
     rt.events.on(WIZARD_EVENTS.BackgroundCaptured, () => {
       // Defensive: the control window also reacts to this event in case
       // someone runs `capture_background` from elsewhere.
@@ -292,6 +322,7 @@ export async function stopControl(state: ControlState): Promise<void> {
   if (state.moveHandler) state.dom.overlay.removeEventListener('mousemove', state.moveHandler);
   if (state.upHandler) state.dom.overlay.removeEventListener('mouseup', state.upHandler);
   if (state.keyHandler) document.removeEventListener('keydown', state.keyHandler);
+  if (state.wheelHandler) document.removeEventListener('wheel', state.wheelHandler);
   if (state.resizeHandler) window.removeEventListener('resize', state.resizeHandler);
   if (state.resizeObserver) state.resizeObserver.disconnect();
   state.dom.root.remove();
@@ -578,6 +609,33 @@ async function onKey(
   state: ControlState,
   e: KeyboardEvent,
 ): Promise<void> {
+  if (state.step === 'markers') {
+    let panHandled = true;
+    switch (e.code) {
+      case 'ArrowLeft':
+        state.markerTransform.offsetX -= PAN_STEP;
+        break;
+      case 'ArrowRight':
+        state.markerTransform.offsetX += PAN_STEP;
+        break;
+      case 'ArrowUp':
+        state.markerTransform.offsetY -= PAN_STEP;
+        break;
+      case 'ArrowDown':
+        state.markerTransform.offsetY += PAN_STEP;
+        break;
+      default:
+        panHandled = false;
+    }
+    if (panHandled) {
+      e.preventDefault();
+      void rt.events.emit(WIZARD_EVENTS.MarkerTransform, {
+        transform: state.markerTransform,
+      } satisfies MarkerTransformEvent);
+      return;
+    }
+  }
+
   if (e.code === 'Space' || e.code === 'Enter') {
     e.preventDefault();
     await advance(rt, state);
