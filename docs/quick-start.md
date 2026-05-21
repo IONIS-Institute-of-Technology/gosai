@@ -14,7 +14,7 @@ bun run build:sdk                  # builds /sdk-runtime.js for app-host windows
 bun run build:apps                 # builds built-in app entry bundles
 ```
 
-All Python driver dependencies (OpenCV, MediaPipe, Ultralytics, audio) are
+All Python driver dependencies (OpenCV, MediaPipe, ONNX Runtime, audio) are
 installed automatically by `python:sync`. For optional hardware-specific
 drivers, add extras:
 

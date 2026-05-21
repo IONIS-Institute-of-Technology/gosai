@@ -8,7 +8,7 @@ numpy arrays (frames, audio buffers) should be encoded for transport.
 - `to_msgpack(value)`: pack a structure into a MessagePack bytes object.
 - `from_msgpack(bytes_value)`: unpack the inverse.
 
-Frame encoding requires `opencv-python` (install with `[cv]` extra).
+Frame encoding requires `opencv-python`.
 """
 
 from __future__ import annotations

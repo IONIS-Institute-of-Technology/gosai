@@ -1,52 +1,52 @@
-"""Ball detector using YOLOv8 object detection.
+"""Ball detector using YOLOv8n via ONNX Runtime.
 
-Uses a lightweight YOLOv8n model pre-trained on COCO to detect pool balls.
-The camera frame is warped into display space (via the calibration homography)
-*before* YOLO inference, so detections are directly in the 1920x1080
-reference coordinate system with no further mapping needed.
+Runs a YOLOv8n model exported to ONNX for low-latency inference (no
+PyTorch at runtime).  The camera frame is warped into display space via
+the calibration homography *before* inference so that detections are
+directly in the 1920x1080 reference coordinate system.
 
-Rather than relying on COCO's "sports ball" class, detection runs across all
-classes and filters by bounding-box geometry: only small, roughly-square
-detections pass (pool balls are the only small round objects on a felt
-surface).  An exponential moving average (EMA) tracker smooths positions
-across frames and suppresses single-frame noise.
+Detection is class-agnostic: all 80 COCO classes fire with a very low
+confidence floor, and candidates are filtered purely by bounding-box
+geometry (small + roughly square = ball).  An EMA tracker smooths
+positions across frames and suppresses single-frame noise.
 
-The model auto-downloads on first use (~6 MB) into ``~/.gosai/models/``.
+On first launch the driver downloads ``yolov8n.onnx`` (~12 MB) into
+``~/.gosai/models/``.
 
 Events:
 - ``balls``: list of ``{x, y, r}`` positions in display pixels.
-- ``fps``: rolling FPS estimate over the most recent 50 frames.
+- ``fps``: rolling FPS estimate.
 
 Actions:
-- ``set_homography(matrix9)``       — row-major 3x3 flattened
+- ``set_homography(matrix9)``
 - ``set_output_size({width, height})``
-- ``set_confidence(0..1)``          — minimum YOLO confidence
-- ``set_max_ball_px(px)``           — max bounding-box side in display pixels
-- ``set_min_ball_px(px)``           — min bounding-box side in display pixels
-- ``set_smoothing(0..1)``           — EMA alpha (0 = no smoothing, 1 = full)
-- ``set_background(jpeg_base64)``   — accepted but unused (backward compat)
+- ``set_confidence(0..1)``
+- ``set_max_ball_px(px)`` / ``set_min_ball_px(px)``
+- ``set_smoothing(0..1)``
+- ``set_background(jpeg_base64)``  — no-op, backward compat
 """
 
 from __future__ import annotations
 
-import logging
 import math
 import os
 import time
 import urllib.request
 from collections import deque
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, ClassVar, Generator
+from typing import Any, ClassVar
 
 from gosai_py.driver import DriverContext
 from gosai_py.processor import BaseProcessor
 
-YOLO_MODEL_FILENAME = "yolov8n.pt"
-YOLO_MODEL_URL = (
-    "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n.pt"
+YOLO_ONNX_FILENAME = "yolov8n.onnx"
+YOLO_ONNX_URL = (
+    "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n.onnx"
 )
+MODEL_INPUT_SIZE = 640
 
+
+# ── Helpers ──────────────────────────────────────────────────────────────
 
 def _gosai_home() -> Path:
     override = os.environ.get("GOSAI_HOME")
@@ -55,56 +55,126 @@ def _gosai_home() -> Path:
     return Path.home() / ".gosai"
 
 
-def _ensure_model(log_fn: Any) -> Path | None:
-    target = _gosai_home() / "models" / YOLO_MODEL_FILENAME
-    if target.exists() and target.stat().st_size > 0:
-        return target
+def _models_dir() -> Path:
+    d = _gosai_home() / "models"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _download_file(url: str, target: Path, log_fn: Any) -> bool:
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        log_fn("info", f"ball: downloading {YOLO_MODEL_FILENAME} to {target}")
+        log_fn("info", f"ball: downloading {target.name}")
         tmp = target.with_suffix(target.suffix + ".part")
-        with urllib.request.urlopen(YOLO_MODEL_URL, timeout=60) as resp, tmp.open("wb") as fp:
+        with urllib.request.urlopen(url, timeout=60) as resp, tmp.open("wb") as fp:
             while True:
                 chunk = resp.read(64 * 1024)
                 if not chunk:
                     break
                 fp.write(chunk)
         tmp.replace(target)
-        log_fn("info", "ball: model download complete")
-        return target
+        log_fn("info", f"ball: download complete ({target.name})")
+        return True
     except Exception as exc:
-        log_fn("error", f"ball: failed to download model: {exc!r}")
-        return None
+        log_fn("error", f"ball: download failed: {exc!r}")
+        return False
 
 
-@contextmanager
-def _suppress_stdout() -> Generator[None, None, None]:
-    """Redirect fd 1/2 to devnull so ultralytics cannot corrupt the bridge protocol.
+def _ensure_onnx(log_fn: Any) -> Path | None:
+    """Return cached ONNX path, downloading from Ultralytics assets if missing."""
+    onnx_path = _models_dir() / YOLO_ONNX_FILENAME
+    if onnx_path.exists() and onnx_path.stat().st_size > 0:
+        return onnx_path
+    if _download_file(YOLO_ONNX_URL, onnx_path, log_fn):
+        return onnx_path
+    return None
 
-    The bridge writes protocol JSON via a dup'd stdout fd, so redirecting fd 1
-    here does not affect Node-side I/O. Swapping ``sys.stdout`` is avoided
-    because it is process-global and races with concurrent bridge writes.
+
+# ── ONNX inference helpers ───────────────────────────────────────────────
+
+def _letterbox(img: Any, size: int) -> tuple[Any, float, tuple[int, int]]:
+    """Resize with aspect-preserving padding (letterbox).
+
+    Returns the padded image, the scale factor, and (pad_top, pad_left).
     """
-    saved_out = os.dup(1)
-    saved_err = os.dup(2)
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    try:
-        os.dup2(devnull, 1)
-        os.dup2(devnull, 2)
-        yield
-    finally:
-        os.dup2(saved_out, 1)
-        os.dup2(saved_err, 2)
-        os.close(saved_out)
-        os.close(saved_err)
-        os.close(devnull)
+    import cv2  # type: ignore[import-not-found]
+    import numpy as np  # type: ignore[import-not-found]
+
+    h, w = img.shape[:2]
+    scale = min(size / h, size / w)
+    nw, nh = round(w * scale), round(h * scale)
+    if (nw, nh) != (w, h):
+        img = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    dh, dw = (size - nh) / 2, (size - nw) / 2
+    top, left = round(dh - 0.1), round(dw - 0.1)
+    bottom, right = round(dh + 0.1), round(dw + 0.1)
+    img = cv2.copyMakeBorder(img, top, bottom, left, right,
+                             cv2.BORDER_CONSTANT, value=(114, 114, 114))
+    return img, scale, (top, left)
 
 
-def _silence_ultralytics_logging() -> None:
-    os.environ["YOLO_VERBOSE"] = "False"
-    for name in ("ultralytics", "ultralytics.utils", "ultralytics.engine",
-                 "ultralytics.nn", "ultralytics.data"):
-        logging.getLogger(name).setLevel(logging.CRITICAL)
+def _preprocess(frame: Any, size: int) -> tuple[Any, float, tuple[int, int]]:
+    """BGR frame -> float32 NCHW tensor for ONNX."""
+    import cv2  # type: ignore[import-not-found]
+    import numpy as np  # type: ignore[import-not-found]
+
+    img, scale, pad = _letterbox(frame, size)
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = img.astype(np.float32) / 255.0
+    img = np.transpose(img, (2, 0, 1))[np.newaxis, ...]
+    return np.ascontiguousarray(img), scale, pad
+
+
+def _postprocess(
+    output: Any,
+    scale: float,
+    pad: tuple[int, int],
+    conf_thresh: float,
+    iou_thresh: float,
+    min_px: float,
+    max_px: float,
+    max_aspect: float,
+) -> list[tuple[float, float, float]]:
+    """Extract ball candidates from raw ONNX output [1, 84, N]."""
+    import cv2  # type: ignore[import-not-found]
+    import numpy as np  # type: ignore[import-not-found]
+
+    preds = np.squeeze(output[0]).T  # [N, 84]
+    class_scores = preds[:, 4:]
+    max_scores = np.max(class_scores, axis=1)
+
+    mask = max_scores >= conf_thresh
+    preds = preds[mask]
+    max_scores = max_scores[mask]
+    if len(preds) == 0:
+        return []
+
+    # cx, cy, w, h in letterbox coords -> original image coords
+    boxes_cxcywh = preds[:, :4].copy()
+    boxes_cxcywh[:, 0] -= pad[1]
+    boxes_cxcywh[:, 1] -= pad[0]
+    boxes_cxcywh[:, :4] /= scale
+
+    # Convert to x,y,w,h for NMS
+    boxes_xywh = boxes_cxcywh.copy()
+    boxes_xywh[:, 0] -= boxes_xywh[:, 2] / 2
+    boxes_xywh[:, 1] -= boxes_xywh[:, 3] / 2
+
+    indices = cv2.dnn.NMSBoxes(
+        boxes_xywh.tolist(), max_scores.tolist(), conf_thresh, iou_thresh,
+    )
+
+    results: list[tuple[float, float, float]] = []
+    for i in np.array(indices).flatten():
+        cx, cy, w, h = boxes_cxcywh[i]
+        side = max(w, h)
+        if side < min_px or side > max_px:
+            continue
+        aspect = max(w, h) / max(min(w, h), 1.0)
+        if aspect > max_aspect:
+            continue
+        r = (w + h) / 4.0
+        results.append((float(cx), float(cy), float(r)))
+    return results
 
 
 # ── EMA ball tracker ─────────────────────────────────────────────────────
@@ -130,7 +200,7 @@ class _TrackedBall:
 class _BallTracker:
     """Nearest-neighbour tracker with EMA smoothing."""
 
-    def __init__(self, alpha: float = 0.45, max_miss: int = 3,
+    def __init__(self, alpha: float = 0.3, max_miss: int = 4,
                  match_radius: float = 80.0, min_age: int = 2) -> None:
         self.alpha = alpha
         self.max_miss = max_miss
@@ -142,7 +212,6 @@ class _BallTracker:
         used_det: set[int] = set()
         used_trk: set[int] = set()
 
-        # Greedy nearest-neighbour matching.
         pairs: list[tuple[float, int, int]] = []
         for ti, trk in enumerate(self.tracks):
             for di, (dx, dy, _dr) in enumerate(detections):
@@ -150,7 +219,7 @@ class _BallTracker:
                 if dist < self.match_radius:
                     pairs.append((dist, ti, di))
         pairs.sort()
-        for dist, ti, di in pairs:
+        for _dist, ti, di in pairs:
             if ti in used_trk or di in used_det:
                 continue
             dx, dy, dr = detections[di]
@@ -158,12 +227,10 @@ class _BallTracker:
             used_trk.add(ti)
             used_det.add(di)
 
-        # Spawn new tracks for unmatched detections.
         for di, (dx, dy, dr) in enumerate(detections):
             if di not in used_det:
                 self.tracks.append(_TrackedBall(dx, dy, dr))
 
-        # Age unmatched tracks and cull stale ones.
         for ti, trk in enumerate(self.tracks):
             if ti not in used_trk:
                 trk.missed += 1
@@ -171,12 +238,16 @@ class _BallTracker:
 
         return [t for t in self.tracks if t.age >= self.min_age]
 
+    def current(self) -> list[_TrackedBall]:
+        """Return the last known stable positions (for skip frames)."""
+        return [t for t in self.tracks if t.age >= self.min_age]
+
 
 # ── Driver ───────────────────────────────────────────────────────────────
 
 class BallDriver(BaseProcessor):
     name: ClassVar[str] = "ball"
-    description: ClassVar[str] = "YOLO-based ball detector."
+    description: ClassVar[str] = "YOLO-based ball detector (ONNX Runtime)."
     events: ClassVar[tuple[str, ...]] = ("balls", "fps")
     actions: ClassVar[tuple[str, ...]] = (
         "set_background",
@@ -195,35 +266,51 @@ class BallDriver(BaseProcessor):
 
     def __init__(self, context: DriverContext) -> None:
         super().__init__(context)
-        self._model: Any = None
+        self._session: Any = None
+        self._input_name: str = ""
+        self._input_size: int = MODEL_INPUT_SIZE
         self._homography: Any = None
         self._output_size = self.DEFAULT_OUTPUT_SIZE
-        self._confidence = 0.15
+        self._confidence = 0.05
+        self._iou_thresh = 0.5
         self._min_ball_px = 10.0
-        self._max_ball_px = 80.0
+        self._max_ball_px = 100.0
         self._max_aspect = 1.8
         self._frame_times: deque[float] = deque(maxlen=50)
-        self._tracker = _BallTracker(alpha=0.45, max_miss=3, min_age=2)
+        self._tracker = _BallTracker(alpha=0.3, max_miss=4, min_age=2)
+        self._frame_idx = 0
+        self._skip = 1  # process every 2nd frame
 
     def pre_run(self) -> None:
         super().pre_run()
-        _silence_ultralytics_logging()
 
-        model_path = _ensure_model(self.log)
-        if model_path is None:
-            self.log("error", "ball: model unavailable, driver inactive")
+        onnx_path = _ensure_onnx(self.log)
+        if onnx_path is None:
+            self.log("error", "ball: ONNX model unavailable, driver inactive")
             return
 
         try:
-            with _suppress_stdout():
-                from ultralytics import YOLO  # type: ignore[import-not-found]
-                self._model = YOLO(str(model_path))
-            self.log("info", f"YOLO model loaded ({model_path.name})")
+            import onnxruntime as ort  # type: ignore[import-not-found]
         except ImportError as exc:
-            self.log("error", f"ultralytics not installed: {exc}")
+            self.log("error", f"onnxruntime not installed: {exc}")
+            return
+
+        try:
+            available = ort.get_available_providers()
+            providers = [p for p in ("CoreMLExecutionProvider",
+                                     "CUDAExecutionProvider",
+                                     "CPUExecutionProvider") if p in available]
+            self._session = ort.InferenceSession(
+                str(onnx_path), providers=providers or available,
+            )
+            inp = self._session.get_inputs()[0]
+            self._input_name = inp.name
+            self._input_size = inp.shape[2] if isinstance(inp.shape[2], int) else MODEL_INPUT_SIZE
+            self.log("info", f"ONNX session ready ({onnx_path.name}, "
+                     f"providers={providers}, input={self._input_size})")
         except Exception as exc:
-            self.log("error", f"failed to load YOLO model: {exc!r}")
-            self._model = None
+            self.log("error", f"failed to create ONNX session: {exc!r}")
+            self._session = None
 
     def execute(self, action: str, data: Any) -> Any:
         if action == "set_background":
@@ -244,7 +331,7 @@ class BallDriver(BaseProcessor):
         if action == "set_smoothing":
             self._tracker.alpha = max(0.0, min(1.0, float(data)))
             return {"smoothing": self._tracker.alpha}
-        # Legacy actions -- accept silently.
+        # Legacy actions.
         if action in ("set_min_area", "set_threshold", "set_max_area",
                        "set_min_circularity", "set_hand_landmarks",
                        "set_hand_radius", "set_persistence", "set_classes"):
@@ -252,14 +339,27 @@ class BallDriver(BaseProcessor):
         return super().execute(action, data)
 
     # ------------------------------------------------------------------
-    # Main detection pipeline
+    # Detection pipeline
     # ------------------------------------------------------------------
 
     def on_data(self, driver: str, event: str, data: Any) -> None:
-        if not isinstance(data, dict) or self._model is None:
+        if not isinstance(data, dict) or self._session is None:
             return
         encoded = data.get("jpeg_base64")
         if not isinstance(encoded, str):
+            return
+
+        start = time.perf_counter()
+
+        # Frame skipping: only run YOLO every (skip+1) frames.
+        self._frame_idx += 1
+        if self._frame_idx % (self._skip + 1) != 0:
+            stable = self._tracker.current()
+            balls = [
+                {"x": int(t.x), "y": int(t.y), "r": round(t.r * 2, 1)}
+                for t in stable
+            ]
+            self.emit("balls", {"balls": balls, "count": len(balls), "ts": time.time()})
             return
 
         try:
@@ -274,37 +374,21 @@ class BallDriver(BaseProcessor):
         if frame is None:
             return
 
-        start = time.perf_counter()
-
-        # Warp the camera frame into display space BEFORE detection so that
-        # YOLO coordinates are directly in the 1920x1080 reference system.
         if self._homography is not None:
             frame = cv2.warpPerspective(
-                frame, self._homography, self._output_size, flags=cv2.INTER_LINEAR,
+                frame, self._homography, self._output_size,
+                flags=cv2.INTER_LINEAR,
             )
 
-        with _suppress_stdout():
-            results = self._model(
-                frame,
-                conf=self._confidence,
-                verbose=False,
-            )
+        tensor, scale, pad = _preprocess(frame, self._input_size)
+        outputs = self._session.run(None, {self._input_name: tensor})
 
-        # Filter detections by bounding-box geometry: only small, roughly
-        # square boxes qualify as pool balls.
-        detections: list[tuple[float, float, float]] = []
-        for box in results[0].boxes:
-            cx, cy, w, h = box.xywh[0].tolist()
-            side = max(w, h)
-            if side < self._min_ball_px or side > self._max_ball_px:
-                continue
-            aspect = max(w, h) / max(min(w, h), 1.0)
-            if aspect > self._max_aspect:
-                continue
-            r = (w + h) / 4.0
-            detections.append((cx, cy, r))
+        detections = _postprocess(
+            outputs, scale, pad,
+            self._confidence, self._iou_thresh,
+            self._min_ball_px, self._max_ball_px, self._max_aspect,
+        )
 
-        # Smooth with the EMA tracker.
         stable = self._tracker.update(detections)
         balls: list[dict[str, Any]] = [
             {"x": int(t.x), "y": int(t.y), "r": round(t.r * 2, 1)}
