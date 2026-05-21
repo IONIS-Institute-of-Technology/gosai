@@ -337,7 +337,8 @@ function wireDrivers(state: State, rt: ExperienceRuntimeContext): void {
     }),
   );
 
-  // Hands.
+  // Hands -- also relay landmarks to the ball driver as exclusion zones so
+  // that hands resting on the table are not detected as balls.
   state.subs.push(
     rt.drivers.on('hand_pose', 'raw_data', (data) => {
       if (typeof data !== 'object' || data === null) return;
@@ -345,9 +346,19 @@ function wireDrivers(state: State, rt: ExperienceRuntimeContext): void {
         hands_landmarks?: number[][][];
         hands_handedness?: Array<[unknown, unknown, unknown]>;
       };
-      state.feed.hands.hands = payload.hands_landmarks ?? [];
+      const landmarks = payload.hands_landmarks ?? [];
+      state.feed.hands.hands = landmarks;
       state.feed.hands.handedness = payload.hands_handedness ?? [];
       state.feed.hands.lastUpdate = performance.now();
+
+      // Convert normalised 0..1 landmarks to output-space pixels and push
+      // them into the ball driver as hand exclusion zones.
+      const handsPixels: number[][][] = landmarks.map((hand) =>
+        hand.map((lm) => [lm[0]! * REF_WIDTH, lm[1]! * REF_HEIGHT]),
+      );
+      void rt.drivers
+        .execute('ball', 'set_hand_landmarks', handsPixels)
+        .catch(() => {});
     }),
   );
 

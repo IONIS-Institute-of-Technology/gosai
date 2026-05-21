@@ -1,33 +1,39 @@
-"""Ball/object detector via background subtraction.
+"""Ball detector via background subtraction with shape & temporal filtering.
 
-A faithful re-implementation of the legacy `ball` driver. Differences:
-
-- Background image is provided either as a base64 JPEG (passed through
-  `set_background`) or pulled from the GOSAI calibration app's storage by
-  the application that starts this driver.
-- The homography matrix used to warp the camera into display space is also
-  supplied per-action; the driver no longer reads `home/calibration_data.json`.
+Detects pool balls by subtracting a reference background image from each
+camera frame, then filtering candidates by circularity, bounded size, and
+temporal persistence.  Hand-exclusion zones can be fed in from the hand_pose
+driver so that hands touching the table are never mistaken for balls.
 
 Events:
-- `balls`: list of `{x, y}` positions in display pixels.
-- `fps`: rolling FPS estimate over the most recent 50 frames.
+- ``balls``: list of ``{x, y, r}`` positions in display pixels.
+- ``fps``: rolling FPS estimate over the most recent 50 frames.
 
 Actions:
-- `set_background(jpeg_base64)`
-- `set_homography(matrix9)`  // row-major 3x3 flattened
-- `set_output_size({ width, height })`
-- `set_min_area(px)` / `set_threshold(value)`
+- ``set_background(jpeg_base64)``
+- ``set_homography(matrix9)``       — row-major 3×3 flattened
+- ``set_output_size({width, height})``
+- ``set_min_area(px)`` / ``set_max_area(px)``
+- ``set_threshold(value)``
+- ``set_min_circularity(0..1)``
+- ``set_hand_landmarks(hands)``     — list of 21-landmark hands (pixel coords)
+- ``set_hand_radius(px)``           — exclusion radius around each landmark
+- ``set_persistence(frames)``       — how many consecutive frames before emitting
 """
 
 from __future__ import annotations
 
 import base64
+import math
 import time
 from collections import deque
 from typing import Any, ClassVar
 
 from gosai_py.driver import DriverContext
 from gosai_py.processor import BaseProcessor
+
+_TWO_PI = 2.0 * math.pi
+_FOUR_PI = 4.0 * math.pi
 
 
 class BallDriver(BaseProcessor):
@@ -39,7 +45,12 @@ class BallDriver(BaseProcessor):
         "set_homography",
         "set_output_size",
         "set_min_area",
+        "set_max_area",
         "set_threshold",
+        "set_min_circularity",
+        "set_hand_landmarks",
+        "set_hand_radius",
+        "set_persistence",
     )
     dependencies: ClassVar[tuple[str, ...]] = ("camera",)
     subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("camera", "color"),)
@@ -49,12 +60,24 @@ class BallDriver(BaseProcessor):
 
     def __init__(self, context: DriverContext) -> None:
         super().__init__(context)
-        self._bkg: Any = None  # ndarray
-        self._homography: Any = None  # ndarray (3,3)
+        self._bkg: Any = None
+        self._homography: Any = None
         self._output_size = self.DEFAULT_OUTPUT_SIZE
-        self._min_area = 700.0  # pixels^2
-        self._threshold = 100  # binary threshold after blur
+        self._min_area = 700.0
+        self._max_area = 12_000.0
+        self._threshold = 100
+        self._min_circularity = 0.45
         self._frame_times: deque[float] = deque(maxlen=50)
+
+        # Hand exclusion: list of (x, y) pixel positions in warped/output space.
+        self._hand_points: list[tuple[float, float]] = []
+        self._hand_radius = 60.0
+
+        # Temporal persistence tracker.  Keys are (grid_x, grid_y) bucket IDs;
+        # values are the number of consecutive frames the bucket has been seen.
+        self._persistence_required = 2
+        self._track_buckets: dict[tuple[int, int], int] = {}
+        self._bucket_size = 40
 
     def execute(self, action: str, data: Any) -> Any:
         if action == "set_background":
@@ -66,10 +89,28 @@ class BallDriver(BaseProcessor):
         if action == "set_min_area":
             self._min_area = float(data)
             return {"min_area": self._min_area}
+        if action == "set_max_area":
+            self._max_area = float(data)
+            return {"max_area": self._max_area}
         if action == "set_threshold":
             self._threshold = int(data)
             return {"threshold": self._threshold}
+        if action == "set_min_circularity":
+            self._min_circularity = max(0.0, min(1.0, float(data)))
+            return {"min_circularity": self._min_circularity}
+        if action == "set_hand_landmarks":
+            return self._set_hand_landmarks(data)
+        if action == "set_hand_radius":
+            self._hand_radius = max(0.0, float(data))
+            return {"hand_radius": self._hand_radius}
+        if action == "set_persistence":
+            self._persistence_required = max(1, int(data))
+            return {"persistence": self._persistence_required}
         return super().execute(action, data)
+
+    # ------------------------------------------------------------------
+    # Main detection pipeline
+    # ------------------------------------------------------------------
 
     def on_data(self, driver: str, event: str, data: Any) -> None:
         if not isinstance(data, dict):
@@ -99,24 +140,82 @@ class BallDriver(BaseProcessor):
             self._bkg = bkg
 
         diff = cv2.absdiff(bkg, frame)
-        # Use the blue channel for projection (matches legacy behaviour) then
-        # warp into display coordinates using the homography.
-        blue = diff[..., -1]
+        gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+
         warped = cv2.warpPerspective(
-            blue, self._homography, self._output_size, flags=cv2.INTER_LINEAR
+            gray, self._homography, self._output_size, flags=cv2.INTER_LINEAR
         )
-        warped = cv2.GaussianBlur(warped, (5, 5), 0)
+
+        warped = cv2.GaussianBlur(warped, (7, 7), 0)
+
+        if self._hand_points:
+            hand_mask = np.zeros(warped.shape[:2], dtype=np.uint8)
+            r = int(self._hand_radius)
+            for hx, hy in self._hand_points:
+                cv2.circle(hand_mask, (int(hx), int(hy)), r, 255, -1)
+            warped[hand_mask > 0] = 0
+
         _, mask = cv2.threshold(warped, self._threshold, 255, cv2.THRESH_BINARY)
 
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        balls: list[dict[str, int]] = []
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+        contours, _ = cv2.findContours(
+            mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+
+        candidates: list[dict[str, float]] = []
         for contour in contours:
-            m = cv2.moments(contour)
-            if m["m00"] < self._min_area:
+            area = cv2.contourArea(contour)
+            if area < self._min_area or area > self._max_area:
                 continue
-            cx = int(m["m10"] / m["m00"])
-            cy = int(m["m01"] / m["m00"])
-            balls.append({"x": cx, "y": cy})
+
+            perimeter = cv2.arcLength(contour, True)
+            if perimeter <= 0:
+                continue
+            circularity = _FOUR_PI * area / (perimeter * perimeter)
+            if circularity < self._min_circularity:
+                continue
+
+            m = cv2.moments(contour)
+            if m["m00"] <= 0:
+                continue
+            cx = m["m10"] / m["m00"]
+            cy = m["m01"] / m["m00"]
+            r = math.sqrt(area / math.pi)
+            candidates.append({"x": cx, "y": cy, "r": r})
+
+        # --- Temporal persistence filtering ---
+        seen_buckets: dict[tuple[int, int], dict[str, float]] = {}
+        for ball in candidates:
+            bkt = (
+                int(ball["x"]) // self._bucket_size,
+                int(ball["y"]) // self._bucket_size,
+            )
+            seen_buckets[bkt] = ball
+
+        new_track: dict[tuple[int, int], int] = {}
+        for bkt, ball in seen_buckets.items():
+            prev = self._track_buckets.get(bkt, 0)
+            # Also count adjacent buckets so slight jitter doesn't reset the counter.
+            if prev == 0:
+                for dx in (-1, 0, 1):
+                    for dy in (-1, 0, 1):
+                        nbr = (bkt[0] + dx, bkt[1] + dy)
+                        prev = max(prev, self._track_buckets.get(nbr, 0))
+            new_track[bkt] = prev + 1
+
+        self._track_buckets = new_track
+
+        balls: list[dict[str, Any]] = []
+        for bkt, ball in seen_buckets.items():
+            if new_track.get(bkt, 0) >= self._persistence_required:
+                balls.append({
+                    "x": int(ball["x"]),
+                    "y": int(ball["y"]),
+                    "r": round(ball["r"] * 2, 1),
+                })
 
         now = time.perf_counter()
         self._frame_times.append(now)
@@ -127,6 +226,31 @@ class BallDriver(BaseProcessor):
         self.record("loop_ms", (now - start) * 1000.0)
 
         self.emit("balls", {"balls": balls, "count": len(balls), "ts": time.time()})
+
+    # ------------------------------------------------------------------
+    # Hand exclusion
+    # ------------------------------------------------------------------
+
+    def _set_hand_landmarks(self, data: Any) -> dict[str, Any]:
+        """Accept hand landmark positions in output-space pixels.
+
+        ``data`` should be a list of hands, where each hand is a list of
+        ``[x, y]`` pairs in the warped/output coordinate system. Typically
+        only the palm and fingertip landmarks (0, 4, 8, 12, 16, 20) are
+        needed, but we accept all 21 for simplicity.
+        """
+        if not isinstance(data, list):
+            self._hand_points = []
+            return {"ok": True, "points": 0}
+        points: list[tuple[float, float]] = []
+        for hand in data:
+            if not isinstance(hand, list):
+                continue
+            for lm in hand:
+                if isinstance(lm, (list, tuple)) and len(lm) >= 2:
+                    points.append((float(lm[0]), float(lm[1])))
+        self._hand_points = points
+        return {"ok": True, "points": len(points)}
 
     # ------------------------------------------------------------------
     # Setters
