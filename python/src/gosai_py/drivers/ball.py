@@ -29,11 +29,9 @@ Actions:
 
 from __future__ import annotations
 
-import io
 import logging
 import math
 import os
-import sys
 import time
 import urllib.request
 from collections import deque
@@ -81,16 +79,25 @@ def _ensure_model(log_fn: Any) -> Path | None:
 
 @contextmanager
 def _suppress_stdout() -> Generator[None, None, None]:
-    """Redirect stdout/stderr so ultralytics can't corrupt the bridge protocol."""
-    real_stdout = sys.stdout
-    real_stderr = sys.stderr
+    """Redirect fd 1/2 to devnull so ultralytics cannot corrupt the bridge protocol.
+
+    The bridge writes protocol JSON via a dup'd stdout fd, so redirecting fd 1
+    here does not affect Node-side I/O. Swapping ``sys.stdout`` is avoided
+    because it is process-global and races with concurrent bridge writes.
+    """
+    saved_out = os.dup(1)
+    saved_err = os.dup(2)
+    devnull = os.open(os.devnull, os.O_WRONLY)
     try:
-        sys.stdout = io.StringIO()
-        sys.stderr = io.StringIO()
+        os.dup2(devnull, 1)
+        os.dup2(devnull, 2)
         yield
     finally:
-        sys.stdout = real_stdout
-        sys.stderr = real_stderr
+        os.dup2(saved_out, 1)
+        os.dup2(saved_err, 2)
+        os.close(saved_out)
+        os.close(saved_err)
+        os.close(devnull)
 
 
 def _silence_ultralytics_logging() -> None:

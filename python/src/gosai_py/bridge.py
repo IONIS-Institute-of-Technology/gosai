@@ -12,6 +12,7 @@ Drivers are discovered from:
 from __future__ import annotations
 
 import json
+import os
 import pkgutil
 import sys
 import threading
@@ -59,6 +60,9 @@ class Bridge:
 
     def __init__(self) -> None:
         self._write_lock = threading.Lock()
+        # Dup the real stdout fd so driver code that redirects fd 1 (e.g. during
+        # YOLO import) cannot corrupt the newline-delimited JSON protocol.
+        self._stdout_fd = os.dup(1)
         self._running = False
         self._driver_classes: dict[str, type[BaseDriver]] = {}
         self._driver_instances: dict[str, BaseDriver] = {}
@@ -105,11 +109,10 @@ class Bridge:
     # ------------------------------------------------------------------
 
     def _write(self, message: JsonDict) -> None:
-        line = json.dumps(message, separators=(",", ":"), default=_json_default)
+        line = json.dumps(message, separators=(",", ":"), default=_json_default) + "\n"
+        data = line.encode("utf-8")
         with self._write_lock:
-            sys.stdout.write(line)
-            sys.stdout.write("\n")
-            sys.stdout.flush()
+            os.write(self._stdout_fd, data)
 
     def _emit_event(self, driver: str, event: str, data: Any) -> None:
         # External (Node-side) subscribers
