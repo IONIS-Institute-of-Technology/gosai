@@ -15,8 +15,11 @@ bun run build:apps                 # builds built-in app entry bundles
 ```
 
 All Python driver dependencies (OpenCV, MediaPipe, ONNX Runtime, audio) are
-installed automatically by `python:sync`. For optional hardware-specific
-drivers, add extras:
+installed automatically by `python:sync`. On Linux and Windows, the ball
+driver uses `onnxruntime-gpu` (CUDA on the NVIDIA GPU). On macOS it uses
+CoreML. Set `GOSAI_CUDA_DEVICE_ID=0` if you have multiple NVIDIA GPUs.
+
+For optional hardware-specific drivers, add extras:
 
 ```bash
 cd python && uv sync --extra realsense   # Intel RealSense depth camera

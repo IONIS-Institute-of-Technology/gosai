@@ -13,7 +13,8 @@ dependencies = [
     "opencv-python>=4.10.0",
     "mediapipe>=0.10.18",
     "pillow>=11.0.0",
-    "onnxruntime>=1.20.0",
+    "onnxruntime>=1.20.0; sys_platform == 'darwin'",
+    "onnxruntime-gpu>=1.20.0; sys_platform == 'linux' or sys_platform == 'win32'",
     "sounddevice>=0.5.0",
     "soundfile>=0.13.0",
 ]

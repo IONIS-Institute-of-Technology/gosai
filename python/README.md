@@ -9,6 +9,19 @@ Python runtime for GOSAI: the driver bridge process and the Python SDK
 uv sync
 ```
 
+**Ball detection GPU (Linux / Windows):** installs `onnxruntime-gpu` automatically so
+YOLO runs on the NVIDIA GPU via CUDA. On macOS, `onnxruntime` uses CoreML instead.
+
+Optional overrides:
+
+| Variable | Effect |
+| -------- | ------ |
+| `GOSAI_ORT_DEVICE=cuda` | Force NVIDIA CUDA (then CPU fallback) |
+| `GOSAI_ORT_DEVICE=cpu` | Force CPU only |
+| `GOSAI_CUDA_DEVICE_ID=0` | Which NVIDIA GPU (0 = first CUDA device) |
+
+After start, check logs for `active=CUDAExecutionProvider` (or `CoreMLExecutionProvider` on Mac).
+
 For optional hardware-specific drivers, add extras as needed:
 
 ```bash

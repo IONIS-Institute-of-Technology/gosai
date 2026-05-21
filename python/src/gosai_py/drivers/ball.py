@@ -23,13 +23,19 @@ Actions:
 - ``set_confidence(0..1)``
 - ``set_max_ball_px(px)`` / ``set_min_ball_px(px)``
 - ``set_smoothing(0..1)``
+- ``set_cuda_device(id)``           — NVIDIA GPU index (default 0)
 - ``set_background(jpeg_base64)``  — no-op, backward compat
+
+Environment (optional):
+- ``GOSAI_ORT_DEVICE`` — ``cuda``, ``cpu``, ``coreml`` (macOS), ``dml`` (Windows)
+- ``GOSAI_CUDA_DEVICE_ID`` — CUDA device index when using NVIDIA (default 0)
 """
 
 from __future__ import annotations
 
 import math
 import os
+import sys
 import time
 import urllib.request
 from collections import deque
@@ -87,6 +93,121 @@ def _ensure_onnx(log_fn: Any) -> Path | None:
     if _download_file(YOLO_ONNX_URL, onnx_path, log_fn):
         return onnx_path
     return None
+
+
+def _cuda_device_id() -> int:
+    raw = os.environ.get("GOSAI_CUDA_DEVICE_ID", "0")
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 0
+
+
+def _ort_device_mode() -> str:
+    """``cuda`` | ``cpu`` | ``coreml`` | ``dml`` | ``auto``."""
+    mode = os.environ.get("GOSAI_ORT_DEVICE", "auto").strip().lower()
+    if mode in ("cuda", "cpu", "coreml", "dml", "auto"):
+        return mode
+    return "auto"
+
+
+def _build_ort_providers(
+    available: list[str],
+    *,
+    mode: str,
+    cuda_device_id: int,
+) -> list[str | tuple[str, dict[str, Any]]]:
+    """Pick execution providers so NVIDIA CUDA wins on dual-GPU PCs.
+
+    The default ``onnxruntime`` wheel is CPU-only.  Linux/Windows installs
+    use ``onnxruntime-gpu`` (see ``pyproject.toml``) so
+    ``CUDAExecutionProvider`` is available for the discrete NVIDIA GPU.
+
+    We intentionally avoid OpenVINO / DirectML in ``auto`` mode: on
+    Intel + NVIDIA machines they often bind to the Intel iGPU and are
+    slower than CUDA on the NVIDIA card.
+    """
+    cuda_opts: dict[str, Any] = {"device_id": cuda_device_id}
+    cuda = ("CUDAExecutionProvider", cuda_opts)
+    cpu = "CPUExecutionProvider"
+    coreml = "CoreMLExecutionProvider"
+    dml = "DirectMLExecutionProvider"
+    trt = "TensorrtExecutionProvider"
+
+    if mode == "cpu":
+        return [cpu] if cpu in available else available
+
+    if mode == "coreml":
+        out: list[str | tuple[str, dict[str, Any]]] = []
+        if coreml in available:
+            out.append(coreml)
+        if cpu in available:
+            out.append(cpu)
+        return out or available
+
+    if mode == "dml":
+        out = []
+        if dml in available:
+            out.append(dml)
+        if cpu in available:
+            out.append(cpu)
+        return out or available
+
+    if mode == "cuda":
+        out = []
+        if cuda[0] in available:
+            out.append(cuda)
+        if cpu in available:
+            out.append(cpu)
+        return out or available
+
+    # auto
+    if sys.platform == "darwin":
+        out = []
+        if coreml in available:
+            out.append(coreml)
+        if cpu in available:
+            out.append(cpu)
+        return out or available
+
+    out = []
+    if cuda[0] in available:
+        out.append(cuda)
+    if trt in available:
+        out.append(trt)
+    if cpu in available:
+        out.append(cpu)
+    return out or available
+
+
+def _create_ort_session(
+    onnx_path: Path,
+    *,
+    cuda_device_id: int,
+    log_fn: Any,
+) -> tuple[Any, list[str]]:
+    import onnxruntime as ort  # type: ignore[import-not-found]
+
+    available = ort.get_available_providers()
+    providers = _build_ort_providers(
+        available,
+        mode=_ort_device_mode(),
+        cuda_device_id=cuda_device_id,
+    )
+    opts = ort.SessionOptions()
+    opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    session = ort.InferenceSession(
+        str(onnx_path),
+        sess_options=opts,
+        providers=providers,
+    )
+    active = session.get_providers()
+    log_fn(
+        "info",
+        f"ONNX session ready ({onnx_path.name}, active={active[0] if active else 'none'}, "
+        f"available={available}, requested={[p[0] if isinstance(p, tuple) else p for p in providers]})",
+    )
+    return session, active
 
 
 # ── ONNX inference helpers ───────────────────────────────────────────────
@@ -257,6 +378,7 @@ class BallDriver(BaseProcessor):
         "set_max_ball_px",
         "set_min_ball_px",
         "set_smoothing",
+        "set_cuda_device",
     )
     dependencies: ClassVar[tuple[str, ...]] = ("camera",)
     subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("camera", "color"),)
@@ -280,34 +402,38 @@ class BallDriver(BaseProcessor):
         self._tracker = _BallTracker(alpha=0.3, max_miss=4, min_age=2)
         self._frame_idx = 0
         self._skip = 1  # process every 2nd frame
+        self._cuda_device_id = _cuda_device_id()
+        self._onnx_path: Path | None = None
 
     def pre_run(self) -> None:
         super().pre_run()
+        self._load_session()
 
-        onnx_path = _ensure_onnx(self.log)
+    def _load_session(self) -> None:
+        if self._onnx_path is None:
+            self._onnx_path = _ensure_onnx(self.log)
+        onnx_path = self._onnx_path
         if onnx_path is None:
             self.log("error", "ball: ONNX model unavailable, driver inactive")
+            self._session = None
             return
 
         try:
-            import onnxruntime as ort  # type: ignore[import-not-found]
+            import onnxruntime  # type: ignore[import-not-found]
         except ImportError as exc:
             self.log("error", f"onnxruntime not installed: {exc}")
+            self._session = None
             return
 
         try:
-            available = ort.get_available_providers()
-            providers = [p for p in ("CoreMLExecutionProvider",
-                                     "CUDAExecutionProvider",
-                                     "CPUExecutionProvider") if p in available]
-            self._session = ort.InferenceSession(
-                str(onnx_path), providers=providers or available,
+            self._session, _active = _create_ort_session(
+                onnx_path,
+                cuda_device_id=self._cuda_device_id,
+                log_fn=self.log,
             )
             inp = self._session.get_inputs()[0]
             self._input_name = inp.name
             self._input_size = inp.shape[2] if isinstance(inp.shape[2], int) else MODEL_INPUT_SIZE
-            self.log("info", f"ONNX session ready ({onnx_path.name}, "
-                     f"providers={providers}, input={self._input_size})")
         except Exception as exc:
             self.log("error", f"failed to create ONNX session: {exc!r}")
             self._session = None
@@ -331,6 +457,11 @@ class BallDriver(BaseProcessor):
         if action == "set_smoothing":
             self._tracker.alpha = max(0.0, min(1.0, float(data)))
             return {"smoothing": self._tracker.alpha}
+        if action == "set_cuda_device":
+            self._cuda_device_id = max(0, int(data))
+            self._session = None
+            self._load_session()
+            return {"cuda_device_id": self._cuda_device_id}
         # Legacy actions.
         if action in ("set_min_area", "set_threshold", "set_max_area",
                        "set_min_circularity", "set_hand_landmarks",
