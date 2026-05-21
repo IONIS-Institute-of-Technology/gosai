@@ -19,12 +19,34 @@ from typing import Any, ClassVar
 from gosai_py.driver import BaseDriver, DriverContext
 from gosai_py.serialization import frame_to_jpeg_base64
 
+# Common modes to probe; actual hardware may only support a subset.
+_PROBE_RESOLUTIONS: tuple[tuple[int, int], ...] = (
+    (640, 480),
+    (800, 600),
+    (1024, 768),
+    (1280, 720),
+    (1280, 960),
+    (1920, 1080),
+    (2560, 1440),
+    (3840, 2160),
+)
+_PROBE_FPS: tuple[int, ...] = (5, 10, 15, 24, 25, 30, 60)
+# When the driver cannot read discrete FPS modes, these targets are still valid
+# because the capture loop software-throttles to `_fps_target`.
+_SOFTWARE_FPS: tuple[int, ...] = (15, 24, 30, 60)
+
 
 class CameraDriver(BaseDriver):
     name: ClassVar[str] = "camera"
     description: ClassVar[str] = "Webcam capture (OpenCV) with optional RealSense depth."
     events: ClassVar[tuple[str, ...]] = ("color", "depth", "frame_size", "fps")
-    actions: ClassVar[tuple[str, ...]] = ("set_device", "set_resolution", "set_fps", "snapshot")
+    actions: ClassVar[tuple[str, ...]] = (
+        "set_device",
+        "set_resolution",
+        "set_fps",
+        "snapshot",
+        "list_formats",
+    )
     loop_interval_s: ClassVar[float | None] = 0.0
 
     def __init__(self, context: DriverContext) -> None:
@@ -38,6 +60,80 @@ class CameraDriver(BaseDriver):
         self._last_emit = 0.0
         self._frame_count = 0
         self._fps_window_start = 0.0
+
+    def apply_config(self, cfg: dict[str, Any]) -> None:
+        """Apply persisted settings before the capture loop opens the device."""
+        if "device" in cfg:
+            self._device = int(cfg["device"])
+        if "width" in cfg:
+            self._width = int(cfg["width"])
+        if "height" in cfg:
+            self._height = int(cfg["height"])
+        if "fps" in cfg:
+            self._fps_target = float(cfg["fps"])
+
+    @classmethod
+    def probe_formats(cls, device: int = 0) -> dict[str, Any]:
+        """Enumerate resolutions and frame rates supported by `device`."""
+        try:
+            import cv2  # type: ignore[import-not-found]
+        except ImportError as exc:
+            return {"ok": False, "device": device, "error": f"opencv not available: {exc}"}
+
+        cap = cv2.VideoCapture(device)
+        if not cap.isOpened():
+            return {"ok": False, "device": device, "error": f"cannot open camera device {device}"}
+
+        try:
+            seen: set[tuple[int, int]] = set()
+            for target_w, target_h in _PROBE_RESOLUTIONS:
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, target_w)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, target_h)
+                actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                if actual_w <= 0 or actual_h <= 0:
+                    continue
+                # Accept exact matches or drivers that snap to the nearest mode.
+                if abs(actual_w - target_w) <= 16 and abs(actual_h - target_h) <= 16:
+                    seen.add((actual_w, actual_h))
+
+            if not seen:
+                return {"ok": False, "device": device, "error": "no supported resolutions detected"}
+
+            formats: list[dict[str, Any]] = []
+            for width, height in sorted(seen, key=lambda wh: wh[0] * wh[1], reverse=True):
+                fps_values = cls._probe_fps_for_resolution(cap, cv2, width, height)
+                formats.append({"width": width, "height": height, "fps": fps_values})
+
+            return {"ok": True, "device": device, "formats": formats}
+        finally:
+            with contextlib.suppress(Exception):
+                cap.release()
+
+    @classmethod
+    def _probe_fps_for_resolution(
+        cls, cap: Any, cv2: Any, width: int, height: int
+    ) -> list[int]:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        reported_max = float(cap.get(cv2.CAP_PROP_FPS))
+
+        matched: list[int] = []
+        for target in _PROBE_FPS:
+            cap.set(cv2.CAP_PROP_FPS, float(target))
+            actual = float(cap.get(cv2.CAP_PROP_FPS))
+            if actual <= 0:
+                continue
+            if abs(actual - target) <= 1.5:
+                matched.append(int(round(actual)))
+
+        if matched:
+            return sorted(set(matched))
+
+        # Many UVC devices do not expose discrete FPS modes; software throttling still works.
+        if reported_max > 1:
+            return sorted({f for f in _SOFTWARE_FPS if f <= int(reported_max + 0.5)})
+        return list(_SOFTWARE_FPS)
 
     def pre_run(self) -> None:
         try:
@@ -62,7 +158,10 @@ class CameraDriver(BaseDriver):
         actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self._cap = cap
-        self.log("info", f"camera open: device={self._device} {actual_w}x{actual_h} target_fps={self._fps_target}")
+        self.log(
+            "info",
+            f"camera open: device={self._device} {actual_w}x{actual_h} target_fps={self._fps_target}",
+        )
         self.emit("frame_size", {"width": actual_w, "height": actual_h})
 
     def loop(self) -> None:
@@ -105,6 +204,12 @@ class CameraDriver(BaseDriver):
             self._last_emit = time.perf_counter()
 
     def execute(self, action: str, data: Any) -> Any:
+        if action == "list_formats":
+            device = self._device
+            if isinstance(data, dict) and "device" in data:
+                device = int(data["device"])
+            return self.probe_formats(device)
+
         try:
             import cv2  # type: ignore[import-not-found]
         except ImportError:

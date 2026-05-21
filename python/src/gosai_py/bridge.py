@@ -170,7 +170,7 @@ class Bridge:
     # Driver lifecycle
     # ------------------------------------------------------------------
 
-    def _start_driver(self, name: str) -> None:
+    def _start_driver(self, name: str, config: JsonDict | None = None) -> None:
         with self._lock:
             if name in self._driver_instances:
                 return
@@ -182,6 +182,8 @@ class Bridge:
                 if dep not in self._driver_instances:
                     self._start_driver(dep)
             instance = cls(_BridgeContext(self, cls.name))
+            if config and hasattr(instance, "apply_config"):
+                instance.apply_config(config)
             self._driver_instances[name] = instance
         self._emit_driver_state(name, "starting")
         try:
@@ -223,6 +225,14 @@ class Bridge:
         return instance.get_event_data(event)
 
     def _execute(self, driver: str, action: str, data: Any) -> Any:
+        if driver == "camera" and action == "list_formats":
+            from gosai_py.drivers.camera import CameraDriver
+
+            device = 0
+            if isinstance(data, dict) and "device" in data:
+                device = int(data["device"])
+            return CameraDriver.probe_formats(device)
+
         instance = self._driver_instances.get(driver)
         if instance is None:
             raise KeyError(f"driver {driver!r} not running")
@@ -291,8 +301,10 @@ class Bridge:
             if not isinstance(driver, str):
                 self._respond(req_id, False, error="driver name missing")
                 return
+            config = request.get("config")
+            driver_config = config if isinstance(config, dict) else None
             try:
-                self._start_driver(driver)
+                self._start_driver(driver, driver_config)
                 self._respond(req_id, True, {"driver": driver, "state": "running"})
             except Exception as exc:
                 self._respond(req_id, False, error=f"{exc!r}")

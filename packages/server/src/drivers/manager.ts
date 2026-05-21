@@ -22,6 +22,8 @@ export interface DriverManagerOptions {
   readonly pythonDir: string;
   readonly logger: Logger;
   readonly bus: EventBus;
+  /** Optional per-driver startup config (e.g. persisted camera settings). */
+  readonly getDriverConfig?: (driver: string) => Record<string, unknown> | undefined;
 }
 
 export class DriverManager {
@@ -122,7 +124,12 @@ export class DriverManager {
     this.drivers.set(name, next);
     this.broadcastList();
     try {
-      await this.bridge.request({ type: 'start-driver', driver: name });
+      const driverConfig = this.options.getDriverConfig?.(name);
+      await this.bridge.request({
+        type: 'start-driver',
+        driver: name,
+        ...(driverConfig ? { config: driverConfig } : {}),
+      });
       const running: DriverInfo = {
         ...next,
         state: 'running',

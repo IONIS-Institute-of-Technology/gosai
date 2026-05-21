@@ -95,10 +95,32 @@ export interface DisplayInfo {
   readonly internal: boolean;
 }
 
+export interface CameraSettings {
+  readonly device: number;
+  readonly width: number;
+  readonly height: number;
+  readonly fps: number;
+}
+
+/** One resolution and the frame rates that work at that size on the current device. */
+export interface CameraFormat {
+  readonly width: number;
+  readonly height: number;
+  readonly fps: readonly number[];
+}
+
+export interface CameraFormatsResult {
+  readonly ok: boolean;
+  readonly device: number;
+  readonly formats?: readonly CameraFormat[];
+  readonly error?: string;
+}
+
 export interface GlobalConfig {
   readonly displayId: number | null;
   readonly serverPort: number;
   readonly autoStartApps: readonly string[];
+  readonly camera: CameraSettings;
 }
 
 export interface PerformanceSample {

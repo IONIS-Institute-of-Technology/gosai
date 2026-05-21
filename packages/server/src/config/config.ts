@@ -5,16 +5,24 @@
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { GlobalConfig } from '@gosai/shared';
+import type { CameraSettings, GlobalConfig } from '@gosai/shared';
 import type { EventBus } from '../ipc/index.js';
 import type { ChildLogger } from '../logger/index.js';
 
 const CONFIG_FILE = 'global.json';
 
+const DEFAULT_CAMERA: CameraSettings = {
+  device: 0,
+  width: 1280,
+  height: 720,
+  fps: 30,
+};
+
 const DEFAULT_CONFIG: GlobalConfig = {
   displayId: null,
   serverPort: 7777,
   autoStartApps: [],
+  camera: DEFAULT_CAMERA,
 };
 
 export class ConfigStore {
@@ -42,6 +50,10 @@ export class ConfigStore {
         patch.autoStartApps !== undefined
           ? [...patch.autoStartApps]
           : this.state.autoStartApps,
+      camera:
+        patch.camera !== undefined
+          ? { ...this.state.camera, ...patch.camera }
+          : this.state.camera,
     };
     this.state = next;
     this.persist();
@@ -61,7 +73,12 @@ export class ConfigStore {
     }
     try {
       const raw = JSON.parse(readFileSync(this.path, 'utf8')) as Partial<GlobalConfig>;
-      return { ...DEFAULT_CONFIG, ...raw };
+      return {
+        ...DEFAULT_CONFIG,
+        ...raw,
+        autoStartApps: raw.autoStartApps ?? DEFAULT_CONFIG.autoStartApps,
+        camera: { ...DEFAULT_CAMERA, ...raw.camera },
+      };
     } catch (err) {
       this.log.warn('config file is corrupt, falling back to defaults', { err: String(err) });
       return DEFAULT_CONFIG;

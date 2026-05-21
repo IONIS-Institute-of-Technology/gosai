@@ -10,6 +10,7 @@ import { Logger } from './logger/index.js';
 import { EventBus, WebSocketGateway, type ClientData } from './ipc/index.js';
 import { ConfigStore } from './config/index.js';
 import { DriverManager } from './drivers/index.js';
+import { applyCameraSettings } from './drivers/camera-config.js';
 import { AppManager } from './apps/index.js';
 import { AppStorage } from './apps/storage.js';
 import { SystemMonitor } from './monitor/index.js';
@@ -49,7 +50,13 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
 
   const pythonDir = resolvePythonDir(options.pythonDir);
 
-  const drivers = new DriverManager({ pythonDir, logger, bus });
+  const drivers = new DriverManager({
+    pythonDir,
+    logger,
+    bus,
+    getDriverConfig: (driver) =>
+      driver === 'camera' ? { ...config.get().camera } : undefined,
+  });
 
   if (options.enablePython !== false && pythonHasBridge(pythonDir)) {
     try {
@@ -336,9 +343,11 @@ function registerHandlers(
 
   gateway.registerHandler('logs:history', () => ({ logs: logger.history() }));
   gateway.registerHandler('config:get', () => config.get());
-  gateway.registerHandler('config:set', (msg: ClientMessage) => {
+  gateway.registerHandler('config:set', async (msg: ClientMessage) => {
     const payload = (msg as { payload: Record<string, unknown> }).payload;
-    return config.update(payload);
+    const next = config.update(payload);
+    await applyCameraSettings(drivers, next.camera, logger.child('camera'));
+    return next;
   });
 
   // App-scoped pub/sub used by multi-window experiences (e.g. calibration

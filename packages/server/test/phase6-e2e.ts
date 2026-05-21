@@ -54,7 +54,7 @@ const EXPECTED: Record<
   },
   camera: {
     events: ['color', 'depth', 'frame_size', 'fps'],
-    actions: ['set_device', 'set_resolution', 'set_fps', 'snapshot'],
+    actions: ['set_device', 'set_resolution', 'set_fps', 'snapshot', 'list_formats'],
     dependencies: [],
   },
   calibration: {
