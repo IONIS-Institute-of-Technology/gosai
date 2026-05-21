@@ -6,10 +6,7 @@
  *   - showing the live camera feed and detection overlay
  *   - collecting the four pool-corner clicks
  *   - calling `calibration.compute` to compute the homography
- *   - calling `calibration.capture_background` (while the dashboard hides
- *     this window so it doesn't pollute the camera image)
- *   - persisting `homography`, `focus_quad`, and `background_jpeg` to app
- *     storage
+ *   - persisting `homography` and `focus_quad` to app storage
  *
  * Keyboard shortcuts:
  *   - Space / Enter : advance to next step
@@ -89,8 +86,7 @@ const STEP_TITLES: Record<WizardStep, string> = {
   markers: 'Step 1 · ArUco Markers',
   'pool-corners': 'Step 2 · Pool Corners',
   compute: 'Step 3 · Compute Homography',
-  background: 'Step 4 · Background Capture',
-  preview: 'Step 5 · Preview',
+  preview: 'Step 4 · Preview',
   done: 'Calibration Complete',
   abort: 'Aborted',
 };
@@ -101,8 +97,6 @@ const STEP_HELP: Record<WizardStep, string> = {
   'pool-corners':
     'Click to place corners (top-left → clockwise). Drag an existing corner to adjust it. Press [r] to reset all, [Space] / Next when 4 corners are placed.',
   compute: 'Computing the camera→display homography. This should only take a moment.',
-  background:
-    'Make sure the pool is clear of objects. The control window will hide briefly so it does not pollute the capture.',
   preview:
     'Check that the calibration looks right. Press [Space] / Done to finish or [Backspace] to go back.',
   done: 'Calibration data saved. Closing windows…',
@@ -113,7 +107,6 @@ const ORDERED_STEPS: WizardStep[] = [
   'markers',
   'pool-corners',
   'compute',
-  'background',
   'preview',
   'done',
 ];
@@ -309,10 +302,6 @@ export async function startControl(
       const data = payload as MarkerTransformEvent;
       state.markerTransform = { ...data.transform };
     }),
-    rt.events.on(WIZARD_EVENTS.BackgroundCaptured, () => {
-      // Defensive: the control window also reacts to this event in case
-      // someone runs `capture_background` from elsewhere.
-    }),
   );
 
   setStep(rt, state, 'markers');
@@ -353,8 +342,7 @@ function setStep(rt: ExperienceRuntimeContext, state: ControlState, step: Wizard
   state.dom.resetBtn.style.display = step === 'pool-corners' ? 'inline-block' : 'none';
   state.dom.nextBtn.disabled = !canAdvance(state);
   state.dom.backBtn.disabled = step === 'markers' || step === 'done' || step === 'compute';
-  state.dom.nextBtn.textContent =
-    step === 'preview' ? 'Done (Space)' : step === 'background' ? 'Continue (Space)' : 'Next (Space)';
+  state.dom.nextBtn.textContent = step === 'preview' ? 'Done (Space)' : 'Next (Space)';
   updateStatus(state);
   drawOverlay(state);
 
@@ -362,8 +350,6 @@ function setStep(rt: ExperienceRuntimeContext, state: ControlState, step: Wizard
 
   if (step === 'compute') {
     void runCompute(rt, state);
-  } else if (step === 'background') {
-    void runBackground(rt, state);
   }
 }
 
@@ -376,8 +362,6 @@ function canAdvance(state: ControlState): boolean {
       return state.corners.length === 4;
     case 'compute':
       return false;
-    case 'background':
-      return !state.busy;
     case 'preview':
       return true;
     default:
@@ -396,9 +380,6 @@ function updateStatus(state: ControlState): void {
       break;
     case 'compute':
       text = 'computing…';
-      break;
-    case 'background':
-      text = state.busy ? 'capturing background…' : 'click Continue to capture';
       break;
     case 'preview':
       text = 'press Done to finish';
@@ -798,46 +779,5 @@ async function runCompute(rt: ExperienceRuntimeContext, state: ControlState): Pr
     return;
   }
   state.busy = false;
-  setStep(rt, state, 'background');
-}
-
-async function runBackground(rt: ExperienceRuntimeContext, state: ControlState): Promise<void> {
-  // The dashboard listens for the step event and will hide this window before
-  // calling `capture_background`. The control window stays responsive though;
-  // we wait for the window to be visually hidden, then ask the driver for the
-  // latest frame and save it. The dashboard will re-show the window once we
-  // emit the next step.
-  state.busy = true;
-  updateStatus(state);
-  await wait(700);
-  try {
-    const result = (await rt.drivers.execute('calibration', 'capture_background', null)) as {
-      ok: boolean;
-      error?: string;
-      jpeg_base64?: string;
-    };
-    if (!result.ok || typeof result.jpeg_base64 !== 'string') {
-      rt.log.error('background capture failed', { err: result.error });
-      state.dom.status.textContent = `background capture failed: ${result.error ?? 'unknown'}`;
-      state.dom.status.style.background = 'rgba(239,68,68,0.85)';
-      state.busy = false;
-      // Allow retry via Back -> Next.
-      return;
-    }
-    await rt.storage.set(STORAGE_KEYS.BackgroundJpeg, result.jpeg_base64);
-    rt.log.info('background captured', { kb: Math.round(result.jpeg_base64.length / 1024) });
-    await rt.events.emit(WIZARD_EVENTS.BackgroundCaptured, { ok: true });
-  } catch (err) {
-    rt.log.error('background capture threw', { err: String(err) });
-    state.dom.status.textContent = `background capture error: ${String(err)}`;
-    state.dom.status.style.background = 'rgba(239,68,68,0.85)';
-    state.busy = false;
-    return;
-  }
-  state.busy = false;
   setStep(rt, state, 'preview');
-}
-
-function wait(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
 }

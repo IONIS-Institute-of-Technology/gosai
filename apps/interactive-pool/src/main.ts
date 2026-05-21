@@ -164,7 +164,6 @@ export default defineExperience<State>({
       rt.log.info('interactive-pool: calibration loaded', {
         hasSurfaceHomography: !!state.calibration.homographySurface,
         hasSurfaceQuadDisplay: !!state.calibration.surfaceQuadDisplay,
-        hasBackground: !!state.calibration.backgroundJpeg,
         frameSize: state.calibration.frameSize,
         surfaceSize: state.calibration.surfaceSize,
       });
@@ -369,39 +368,57 @@ interface CueParsed {
   b: { x: number; y: number };
 }
 
-function parseBalls(data: unknown): { x: number; y: number; r: number }[] | null {
+type ParsedBall = { x: number; y: number; r: number; vx: number; vy: number };
+
+function parseBalls(data: unknown): ParsedBall[] | null {
   if (data === null || data === undefined) return null;
-  // Modern gosai-2 shape: { balls: [{x, y}, ...], count, ts }
+  // Modern gosai-2 shape: { balls: [{x, y, r, vx?, vy?}, ...], count, ts }
   if (typeof data === 'object' && !Array.isArray(data)) {
     const wrapped = data as { balls?: unknown };
     if (Array.isArray(wrapped.balls)) {
       return wrapped.balls
         .map((entry) => coerceBall(entry))
-        .filter((b): b is { x: number; y: number; r: number } => b !== null);
+        .filter((b): b is ParsedBall => b !== null);
     }
   }
   // Legacy shape: [[x, y], [x, y], ...]
   if (Array.isArray(data)) {
     return data
       .map((entry) => coerceBall(entry))
-      .filter((b): b is { x: number; y: number; r: number } => b !== null);
+      .filter((b): b is ParsedBall => b !== null);
   }
   return null;
 }
 
-function coerceBall(entry: unknown): { x: number; y: number; r: number } | null {
+function coerceBall(entry: unknown): ParsedBall | null {
   if (Array.isArray(entry) && entry.length >= 2) {
     const x = Number(entry[0]);
     const y = Number(entry[1]);
-    if (Number.isFinite(x) && Number.isFinite(y)) return { x, y, r: 80 };
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+      return { x, y, r: 80, vx: 0, vy: 0 };
+    }
   }
   if (entry !== null && typeof entry === 'object') {
-    const obj = entry as { x?: unknown; y?: unknown; r?: unknown };
+    const obj = entry as {
+      x?: unknown;
+      y?: unknown;
+      r?: unknown;
+      vx?: unknown;
+      vy?: unknown;
+    };
     const x = Number(obj.x);
     const y = Number(obj.y);
     if (Number.isFinite(x) && Number.isFinite(y)) {
       const r = Number(obj.r);
-      return { x, y, r: Number.isFinite(r) && r > 0 ? r : 80 };
+      const vx = Number(obj.vx);
+      const vy = Number(obj.vy);
+      return {
+        x,
+        y,
+        r: Number.isFinite(r) && r > 0 ? r : 80,
+        vx: Number.isFinite(vx) ? vx : 0,
+        vy: Number.isFinite(vy) ? vy : 0,
+      };
     }
   }
   return null;

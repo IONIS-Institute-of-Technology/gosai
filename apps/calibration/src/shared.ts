@@ -34,8 +34,6 @@
  * - `frame_size`             : { width, height } - the camera frame size that
  *                              was active when the homography was computed.
  *                              Required by drivers to denormalise inputs.
- * - `background_jpeg`        : base64 JPEG of the empty scene captured by the
- *                              background step.
  * - `markers_layout`         : the marker placement used when the homography
  *                              was computed.
  */
@@ -73,7 +71,6 @@ export const STORAGE_KEYS = {
   SurfaceQuadDisplay: 'surface_quad_display',
   SurfaceSize: 'surface_size',
   FrameSize: 'frame_size',
-  BackgroundJpeg: 'background_jpeg',
   MarkersLayout: 'markers_layout',
 } as const;
 
@@ -100,7 +97,6 @@ export type WizardStep =
   | 'markers'
   | 'pool-corners'
   | 'compute'
-  | 'background'
   | 'preview'
   | 'done'
   | 'abort';
@@ -114,8 +110,6 @@ export const WIZARD_EVENTS = {
   Step: 'wizard:step',
   /** Emitted by the control window when corner points change. */
   Corners: 'wizard:corners',
-  /** Emitted by the projector window after capture_background completes. */
-  BackgroundCaptured: 'wizard:background-captured',
   /** Emitted by the control window when the user aborts. */
   Aborted: 'wizard:aborted',
   /** Emitted when the entire flow completes. Dashboard closes windows. */

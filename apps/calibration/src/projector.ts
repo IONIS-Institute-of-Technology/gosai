@@ -433,9 +433,9 @@ function applyStep(state: ProjectorState, step: WizardStep, message?: string): v
   state.markerLayer.style.display = step === 'markers' ? 'block' : 'none';
   state.previewImg.style.display = step === 'preview' ? 'block' : 'none';
   state.blackLayer.style.display = 'block';
-  state.blackLayer.style.background = step === 'background' ? '#000' : 'rgba(0,0,0,0)';
+  state.blackLayer.style.background = 'rgba(0,0,0,0)';
 
-  state.status.style.display = step === 'background' || step === 'preview' ? 'none' : 'block';
+  state.status.style.display = step === 'preview' ? 'none' : 'block';
 
   switch (step) {
     case 'markers':
@@ -446,8 +446,6 @@ function applyStep(state: ProjectorState, step: WizardStep, message?: string): v
       break;
     case 'compute':
       state.status.textContent = message ?? 'computing homography…';
-      break;
-    case 'background':
       break;
     case 'preview':
       break;

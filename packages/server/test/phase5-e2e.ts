@@ -66,8 +66,8 @@ try {
   if (!cal.actions.includes('render_marker')) {
     throw new Error('calibration driver missing render_marker action');
   }
-  if (!cal.actions.includes('capture_background')) {
-    throw new Error('calibration driver missing capture_background action');
+  if (!cal.actions.includes('get_latest_frame')) {
+    throw new Error('calibration driver missing get_latest_frame action');
   }
   if (!cal.dependencies.includes('camera')) {
     throw new Error('calibration driver should depend on camera');

@@ -7,8 +7,11 @@ directly in the 1920x1080 reference coordinate system.
 
 Detection is class-agnostic: all 80 COCO classes fire with a very low
 confidence floor, and candidates are filtered purely by bounding-box
-geometry (small + roughly square = ball).  An EMA tracker smooths
-positions across frames and suppresses single-frame noise.
+geometry (small + roughly square = ball).  Positions are smoothed with
+a One-Euro filter (Casiez et al., CHI 2012) — strong smoothing when a
+ball is stationary (kills jitter), weak smoothing when it moves fast
+(kills lag).  Track association uses velocity prediction so a fast
+ball stays attached to its track instead of spawning a phantom.
 
 On first launch the driver downloads ``yolov8n.onnx`` (~12 MB) into
 ``~/.gosai/models/``.
@@ -22,9 +25,10 @@ Actions:
 - ``set_output_size({width, height})``
 - ``set_confidence(0..1)``
 - ``set_max_ball_px(px)`` / ``set_min_ball_px(px)``
-- ``set_smoothing(0..1)``
+- ``set_min_cutoff(hz)``            — One-Euro min cutoff (lower = smoother static)
+- ``set_beta(value)``               — One-Euro speed coeff (lower = smoother moving)
+- ``set_frame_skip(n)``             — run YOLO every (n+1) frames; 0 = every frame
 - ``set_cuda_device(id)``           — NVIDIA GPU index (default 0)
-- ``set_background(jpeg_base64)``  — no-op, backward compat
 
 Environment (optional):
 - ``GOSAI_ORT_DEVICE`` — ``cuda``, ``cpu``, ``coreml`` (macOS), ``dml`` (Windows)
@@ -298,45 +302,120 @@ def _postprocess(
     return results
 
 
-# ── EMA ball tracker ─────────────────────────────────────────────────────
+# ── One-Euro filter + ball tracker ───────────────────────────────────────
+
+class _OneEuro:
+    """One-Euro filter (Casiez et al., CHI 2012).
+
+    Adaptive low-pass filter.  Cutoff frequency rises with measured
+    speed: heavy smoothing on a stationary signal (low cutoff, kills
+    jitter), light smoothing on a moving signal (high cutoff, kills
+    lag).  Far superior to a fixed-alpha EMA for tracking.
+    """
+
+    __slots__ = ("min_cutoff", "beta", "d_cutoff",
+                 "_x_filt", "_dx_filt", "_t_prev")
+
+    def __init__(self, min_cutoff: float = 1.0, beta: float = 0.05,
+                 d_cutoff: float = 1.0) -> None:
+        self.min_cutoff = min_cutoff
+        self.beta = beta
+        self.d_cutoff = d_cutoff
+        self._x_filt: float | None = None
+        self._dx_filt: float = 0.0
+        self._t_prev: float | None = None
+
+    @staticmethod
+    def _alpha(cutoff: float, dt: float) -> float:
+        tau = 1.0 / (2.0 * math.pi * max(cutoff, 1e-6))
+        return dt / (tau + dt) if (tau + dt) > 0 else 1.0
+
+    def __call__(self, x: float, t: float) -> float:
+        if self._x_filt is None or self._t_prev is None:
+            self._x_filt = x
+            self._t_prev = t
+            return x
+        dt = max(t - self._t_prev, 1e-6)
+        dx_raw = (x - self._x_filt) / dt
+        a_d = self._alpha(self.d_cutoff, dt)
+        self._dx_filt = a_d * dx_raw + (1.0 - a_d) * self._dx_filt
+        cutoff = self.min_cutoff + self.beta * abs(self._dx_filt)
+        a = self._alpha(cutoff, dt)
+        self._x_filt = a * x + (1.0 - a) * self._x_filt
+        self._t_prev = t
+        return self._x_filt
+
+    @property
+    def velocity(self) -> float:
+        return self._dx_filt
+
 
 class _TrackedBall:
-    __slots__ = ("x", "y", "r", "age", "missed")
+    __slots__ = ("fx", "fy", "fr", "x", "y", "r", "age", "missed")
 
-    def __init__(self, x: float, y: float, r: float) -> None:
-        self.x = x
-        self.y = y
-        self.r = r
+    def __init__(self, x: float, y: float, r: float, t: float,
+                 min_cutoff: float, beta: float) -> None:
+        self.fx = _OneEuro(min_cutoff=min_cutoff, beta=beta)
+        self.fy = _OneEuro(min_cutoff=min_cutoff, beta=beta)
+        # Radius changes slowly -- smooth harder.
+        self.fr = _OneEuro(min_cutoff=min_cutoff * 0.5, beta=beta * 0.5)
+        self.x = self.fx(x, t)
+        self.y = self.fy(y, t)
+        self.r = self.fr(r, t)
         self.age = 1
         self.missed = 0
 
-    def update(self, x: float, y: float, r: float, alpha: float) -> None:
-        self.x += alpha * (x - self.x)
-        self.y += alpha * (y - self.y)
-        self.r += alpha * (r - self.r)
+    def update(self, x: float, y: float, r: float, t: float) -> None:
+        self.x = self.fx(x, t)
+        self.y = self.fy(y, t)
+        self.r = self.fr(r, t)
         self.age += 1
         self.missed = 0
 
+    def predict(self, dt: float) -> tuple[float, float]:
+        """Linear extrapolation using smoothed velocity."""
+        return self.x + self.fx.velocity * dt, self.y + self.fy.velocity * dt
+
 
 class _BallTracker:
-    """Nearest-neighbour tracker with EMA smoothing."""
+    """Velocity-aware tracker with One-Euro smoothing.
 
-    def __init__(self, alpha: float = 0.3, max_miss: int = 4,
-                 match_radius: float = 80.0, min_age: int = 2) -> None:
-        self.alpha = alpha
+    Tracks are matched against detections using the **predicted** next
+    position (current filtered position + smoothed velocity * dt), so a
+    fast-moving ball stays attached to its existing track instead of
+    spawning a phantom duplicate.
+
+    Stale tracks are kept alive for ``max_miss`` frames so a single
+    YOLO miss doesn't kill the smoothing state, but they are **not
+    rendered** during those frames -- this is what eliminates the
+    visible trail of phantom outlines.
+    """
+
+    def __init__(self, min_cutoff: float = 1.0, beta: float = 0.05,
+                 max_miss: int = 1, match_radius: float = 140.0,
+                 min_age: int = 1) -> None:
+        self.min_cutoff = min_cutoff
+        self.beta = beta
         self.max_miss = max_miss
         self.match_radius = match_radius
         self.min_age = min_age
         self.tracks: list[_TrackedBall] = []
+        self._t_prev: float | None = None
 
-    def update(self, detections: list[tuple[float, float, float]]) -> list[_TrackedBall]:
+    def update(self, detections: list[tuple[float, float, float]],
+               t: float) -> list[_TrackedBall]:
+        dt = (t - self._t_prev) if self._t_prev is not None else 0.0
+        self._t_prev = t
+
         used_det: set[int] = set()
         used_trk: set[int] = set()
 
+        # Velocity-aware matching: compare detections to predicted positions.
         pairs: list[tuple[float, int, int]] = []
         for ti, trk in enumerate(self.tracks):
+            px, py = trk.predict(dt) if dt > 0 else (trk.x, trk.y)
             for di, (dx, dy, _dr) in enumerate(detections):
-                dist = math.hypot(dx - trk.x, dy - trk.y)
+                dist = math.hypot(dx - px, dy - py)
                 if dist < self.match_radius:
                     pairs.append((dist, ti, di))
         pairs.sort()
@@ -344,24 +423,32 @@ class _BallTracker:
             if ti in used_trk or di in used_det:
                 continue
             dx, dy, dr = detections[di]
-            self.tracks[ti].update(dx, dy, dr, self.alpha)
+            self.tracks[ti].update(dx, dy, dr, t)
             used_trk.add(ti)
             used_det.add(di)
 
         for di, (dx, dy, dr) in enumerate(detections):
             if di not in used_det:
-                self.tracks.append(_TrackedBall(dx, dy, dr))
+                self.tracks.append(
+                    _TrackedBall(dx, dy, dr, t, self.min_cutoff, self.beta),
+                )
 
         for ti, trk in enumerate(self.tracks):
             if ti not in used_trk:
                 trk.missed += 1
         self.tracks = [t for t in self.tracks if t.missed <= self.max_miss]
 
-        return [t for t in self.tracks if t.age >= self.min_age]
+        return self._renderable()
 
     def current(self) -> list[_TrackedBall]:
-        """Return the last known stable positions (for skip frames)."""
-        return [t for t in self.tracks if t.age >= self.min_age]
+        return self._renderable()
+
+    def _renderable(self) -> list[_TrackedBall]:
+        # Only emit tracks updated this frame: no phantom outlines.
+        return [
+            t for t in self.tracks
+            if t.age >= self.min_age and t.missed == 0
+        ]
 
 
 # ── Driver ───────────────────────────────────────────────────────────────
@@ -371,13 +458,14 @@ class BallDriver(BaseProcessor):
     description: ClassVar[str] = "YOLO-based ball detector (ONNX Runtime)."
     events: ClassVar[tuple[str, ...]] = ("balls", "fps")
     actions: ClassVar[tuple[str, ...]] = (
-        "set_background",
         "set_homography",
         "set_output_size",
         "set_confidence",
         "set_max_ball_px",
         "set_min_ball_px",
-        "set_smoothing",
+        "set_min_cutoff",
+        "set_beta",
+        "set_frame_skip",
         "set_cuda_device",
     )
     dependencies: ClassVar[tuple[str, ...]] = ("camera",)
@@ -399,9 +487,11 @@ class BallDriver(BaseProcessor):
         self._max_ball_px = 100.0
         self._max_aspect = 1.8
         self._frame_times: deque[float] = deque(maxlen=50)
-        self._tracker = _BallTracker(alpha=0.3, max_miss=4, min_age=2)
+        self._tracker = _BallTracker(min_cutoff=1.0, beta=0.05,
+                                     max_miss=1, min_age=1,
+                                     match_radius=140.0)
         self._frame_idx = 0
-        self._skip = 1  # process every 2nd frame
+        self._skip = 0  # 0 = process every frame; raise on slow hardware
         self._cuda_device_id = _cuda_device_id()
         self._onnx_path: Path | None = None
 
@@ -439,8 +529,6 @@ class BallDriver(BaseProcessor):
             self._session = None
 
     def execute(self, action: str, data: Any) -> Any:
-        if action == "set_background":
-            return {"ok": True, "note": "background not used by YOLO detector"}
         if action == "set_homography":
             return self._set_homography(data)
         if action == "set_output_size":
@@ -454,19 +542,20 @@ class BallDriver(BaseProcessor):
         if action == "set_min_ball_px":
             self._min_ball_px = float(data)
             return {"min_ball_px": self._min_ball_px}
-        if action == "set_smoothing":
-            self._tracker.alpha = max(0.0, min(1.0, float(data)))
-            return {"smoothing": self._tracker.alpha}
+        if action == "set_min_cutoff":
+            self._tracker.min_cutoff = max(0.01, float(data))
+            return {"min_cutoff": self._tracker.min_cutoff}
+        if action == "set_beta":
+            self._tracker.beta = max(0.0, float(data))
+            return {"beta": self._tracker.beta}
+        if action == "set_frame_skip":
+            self._skip = max(0, int(data))
+            return {"frame_skip": self._skip}
         if action == "set_cuda_device":
             self._cuda_device_id = max(0, int(data))
             self._session = None
             self._load_session()
             return {"cuda_device_id": self._cuda_device_id}
-        # Legacy actions.
-        if action in ("set_min_area", "set_threshold", "set_max_area",
-                       "set_min_circularity", "set_hand_landmarks",
-                       "set_hand_radius", "set_persistence", "set_classes"):
-            return {"ok": True, "note": f"{action} not used by YOLO detector"}
         return super().execute(action, data)
 
     # ------------------------------------------------------------------
@@ -482,15 +571,12 @@ class BallDriver(BaseProcessor):
 
         start = time.perf_counter()
 
-        # Frame skipping: only run YOLO every (skip+1) frames.
+        # Optional frame skipping (default 0 = every frame).  On skipped
+        # frames we don't re-emit anything: the renderer keeps the last
+        # outline visible until the next detection refreshes it, which
+        # avoids ghost outlines and reduces apparent jitter.
         self._frame_idx += 1
-        if self._frame_idx % (self._skip + 1) != 0:
-            stable = self._tracker.current()
-            balls = [
-                {"x": int(t.x), "y": int(t.y), "r": round(t.r * 2, 1)}
-                for t in stable
-            ]
-            self.emit("balls", {"balls": balls, "count": len(balls), "ts": time.time()})
+        if self._skip > 0 and self._frame_idx % (self._skip + 1) != 0:
             return
 
         try:
@@ -520,13 +606,23 @@ class BallDriver(BaseProcessor):
             self._min_ball_px, self._max_ball_px, self._max_aspect,
         )
 
-        stable = self._tracker.update(detections)
+        now = time.perf_counter()
+        stable = self._tracker.update(detections, now)
+        # Emit per-ball velocity (px/s) alongside position so the renderer
+        # can extrapolate between detections.  Critical for low-FPS cameras:
+        # without it, a 15 Hz camera produces visible stepping on a 60 Hz
+        # display because each detection is drawn for ~4 display frames.
         balls: list[dict[str, Any]] = [
-            {"x": int(t.x), "y": int(t.y), "r": round(t.r * 2, 1)}
+            {
+                "x": int(t.x),
+                "y": int(t.y),
+                "r": round(t.r * 2, 1),
+                "vx": round(t.fx.velocity, 1),
+                "vy": round(t.fy.velocity, 1),
+            }
             for t in stable
         ]
 
-        now = time.perf_counter()
         self._frame_times.append(now)
         if len(self._frame_times) >= 2:
             span = self._frame_times[-1] - self._frame_times[0]

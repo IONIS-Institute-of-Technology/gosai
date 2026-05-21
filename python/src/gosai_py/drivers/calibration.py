@@ -34,7 +34,7 @@ Actions:
 - `clear`: reset accumulated detections.
 - `render_marker`: { id, size } -> { ok, png_base64 } -- generate an ArUco
   marker PNG for the projector to display.
-- `capture_background` / `get_latest_frame`: return the latest cached frame.
+- `get_latest_frame`: return the latest cached frame.
 - `reproject_point`: { x, y, space?: 'display'|'surface' } -> warped point.
 - `reproject_points`: { points: [{x,y}], space?: 'display'|'surface' }.
 """
@@ -60,7 +60,6 @@ class CalibrationDriver(BaseDriver):
         "compute",
         "clear",
         "render_marker",
-        "capture_background",
         "get_latest_frame",
         "reproject_point",
         "reproject_points",
@@ -116,7 +115,7 @@ class CalibrationDriver(BaseDriver):
         encoded = data.get("jpeg_base64")
         if not isinstance(encoded, str):
             return
-        # Cache the latest frame so `capture_background` / `get_latest_frame`
+        # Cache the latest frame so `get_latest_frame`
         # can return it without re-asking the camera driver synchronously.
         self._latest_frame_b64 = encoded
         self._latest_frame_meta = {
@@ -213,9 +212,6 @@ class CalibrationDriver(BaseDriver):
             size = int(data.get("size", 200)) if isinstance(data, dict) else 200
             return self._render_marker(marker_id, size)
 
-        if action == "capture_background":
-            return self._capture_background()
-
         if action == "get_latest_frame":
             return self._get_latest_frame()
 
@@ -227,7 +223,7 @@ class CalibrationDriver(BaseDriver):
 
         return super().execute(action, data)
 
-    def _capture_background(self) -> dict[str, Any]:
+    def _get_latest_frame(self) -> dict[str, Any]:
         if self._latest_frame_b64 is None:
             return {"ok": False, "error": "no camera frame received yet"}
         payload: dict[str, Any] = {
@@ -237,9 +233,6 @@ class CalibrationDriver(BaseDriver):
         if self._latest_frame_meta is not None:
             payload.update({k: v for k, v in self._latest_frame_meta.items() if v is not None})
         return payload
-
-    def _get_latest_frame(self) -> dict[str, Any]:
-        return self._capture_background()
 
     def _validate_marker(self, m: dict[str, Any]) -> dict[str, float]:
         for key in ("id", "x", "y"):

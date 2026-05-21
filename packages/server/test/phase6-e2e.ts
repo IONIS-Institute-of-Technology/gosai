@@ -100,11 +100,15 @@ const EXPECTED: Record<
   ball: {
     events: ['balls', 'fps'],
     actions: [
-      'set_background',
       'set_homography',
       'set_output_size',
-      'set_min_area',
-      'set_threshold',
+      'set_confidence',
+      'set_max_ball_px',
+      'set_min_ball_px',
+      'set_min_cutoff',
+      'set_beta',
+      'set_frame_skip',
+      'set_cuda_device',
     ],
     dependencies: ['camera'],
   },

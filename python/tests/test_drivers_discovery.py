@@ -48,13 +48,11 @@ def test_each_driver_has_unique_metadata() -> None:
             assert dep in bridge._driver_classes, f"{name} depends on missing {dep}"
 
 
-def test_calibration_driver_exposes_capture_background_action() -> None:
-    """The wizard relies on this action to persist the background frame
-    while the control window is hidden."""
+def test_calibration_driver_exposes_core_actions() -> None:
     bridge = Bridge()
     bridge.discover_builtin()
     cls = bridge._driver_classes["calibration"]
-    assert "capture_background" in cls.actions
+    assert "get_latest_frame" in cls.actions
     assert "render_marker" in cls.actions
     assert "compute" in cls.actions
 

@@ -16,6 +16,9 @@ export interface Ball {
   x: number;
   y: number;
   r: number;
+  /** Smoothed velocity in px/s (reference space). 0 when unknown. */
+  vx: number;
+  vy: number;
 }
 
 /** Cue stick endpoints when detected. */

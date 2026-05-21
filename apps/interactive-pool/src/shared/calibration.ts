@@ -1,12 +1,12 @@
 /**
  * Calibration data loader + driver configuration helpers.
  *
- * Reads the homography + focus quad + background image persisted by the
- * `calibration` app and pushes the relevant pieces into the tracking drivers
- * (`ball`, `hand_pose`) so their emitted coordinates already live in the
- * apps' 1920x1080 reference space. Also exposes the focus quad in projector
- * (display) coordinates so the compositor can warp the canvas to land on the
- * physical surface exactly.
+ * Reads the homography + focus quad persisted by the `calibration` app and
+ * pushes the relevant pieces into the tracking drivers (`ball`, `hand_pose`)
+ * so their emitted coordinates already live in the apps' 1920x1080 reference
+ * space. Also exposes the focus quad in projector (display) coordinates so
+ * the compositor can warp the canvas to land on the physical surface
+ * exactly.
  *
  * Cross-app storage access works the same way `SystemHeader.tsx` does it:
  * a direct HTTP GET to the local server's REST endpoint. Returning `null` (or
@@ -39,9 +39,6 @@ export interface CalibrationData {
   readonly surfaceSize: SizeXY | null;
   /** Camera resolution that was active when the homography was computed. */
   readonly frameSize: SizeXY | null;
-  /** Base64 JPEG of the empty surface used by the ball driver for background
-   * subtraction. */
-  readonly backgroundJpeg: string | null;
 }
 
 /** Fetch a single calibration storage value, returning `null` on 404. */
@@ -73,14 +70,12 @@ export async function loadCalibration(
     surfaceQuadRaw,
     surfaceSize,
     frameSize,
-    backgroundJpeg,
   ] = await Promise.all([
     safe<number[]>('homography'),
     safe<number[]>('homography_surface'),
     safe<{ points: Point2D[] }>('surface_quad_display'),
     safe<SizeXY>('surface_size'),
     safe<SizeXY>('frame_size'),
-    safe<string>('background_jpeg'),
   ]);
 
   const surfaceQuadDisplay =
@@ -94,7 +89,6 @@ export async function loadCalibration(
     surfaceQuadDisplay,
     surfaceSize,
     frameSize,
-    backgroundJpeg,
   };
 }
 
@@ -106,9 +100,6 @@ export async function loadCalibration(
  *     camera -> display matrix when surface is unavailable)
  *   - `set_output_size`: target reference resolution so the warped coordinates
  *     and radius scaling match our render space
- *
- * The YOLO-based ball driver does not require a background image; the
- * `set_background` call is kept for backward compatibility but is a no-op.
  */
 export async function configureBallDriver(
   rt: ExperienceRuntimeContext,
