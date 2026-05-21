@@ -80,6 +80,7 @@ bun run python:sync -- --extra cv     # for camera/pose/hand_pose drivers
 bun run python:sync -- --extra audio  # for microphone/speaker drivers
 bun run python:sync -- --extra speech # for STT/VAD drivers
 bun run build:sdk           # builds /sdk-runtime.js for app-host windows
+bun run build:apps          # builds built-in app entry bundles
 bun run dev
 ```
 

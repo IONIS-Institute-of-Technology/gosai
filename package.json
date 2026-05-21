@@ -19,7 +19,7 @@
     "build:server": "bun run --filter @gosai/server build",
     "build:sdk": "bun run --filter @gosai/sdk build",
     "build:desktop": "bun run --filter @gosai/desktop build",
-    "build:apps": "bun run --filter 'apps/*' build && bun run --filter 'templates/*' build",
+    "build:apps": "bun run --filter calibration build && bun run --filter interactive-pool build && bun run --filter hello-gosai build",
     "build:server-bin": "mkdir -p packages/desktop/release/server && bun build packages/server/src/index.ts --compile --outfile packages/desktop/release/server/gosai-server",
     "package:mac": "bun run build && bun run build:apps && bun run build:server-bin && bun --filter @gosai/desktop run dist:mac",
     "package:linux": "bun run build && bun run build:apps && bun run build:server-bin && bun --filter @gosai/desktop run dist:linux",

@@ -11,6 +11,7 @@ cd ~/Repos/gosai-2
 bun install
 bun run python:sync                # builds python/.venv with uv
 bun run build:sdk                  # builds /sdk-runtime.js for app-host windows
+bun run build:apps                 # builds built-in app entry bundles
 ```
 
 For drivers that need OpenCV/MediaPipe (camera, calibration, hand_pose,
