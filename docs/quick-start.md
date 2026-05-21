@@ -10,6 +10,7 @@ git clone https://github.com/gosai/gosai-2 ~/Repos/gosai-2
 cd ~/Repos/gosai-2
 bun install
 bun run python:sync                # builds python/.venv with uv
+bun run build:sdk                  # builds /sdk-runtime.js for app-host windows
 ```
 
 For drivers that need OpenCV/MediaPipe (camera, calibration, hand_pose,

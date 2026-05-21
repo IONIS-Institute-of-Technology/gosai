@@ -79,6 +79,7 @@ bun run python:sync          # creates python/.venv with uv
 bun run python:sync -- --extra cv     # for camera/pose/hand_pose drivers
 bun run python:sync -- --extra audio  # for microphone/speaker drivers
 bun run python:sync -- --extra speech # for STT/VAD drivers
+bun run build:sdk           # builds /sdk-runtime.js for app-host windows
 bun run dev
 ```
 
@@ -96,6 +97,7 @@ To install a new app paste its git URL into the Apps tab of the dashboard.
 | `bun run dev`             | Server + desktop with hot reload            |
 | `bun run dev:server`      | Only the server                             |
 | `bun run dev:desktop`     | Only the Electron app                       |
+| `bun run build:sdk`       | Build the SDK runtime served at `/sdk-runtime.js` |
 | `bun run build`           | Build every package                         |
 | `bun run build:apps`      | Build the built-in apps + template          |
 | `bun run build:server-bin`| Compile the server to a single executable   |
