@@ -8,6 +8,19 @@ import { ServerRunner } from './server-runner.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+function configureLinuxWindowingBackend(): void {
+  if (process.platform !== 'linux') return;
+  if (process.env.XDG_SESSION_TYPE !== 'wayland') return;
+  if (app.commandLine.hasSwitch('ozone-platform')) return;
+
+  const platform = process.env.GOSAI_OZONE_PLATFORM ?? 'x11';
+  if (platform !== 'x11' && platform !== 'wayland' && platform !== 'auto') return;
+
+  app.commandLine.appendSwitch('ozone-platform', platform);
+}
+
+configureLinuxWindowingBackend();
+
 const windows = new WindowRegistry({ rootDir: __dirname });
 const serverRunner = new ServerRunner();
 

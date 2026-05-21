@@ -405,6 +405,12 @@ export class WindowRegistry {
 
       if (!isLinux) {
         win.setKiosk(true);
+      } else {
+        setTimeout(() => {
+          if (win.isDestroyed() || win.isFullScreen()) return;
+          win.maximize();
+          win.focus();
+        }, 1000);
       }
 
       win.focus();
