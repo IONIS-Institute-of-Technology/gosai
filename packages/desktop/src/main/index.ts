@@ -10,13 +10,16 @@ const __dirname = dirname(__filename);
 
 function configureLinuxWindowingBackend(): void {
   if (process.platform !== 'linux') return;
-  if (process.env.XDG_SESSION_TYPE !== 'wayland') return;
-  if (app.commandLine.hasSwitch('ozone-platform')) return;
 
-  const platform = process.env.GOSAI_OZONE_PLATFORM ?? 'x11';
-  if (platform !== 'x11' && platform !== 'wayland' && platform !== 'auto') return;
+  // Allow explicit opt-in to native Wayland or auto-detection.
+  const override = process.env.GOSAI_OZONE_PLATFORM;
+  if (override === 'wayland' || override === 'auto') return;
 
-  app.commandLine.appendSwitch('ozone-platform', platform);
+  // Force XWayland for reliable window positioning and fullscreen display
+  // targeting on multi-monitor setups. Appended unconditionally because
+  // Electron may have already resolved ozone-platform-hint=auto to
+  // ozone-platform=wayland before JS runs; Chromium uses the last value.
+  app.commandLine.appendSwitch('ozone-platform', 'x11');
 }
 
 configureLinuxWindowingBackend();

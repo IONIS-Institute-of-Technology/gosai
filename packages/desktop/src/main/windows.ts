@@ -153,17 +153,22 @@ export class WindowRegistry {
       if (fallbackTimer) clearTimeout(fallbackTimer);
 
       win.show();
-      win.focus();
 
-      if (!wantsFullscreen) return;
+      if (!wantsFullscreen) {
+        win.focus();
+        return;
+      }
 
       if (!isLinux) {
+        win.focus();
         win.setKiosk(true);
         return;
       }
 
-      // Linux: give the compositor time to map the window at the requested
-      // coordinates, then enter fullscreen on that display.
+      // Linux / XWayland: reapply bounds on the now-mapped window so the X
+      // server moves it to the target display, then enter fullscreen there.
+      win.setBounds(bounds);
+      win.focus();
       setTimeout(() => {
         if (win.isDestroyed()) return;
         win.setFullScreen(true);
@@ -172,7 +177,7 @@ export class WindowRegistry {
           win.maximize();
           win.focus();
         }, 500);
-      }, 100);
+      }, 200);
     };
 
     win.once('ready-to-show', showWindow);
