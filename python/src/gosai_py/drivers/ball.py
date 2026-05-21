@@ -1,9 +1,15 @@
 """Ball detector using YOLOv8 object detection.
 
-Uses a lightweight YOLOv8n model pre-trained on COCO to detect balls in the
-camera feed.  Unlike background subtraction, an ML detector inherently
-distinguishes balls from hands, reflections, and other artifacts -- it only
-fires on objects that actually *look* like balls.
+Uses a lightweight YOLOv8n model pre-trained on COCO to detect pool balls.
+The camera frame is warped into display space (via the calibration homography)
+*before* YOLO inference, so detections are directly in the 1920x1080
+reference coordinate system with no further mapping needed.
+
+Rather than relying on COCO's "sports ball" class, detection runs across all
+classes and filters by bounding-box geometry: only small, roughly-square
+detections pass (pool balls are the only small round objects on a felt
+surface).  An exponential moving average (EMA) tracker smooths positions
+across frames and suppresses single-frame noise.
 
 The model auto-downloads on first use (~6 MB) into ``~/.gosai/models/``.
 
@@ -12,9 +18,12 @@ Events:
 - ``fps``: rolling FPS estimate over the most recent 50 frames.
 
 Actions:
-- ``set_homography(matrix9)``       — row-major 3×3 flattened
+- ``set_homography(matrix9)``       — row-major 3x3 flattened
 - ``set_output_size({width, height})``
-- ``set_confidence(0..1)``          — minimum detection confidence
+- ``set_confidence(0..1)``          — minimum YOLO confidence
+- ``set_max_ball_px(px)``           — max bounding-box side in display pixels
+- ``set_min_ball_px(px)``           — min bounding-box side in display pixels
+- ``set_smoothing(0..1)``           — EMA alpha (0 = no smoothing, 1 = full)
 - ``set_background(jpeg_base64)``   — accepted but unused (backward compat)
 """
 
@@ -22,6 +31,7 @@ from __future__ import annotations
 
 import io
 import logging
+import math
 import os
 import sys
 import time
@@ -38,7 +48,6 @@ YOLO_MODEL_FILENAME = "yolov8n.pt"
 YOLO_MODEL_URL = (
     "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n.pt"
 )
-SPORTS_BALL_CLASS = 32
 
 
 def _gosai_home() -> Path:
@@ -72,12 +81,7 @@ def _ensure_model(log_fn: Any) -> Path | None:
 
 @contextmanager
 def _suppress_stdout() -> Generator[None, None, None]:
-    """Temporarily redirect stdout/stderr to devnull.
-
-    Ultralytics prints progress bars, settings banners, and version info
-    directly to stdout.  The bridge process uses stdout as its JSON-RPC
-    channel, so any stray print corrupts the protocol.
-    """
+    """Redirect stdout/stderr so ultralytics can't corrupt the bridge protocol."""
     real_stdout = sys.stdout
     real_stderr = sys.stderr
     try:
@@ -96,6 +100,73 @@ def _silence_ultralytics_logging() -> None:
         logging.getLogger(name).setLevel(logging.CRITICAL)
 
 
+# ── EMA ball tracker ─────────────────────────────────────────────────────
+
+class _TrackedBall:
+    __slots__ = ("x", "y", "r", "age", "missed")
+
+    def __init__(self, x: float, y: float, r: float) -> None:
+        self.x = x
+        self.y = y
+        self.r = r
+        self.age = 1
+        self.missed = 0
+
+    def update(self, x: float, y: float, r: float, alpha: float) -> None:
+        self.x += alpha * (x - self.x)
+        self.y += alpha * (y - self.y)
+        self.r += alpha * (r - self.r)
+        self.age += 1
+        self.missed = 0
+
+
+class _BallTracker:
+    """Nearest-neighbour tracker with EMA smoothing."""
+
+    def __init__(self, alpha: float = 0.45, max_miss: int = 3,
+                 match_radius: float = 80.0, min_age: int = 2) -> None:
+        self.alpha = alpha
+        self.max_miss = max_miss
+        self.match_radius = match_radius
+        self.min_age = min_age
+        self.tracks: list[_TrackedBall] = []
+
+    def update(self, detections: list[tuple[float, float, float]]) -> list[_TrackedBall]:
+        used_det: set[int] = set()
+        used_trk: set[int] = set()
+
+        # Greedy nearest-neighbour matching.
+        pairs: list[tuple[float, int, int]] = []
+        for ti, trk in enumerate(self.tracks):
+            for di, (dx, dy, _dr) in enumerate(detections):
+                dist = math.hypot(dx - trk.x, dy - trk.y)
+                if dist < self.match_radius:
+                    pairs.append((dist, ti, di))
+        pairs.sort()
+        for dist, ti, di in pairs:
+            if ti in used_trk or di in used_det:
+                continue
+            dx, dy, dr = detections[di]
+            self.tracks[ti].update(dx, dy, dr, self.alpha)
+            used_trk.add(ti)
+            used_det.add(di)
+
+        # Spawn new tracks for unmatched detections.
+        for di, (dx, dy, dr) in enumerate(detections):
+            if di not in used_det:
+                self.tracks.append(_TrackedBall(dx, dy, dr))
+
+        # Age unmatched tracks and cull stale ones.
+        for ti, trk in enumerate(self.tracks):
+            if ti not in used_trk:
+                trk.missed += 1
+        self.tracks = [t for t in self.tracks if t.missed <= self.max_miss]
+
+        return [t for t in self.tracks if t.age >= self.min_age]
+
+
+# ── Driver ───────────────────────────────────────────────────────────────
+
 class BallDriver(BaseProcessor):
     name: ClassVar[str] = "ball"
     description: ClassVar[str] = "YOLO-based ball detector."
@@ -105,7 +176,9 @@ class BallDriver(BaseProcessor):
         "set_homography",
         "set_output_size",
         "set_confidence",
-        "set_classes",
+        "set_max_ball_px",
+        "set_min_ball_px",
+        "set_smoothing",
     )
     dependencies: ClassVar[tuple[str, ...]] = ("camera",)
     subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("camera", "color"),)
@@ -118,9 +191,12 @@ class BallDriver(BaseProcessor):
         self._model: Any = None
         self._homography: Any = None
         self._output_size = self.DEFAULT_OUTPUT_SIZE
-        self._confidence = 0.25
-        self._classes: list[int] = [SPORTS_BALL_CLASS]
+        self._confidence = 0.15
+        self._min_ball_px = 10.0
+        self._max_ball_px = 80.0
+        self._max_aspect = 1.8
         self._frame_times: deque[float] = deque(maxlen=50)
+        self._tracker = _BallTracker(alpha=0.45, max_miss=3, min_age=2)
 
     def pre_run(self) -> None:
         super().pre_run()
@@ -152,14 +228,19 @@ class BallDriver(BaseProcessor):
         if action == "set_confidence":
             self._confidence = max(0.01, min(1.0, float(data)))
             return {"confidence": self._confidence}
-        if action == "set_classes":
-            if isinstance(data, list):
-                self._classes = [int(c) for c in data]
-            return {"classes": self._classes}
-        # Legacy actions that no longer apply -- accept silently.
+        if action == "set_max_ball_px":
+            self._max_ball_px = float(data)
+            return {"max_ball_px": self._max_ball_px}
+        if action == "set_min_ball_px":
+            self._min_ball_px = float(data)
+            return {"min_ball_px": self._min_ball_px}
+        if action == "set_smoothing":
+            self._tracker.alpha = max(0.0, min(1.0, float(data)))
+            return {"smoothing": self._tracker.alpha}
+        # Legacy actions -- accept silently.
         if action in ("set_min_area", "set_threshold", "set_max_area",
                        "set_min_circularity", "set_hand_landmarks",
-                       "set_hand_radius", "set_persistence"):
+                       "set_hand_radius", "set_persistence", "set_classes"):
             return {"ok": True, "note": f"{action} not used by YOLO detector"}
         return super().execute(action, data)
 
@@ -176,9 +257,8 @@ class BallDriver(BaseProcessor):
 
         try:
             import cv2  # type: ignore[import-not-found]
-            import numpy as np  # type: ignore[import-not-found]
         except ImportError as exc:
-            self.log("error", f"opencv/numpy required: {exc}")
+            self.log("error", f"opencv required: {exc}")
             return
 
         from gosai_py.serialization import jpeg_base64_to_frame
@@ -189,47 +269,40 @@ class BallDriver(BaseProcessor):
 
         start = time.perf_counter()
 
+        # Warp the camera frame into display space BEFORE detection so that
+        # YOLO coordinates are directly in the 1920x1080 reference system.
+        if self._homography is not None:
+            frame = cv2.warpPerspective(
+                frame, self._homography, self._output_size, flags=cv2.INTER_LINEAR,
+            )
+
         with _suppress_stdout():
             results = self._model(
                 frame,
-                classes=self._classes,
                 conf=self._confidence,
                 verbose=False,
             )
 
-        detections = results[0].boxes
-        raw_balls: list[dict[str, float]] = []
-        for box in detections:
+        # Filter detections by bounding-box geometry: only small, roughly
+        # square boxes qualify as pool balls.
+        detections: list[tuple[float, float, float]] = []
+        for box in results[0].boxes:
             cx, cy, w, h = box.xywh[0].tolist()
-            conf = float(box.conf[0])
+            side = max(w, h)
+            if side < self._min_ball_px or side > self._max_ball_px:
+                continue
+            aspect = max(w, h) / max(min(w, h), 1.0)
+            if aspect > self._max_aspect:
+                continue
             r = (w + h) / 4.0
-            raw_balls.append({"x": cx, "y": cy, "r": r, "conf": conf})
+            detections.append((cx, cy, r))
 
-        # Warp centroids through the homography into display coordinates.
-        if self._homography is not None and raw_balls:
-            pts = np.array(
-                [[[b["x"], b["y"]] for b in raw_balls]], dtype=np.float32
-            )
-            warped = cv2.perspectiveTransform(pts, self._homography)[0]
-
-            sx = self._output_size[0] / max(frame.shape[1], 1)
-            sy = self._output_size[1] / max(frame.shape[0], 1)
-            scale = (sx + sy) / 2.0
-
-            balls: list[dict[str, Any]] = []
-            for i, b in enumerate(raw_balls):
-                balls.append({
-                    "x": int(warped[i][0]),
-                    "y": int(warped[i][1]),
-                    "r": round(b["r"] * scale * 2, 1),
-                })
-        elif raw_balls:
-            balls = [
-                {"x": int(b["x"]), "y": int(b["y"]), "r": round(b["r"] * 2, 1)}
-                for b in raw_balls
-            ]
-        else:
-            balls = []
+        # Smooth with the EMA tracker.
+        stable = self._tracker.update(detections)
+        balls: list[dict[str, Any]] = [
+            {"x": int(t.x), "y": int(t.y), "r": round(t.r * 2, 1)}
+            for t in stable
+        ]
 
         now = time.perf_counter()
         self._frame_times.append(now)
