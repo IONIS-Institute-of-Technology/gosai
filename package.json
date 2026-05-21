@@ -11,9 +11,9 @@
     "templates/*"
   ],
   "scripts": {
-    "dev": "concurrently --kill-others --stream --elide-lines=0 --names server,desktop --prefix-colors cyan,magenta 'bun run dev:server' 'bun run dev:desktop'",
-    "dev:server": "bun run --filter @gosai/server dev",
-    "dev:desktop": "bun run --filter @gosai/desktop dev",
+    "dev": "concurrently --kill-others --names server,desktop --prefix-colors cyan,magenta 'bun run dev:server' 'bun run dev:desktop'",
+    "dev:server": "bun run --elide-lines=0 --filter @gosai/server dev",
+    "dev:desktop": "bun run --elide-lines=0 --filter @gosai/desktop dev",
     "build": "bun run --filter '@gosai/*' build",
     "build:shared": "bun run --filter @gosai/shared build",
     "build:server": "bun run --filter @gosai/server build",
