@@ -49,6 +49,8 @@ export interface OpenControlWindowOptions {
 }
 
 const isDev = !app.isPackaged;
+const isMac = process.platform === 'darwin';
+const isLinux = process.platform === 'linux';
 
 export class WindowRegistry {
   private dashboard: BrowserWindow | null = null;
@@ -125,9 +127,9 @@ export class WindowRegistry {
       width: bounds.width,
       height: bounds.height,
       frame: false,
-      fullscreen: wantsFullscreen,
-      simpleFullscreen: wantsFullscreen,
-      kiosk: wantsFullscreen,
+      fullscreen: false,
+      ...(isMac ? { simpleFullscreen: false } : {}),
+      kiosk: false,
       backgroundColor: '#000000',
       autoHideMenuBar: true,
       show: false,
@@ -140,7 +142,18 @@ export class WindowRegistry {
       },
     });
 
-    win.once('ready-to-show', () => win.show());
+    let shown = false;
+    let fallbackTimer: NodeJS.Timeout | undefined;
+    const showWindow = (): void => {
+      if (shown || win.isDestroyed()) return;
+      shown = true;
+      if (fallbackTimer) clearTimeout(fallbackTimer);
+      this.showAppHostWindow(win, display, wantsFullscreen);
+    };
+
+    win.once('ready-to-show', showWindow);
+    win.webContents.once('did-finish-load', showWindow);
+    fallbackTimer = setTimeout(showWindow, 3000);
 
     const query = new URLSearchParams({
       app: opts.appSlug,
@@ -370,6 +383,32 @@ export class WindowRegistry {
       if (found) return found;
     }
     return screen.getPrimaryDisplay();
+  }
+
+  private showAppHostWindow(
+    win: BrowserWindow,
+    display: Display,
+    wantsFullscreen: boolean,
+  ): void {
+    if (win.isDestroyed()) return;
+
+    win.setBounds(display.bounds);
+    win.show();
+    win.focus();
+
+    if (!wantsFullscreen) return;
+
+    setImmediate(() => {
+      if (win.isDestroyed()) return;
+
+      win.setFullScreen(true);
+
+      if (!isLinux) {
+        win.setKiosk(true);
+      }
+
+      win.focus();
+    });
   }
 
   private summarizeDisplay(d: Display): DisplaySummary {
