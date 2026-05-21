@@ -50,6 +50,7 @@ export interface OpenControlWindowOptions {
 
 const isDev = !app.isPackaged;
 const isMac = process.platform === 'darwin';
+const isLinux = process.platform === 'linux';
 
 export class WindowRegistry {
   private dashboard: BrowserWindow | null = null;
@@ -126,7 +127,11 @@ export class WindowRegistry {
       width: bounds.width,
       height: bounds.height,
       frame: false,
-      fullscreen: wantsFullscreen,
+      // On macOS, fullscreen at creation correctly targets the display
+      // containing (x, y). On Linux, compositors ignore the coordinates when
+      // fullscreen is requested at creation, so we defer it until the window
+      // has been mapped at the right position.
+      fullscreen: wantsFullscreen && !isLinux,
       ...(isMac ? { simpleFullscreen: false } : {}),
       backgroundColor: '#000000',
       autoHideMenuBar: true,
@@ -146,9 +151,28 @@ export class WindowRegistry {
       if (shown || win.isDestroyed()) return;
       shown = true;
       if (fallbackTimer) clearTimeout(fallbackTimer);
+
       win.show();
       win.focus();
-      if (wantsFullscreen && isMac) win.setKiosk(true);
+
+      if (!wantsFullscreen) return;
+
+      if (!isLinux) {
+        win.setKiosk(true);
+        return;
+      }
+
+      // Linux: give the compositor time to map the window at the requested
+      // coordinates, then enter fullscreen on that display.
+      setTimeout(() => {
+        if (win.isDestroyed()) return;
+        win.setFullScreen(true);
+        setTimeout(() => {
+          if (win.isDestroyed() || win.isFullScreen()) return;
+          win.maximize();
+          win.focus();
+        }, 500);
+      }, 100);
     };
 
     win.once('ready-to-show', showWindow);
