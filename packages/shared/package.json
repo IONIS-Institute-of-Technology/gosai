@@ -21,6 +21,10 @@
     "./types": {
       "types": "./src/types.ts",
       "import": "./src/types.ts"
+    },
+    "./homography": {
+      "types": "./src/homography.ts",
+      "import": "./src/homography.ts"
     }
   },
   "scripts": {

@@ -8,6 +8,7 @@
  * the legacy coordinates intact.
  */
 
+import { computeCSSMatrix3d, type Point2D, type Quad } from '@gosai/sdk';
 import { REF_HEIGHT, REF_WIDTH } from './types.js';
 
 /** Style the document body so the app-host window has no scrollbars/margins. */
@@ -67,13 +68,78 @@ export function fitCanvas(canvas: HTMLCanvasElement): boolean {
 /**
  * Apply a transform so subsequent drawing happens in 1920x1080 reference
  * coords. Stretches to fill the canvas (does not preserve aspect ratio --
- * the projector is expected to be aligned with the table).
+ * the projector is expected to be aligned with the table; if it is not,
+ * `applyKeystoneTransform` adds an extra CSS perspective layer on top).
  */
 export function applyReferenceTransform(ctx: CanvasRenderingContext2D): void {
   const sx = ctx.canvas.width / REF_WIDTH;
   const sy = ctx.canvas.height / REF_HEIGHT;
   ctx.setTransform(sx, 0, 0, sy, 0, 0);
 }
+
+/**
+ * Apply a CSS `matrix3d` keystone correction so that the rectangular canvas
+ * appears -- once projected -- as a perfect rectangle on the physical surface
+ * even when the projector and/or camera is angled.
+ *
+ * The four destination corners must be expressed in *projector display
+ * pixels* (i.e. in the same coordinate system as `window.innerWidth/Height`
+ * for the fullscreen app-host window). They are typically the
+ * `surface_quad_display` produced by the calibration wizard: the user-picked
+ * pool corners in normalised camera coords, warped through the
+ * camera->display homography.
+ *
+ * Canvas-local content is laid out in CSS pixels; the canvas backing store
+ * (devicePixelRatio multiplied) is independent and unaffected. The transform
+ * uses the canvas' current CSS box as the source rectangle.
+ *
+ * The canvas keeps its CSS size set to fill its container (`100% / 100%`) and
+ * uses `position: absolute; inset: 0;`. We override the layout to use
+ * explicit CSS pixels for the duration of the transform so the math is
+ * consistent with the destination quad expressed in window pixels.
+ */
+export function applyKeystoneTransform(
+  canvas: HTMLCanvasElement,
+  destination: Quad,
+): void {
+  const parent = canvas.parentElement;
+  const ref = parent ?? document.documentElement;
+  const refRect = ref.getBoundingClientRect();
+  const width = Math.max(1, Math.round(refRect.width));
+  const height = Math.max(1, Math.round(refRect.height));
+
+  // Pin the canvas to explicit CSS dimensions so the matrix3d math (which
+  // assumes the source rectangle is exactly the element's box) is well-defined
+  // and not affected by CSS percent-based sizing.
+  canvas.style.position = 'absolute';
+  canvas.style.left = '0';
+  canvas.style.top = '0';
+  canvas.style.right = 'auto';
+  canvas.style.bottom = 'auto';
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+  canvas.style.transformOrigin = '0 0';
+  // Avoid blurring edges at the warped corners.
+  canvas.style.backfaceVisibility = 'hidden';
+  canvas.style.transform = computeCSSMatrix3d(width, height, destination);
+}
+
+/** Remove a previously applied keystone transform. Restores the canvas to its
+ * default stretched layout. */
+export function clearKeystoneTransform(canvas: HTMLCanvasElement): void {
+  canvas.style.transform = '';
+  canvas.style.transformOrigin = '';
+  canvas.style.width = '100%';
+  canvas.style.height = '100%';
+  canvas.style.left = '';
+  canvas.style.top = '';
+  canvas.style.right = '';
+  canvas.style.bottom = '';
+}
+
+/** Re-export the homography point type so layer modules can take quads via
+ * the same shape coming out of the calibration loader. */
+export type { Point2D, Quad };
 
 /**
  * Convenience: stroked circle outline (legacy p5 `circle` with no fill).

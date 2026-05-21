@@ -26,11 +26,14 @@ import type {
 import {
   WIZARD_EVENTS,
   STORAGE_KEYS,
+  DEFAULT_SURFACE_SIZE,
   type CornersEvent,
   type FocusQuad,
   type MarkerTransform,
   type MarkerTransformEvent,
   type Point2D,
+  type SizeXY,
+  type SurfaceQuadDisplay,
   type WizardStep,
   DEFAULT_MARKER_TRANSFORM,
   PAN_STEP,
@@ -693,13 +696,37 @@ async function runCompute(rt: ExperienceRuntimeContext, state: ControlState): Pr
   state.busy = true;
   updateStatus(state);
   try {
-    const result = (await rt.drivers.execute('calibration', 'compute', null)) as {
+    // Send the focus_quad and frame_size to the driver so it can ALSO compute
+    // the camera->surface homography (and where the surface lands in display
+    // space). The surface reference resolution defaults to 1920x1080 -- it is
+    // what apps render in. Falls back gracefully if the camera frame size has
+    // not been observed yet.
+    const surfaceSize: SizeXY = DEFAULT_SURFACE_SIZE;
+    const focusQuadParam =
+      state.corners.length === 4
+        ? state.corners.map((p) => ({ x: p.x, y: p.y }))
+        : undefined;
+    const frameSizeParam = state.camFrameSize
+      ? { width: state.camFrameSize.w, height: state.camFrameSize.h }
+      : undefined;
+
+    const result = (await rt.drivers.execute('calibration', 'compute', {
+      focus_quad: focusQuadParam,
+      frame_size: frameSizeParam,
+      surface_size: surfaceSize,
+    })) as {
       ok: boolean;
       error?: string;
       matrix?: number[];
       inverse?: number[];
+      surface_matrix?: number[] | null;
+      surface_inverse?: number[] | null;
+      surface_quad_display?: Point2D[] | null;
+      surface_size?: SizeXY | null;
+      frame_size?: SizeXY | null;
       inliers?: number;
       samples?: number;
+      markers?: number;
       reprojection_error_mean?: number;
       reprojection_error_max?: number;
     };
@@ -716,13 +743,50 @@ async function runCompute(rt: ExperienceRuntimeContext, state: ControlState): Pr
       if (Array.isArray(result.inverse)) {
         await rt.storage.set(STORAGE_KEYS.HomographyInverse, result.inverse);
       }
+      // Surface-space matrices (camera -> apps' reference space).
+      if (Array.isArray(result.surface_matrix)) {
+        await rt.storage.set(STORAGE_KEYS.HomographySurface, result.surface_matrix);
+      } else {
+        // Clear any stale surface matrix so apps fall back cleanly.
+        await rt.storage.remove(STORAGE_KEYS.HomographySurface).catch(() => undefined);
+      }
+      if (Array.isArray(result.surface_inverse)) {
+        await rt.storage.set(STORAGE_KEYS.HomographySurfaceInverse, result.surface_inverse);
+      } else {
+        await rt.storage
+          .remove(STORAGE_KEYS.HomographySurfaceInverse)
+          .catch(() => undefined);
+      }
+      // Where the physical surface lands in display space, needed for CSS
+      // matrix3d keystone correction in consumer apps.
+      if (Array.isArray(result.surface_quad_display) && result.surface_quad_display.length === 4) {
+        const quadDisplay: SurfaceQuadDisplay = {
+          points: [
+            result.surface_quad_display[0]!,
+            result.surface_quad_display[1]!,
+            result.surface_quad_display[2]!,
+            result.surface_quad_display[3]!,
+          ],
+        };
+        await rt.storage.set(STORAGE_KEYS.SurfaceQuadDisplay, quadDisplay);
+      } else {
+        await rt.storage.remove(STORAGE_KEYS.SurfaceQuadDisplay).catch(() => undefined);
+      }
+      if (result.surface_size) {
+        await rt.storage.set(STORAGE_KEYS.SurfaceSize, result.surface_size);
+      }
+      if (result.frame_size) {
+        await rt.storage.set(STORAGE_KEYS.FrameSize, result.frame_size);
+      }
       const errMean = result.reprojection_error_mean ?? 0;
       const errMax = result.reprojection_error_max ?? 0;
       rt.log.info('homography persisted', {
         inliers: result.inliers,
         samples: result.samples,
+        markers: result.markers,
         errorMean: errMean,
         errorMax: errMax,
+        surface: Array.isArray(result.surface_matrix),
       });
     }
   } catch (err) {

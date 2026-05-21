@@ -48,3 +48,15 @@ export type {
 } from './types.js';
 
 export { PROTOCOL_VERSION, ServerEvents, ClientCommands } from './types.js';
+
+// Homography utilities for camera/projector calibration consumers. Re-exported
+// from @gosai/shared so apps only need to depend on @gosai/sdk.
+export {
+  perspectiveTransformPoint,
+  perspectiveTransformPoints,
+  invertHomography,
+  quadToQuadHomography,
+  computeCSSMatrix3d,
+  multiplyHomographies,
+} from '@gosai/shared/homography';
+export type { Point2D, Quad } from '@gosai/shared/homography';

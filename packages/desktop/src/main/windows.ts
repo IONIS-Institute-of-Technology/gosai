@@ -127,11 +127,10 @@ export class WindowRegistry {
       width: bounds.width,
       height: bounds.height,
       frame: false,
-      // On macOS, fullscreen at creation correctly targets the display
-      // containing (x, y). On Linux, compositors ignore the coordinates when
-      // fullscreen is requested at creation, so we defer it until the window
-      // has been mapped at the right position.
-      fullscreen: wantsFullscreen && !isLinux,
+      // On Linux, compositors ignore (x, y) when fullscreen is requested at
+      // creation. On macOS, creation-time fullscreen plus setKiosk() on show
+      // makes the window drop out of fullscreen on the first open.
+      fullscreen: wantsFullscreen && !isLinux && !isMac,
       ...(isMac ? { simpleFullscreen: false } : {}),
       backgroundColor: '#000000',
       autoHideMenuBar: true,
@@ -152,10 +151,25 @@ export class WindowRegistry {
       shown = true;
       if (fallbackTimer) clearTimeout(fallbackTimer);
 
+      if (wantsFullscreen && isMac) {
+        win.setBounds(bounds);
+      }
+
       win.show();
 
       if (!wantsFullscreen) {
         win.focus();
+        return;
+      }
+
+      if (isMac) {
+        win.focus();
+        setImmediate(() => {
+          if (win.isDestroyed()) return;
+          win.setFullScreen(true);
+          win.setKiosk(true);
+          win.focus();
+        });
         return;
       }
 

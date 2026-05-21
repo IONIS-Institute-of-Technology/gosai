@@ -8,17 +8,36 @@
  * Both windows load `dist/calibrate.js` and branch on the `role` URL param.
  *
  * Storage keys (per-app under `paths.apps/calibration/_data/storage/`):
- * - `homography`          : 3x3 row-major homography matrix (number[9]) mapping
- *                           camera coords -> display coords. Handles perspective
- *                           (keystone) correction from angled projectors/cameras.
- * - `homography_inverse`  : 3x3 row-major inverse homography (display -> camera).
- * - `focus_quad`          : { points: [{x,y},{x,y},{x,y},{x,y}] } in camera
- *                       coords (top-left, top-right, bottom-right, bottom-left).
- *                       Defines the pool / table area.
- * - `background_jpeg` : base64 JPEG of the empty scene captured by the
- *                       background step.
- * - `markers_layout`  : the marker placement used when the homography was
- *                       computed.
+ * - `homography`             : 3x3 row-major homography matrix (number[9])
+ *                              mapping camera pixels -> display pixels.
+ *                              Handles perspective (keystone) correction from
+ *                              angled projectors/cameras.
+ * - `homography_inverse`     : 3x3 row-major inverse homography
+ *                              (display -> camera).
+ * - `homography_surface`     : 3x3 row-major homography mapping camera pixels
+ *                              -> SURFACE reference space (apps' canonical
+ *                              coordinate space, default 1920x1080). This is
+ *                              what tracking drivers (`ball`, `hand_pose`)
+ *                              should consume.
+ * - `homography_surface_inverse` : inverse of the above.
+ * - `focus_quad`             : { points: [{x,y}, ...] } in NORMALISED camera
+ *                              coords (0..1, top-left, top-right, bottom-right,
+ *                              bottom-left). Defines the physical surface in
+ *                              the camera view.
+ * - `surface_quad_display`   : { points: [{x,y}, ...] } - the same 4 corners
+ *                              after applying the camera->display homography.
+ *                              Used by apps to drive CSS `matrix3d` keystone
+ *                              correction so the rendered canvas lands exactly
+ *                              on the physical surface.
+ * - `surface_size`           : { width, height } - the surface reference
+ *                              resolution (default 1920x1080).
+ * - `frame_size`             : { width, height } - the camera frame size that
+ *                              was active when the homography was computed.
+ *                              Required by drivers to denormalise inputs.
+ * - `background_jpeg`        : base64 JPEG of the empty scene captured by the
+ *                              background step.
+ * - `markers_layout`         : the marker placement used when the homography
+ *                              was computed.
  */
 
 export interface Point2D {
@@ -48,10 +67,30 @@ export interface MarkerImage {
 export const STORAGE_KEYS = {
   Homography: 'homography',
   HomographyInverse: 'homography_inverse',
+  HomographySurface: 'homography_surface',
+  HomographySurfaceInverse: 'homography_surface_inverse',
   FocusQuad: 'focus_quad',
+  SurfaceQuadDisplay: 'surface_quad_display',
+  SurfaceSize: 'surface_size',
+  FrameSize: 'frame_size',
   BackgroundJpeg: 'background_jpeg',
   MarkersLayout: 'markers_layout',
 } as const;
+
+/** Default surface (canvas / app reference) resolution. */
+export const DEFAULT_SURFACE_SIZE = { width: 1920, height: 1080 } as const;
+
+export interface SizeXY {
+  readonly width: number;
+  readonly height: number;
+}
+
+export interface SurfaceQuadDisplay {
+  /** Four corners (TL, TR, BR, BL) of the physical surface in display
+   * (projector) pixels, derived by applying the camera->display homography to
+   * the user-picked `focus_quad`. */
+  readonly points: [Point2D, Point2D, Point2D, Point2D];
+}
 
 /**
  * Wizard step machine. Steps run in order; `done` signals the dashboard to

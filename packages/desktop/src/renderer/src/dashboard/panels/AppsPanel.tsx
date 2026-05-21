@@ -370,13 +370,8 @@ async function runCalibrationWizard(
   const display = await pickDisplay(client);
   if (!display) throw new Error('No display available for calibration');
 
-  const projector = await api.appHost.open({
-    displayId: display.id,
-    appSlug,
-    experienceSlug,
-    fullscreen: true,
-  });
-
+  // Open control before the projector so macOS does not tear down the
+  // fullscreen window when the always-on-top control window is created.
   const control = await api.controlWindow.open({
     appSlug,
     experienceSlug,
@@ -384,6 +379,13 @@ async function runCalibrationWizard(
     title: 'Calibration · Control',
     width: 960,
     height: 720,
+  });
+
+  const projector = await api.appHost.open({
+    displayId: display.id,
+    appSlug,
+    experienceSlug,
+    fullscreen: true,
   });
 
   let finished = false;
