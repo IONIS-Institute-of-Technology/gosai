@@ -23,6 +23,7 @@ import type {
 import {
   WIZARD_EVENTS,
   STORAGE_KEYS,
+  CALIBRATION_TARGET_KEY,
   DEFAULT_SURFACE_SIZE,
   type CornersEvent,
   type FocusQuad,
@@ -37,6 +38,7 @@ import {
   ZOOM_STEP,
   MIN_SCALE,
   MAX_SCALE,
+  scopedKey,
   setBodyFullscreen,
 } from './shared.js';
 
@@ -60,6 +62,8 @@ interface DOM {
 export interface ControlState {
   dom: DOM;
   step: WizardStep;
+  /** Slug of the app being calibrated for; namespaces the profile keys. */
+  target: string | null;
   camFrame: HTMLImageElement | null;
   camFrameSize: { w: number; h: number } | null;
   /** Pool corners in normalised camera coords (0..1). */
@@ -192,6 +196,7 @@ export function initControlState(): ControlState {
       status,
     },
     step: 'markers',
+    target: null,
     camFrame: null,
     camFrameSize: null,
     corners: [],
@@ -218,9 +223,11 @@ export async function startControl(
 ): Promise<void> {
   rt.log.info('control role starting');
 
+  state.target = (await rt.storage.get<string>(CALIBRATION_TARGET_KEY).catch(() => null)) ?? null;
+
   // Restore previous corner picks so the user does not lose work if the
   // wizard is re-opened.
-  const previous = await rt.storage.get<FocusQuad>(STORAGE_KEYS.FocusQuad);
+  const previous = await rt.storage.get<FocusQuad>(scopedKey(STORAGE_KEYS.FocusQuad, state.target));
   if (previous?.points && previous.points.length === 4) {
     state.corners = previous.points.slice();
   }
@@ -669,8 +676,8 @@ async function persistCorners(rt: ExperienceRuntimeContext, state: ControlState)
   const quad: FocusQuad = {
     points: [state.corners[0]!, state.corners[1]!, state.corners[2]!, state.corners[3]!],
   };
-  await rt.storage.set(STORAGE_KEYS.FocusQuad, quad);
-  rt.log.info('focus quad saved', { points: 4 });
+  await rt.storage.set(scopedKey(STORAGE_KEYS.FocusQuad, state.target), quad);
+  rt.log.info('focus quad saved', { points: 4, target: state.target ?? 'default' });
 }
 
 async function runCompute(rt: ExperienceRuntimeContext, state: ControlState): Promise<void> {
@@ -720,22 +727,26 @@ async function runCompute(rt: ExperienceRuntimeContext, state: ControlState): Pr
       return;
     }
     if (Array.isArray(result.matrix)) {
-      await rt.storage.set(STORAGE_KEYS.Homography, result.matrix);
+      const t = state.target;
+      await rt.storage.set(scopedKey(STORAGE_KEYS.Homography, t), result.matrix);
       if (Array.isArray(result.inverse)) {
-        await rt.storage.set(STORAGE_KEYS.HomographyInverse, result.inverse);
+        await rt.storage.set(scopedKey(STORAGE_KEYS.HomographyInverse, t), result.inverse);
       }
       // Surface-space matrices (camera -> apps' reference space).
       if (Array.isArray(result.surface_matrix)) {
-        await rt.storage.set(STORAGE_KEYS.HomographySurface, result.surface_matrix);
+        await rt.storage.set(scopedKey(STORAGE_KEYS.HomographySurface, t), result.surface_matrix);
       } else {
         // Clear any stale surface matrix so apps fall back cleanly.
-        await rt.storage.remove(STORAGE_KEYS.HomographySurface).catch(() => undefined);
+        await rt.storage.remove(scopedKey(STORAGE_KEYS.HomographySurface, t)).catch(() => undefined);
       }
       if (Array.isArray(result.surface_inverse)) {
-        await rt.storage.set(STORAGE_KEYS.HomographySurfaceInverse, result.surface_inverse);
+        await rt.storage.set(
+          scopedKey(STORAGE_KEYS.HomographySurfaceInverse, t),
+          result.surface_inverse,
+        );
       } else {
         await rt.storage
-          .remove(STORAGE_KEYS.HomographySurfaceInverse)
+          .remove(scopedKey(STORAGE_KEYS.HomographySurfaceInverse, t))
           .catch(() => undefined);
       }
       // Where the physical surface lands in display space, needed for CSS
@@ -749,15 +760,15 @@ async function runCompute(rt: ExperienceRuntimeContext, state: ControlState): Pr
             result.surface_quad_display[3]!,
           ],
         };
-        await rt.storage.set(STORAGE_KEYS.SurfaceQuadDisplay, quadDisplay);
+        await rt.storage.set(scopedKey(STORAGE_KEYS.SurfaceQuadDisplay, t), quadDisplay);
       } else {
-        await rt.storage.remove(STORAGE_KEYS.SurfaceQuadDisplay).catch(() => undefined);
+        await rt.storage.remove(scopedKey(STORAGE_KEYS.SurfaceQuadDisplay, t)).catch(() => undefined);
       }
       if (result.surface_size) {
-        await rt.storage.set(STORAGE_KEYS.SurfaceSize, result.surface_size);
+        await rt.storage.set(scopedKey(STORAGE_KEYS.SurfaceSize, t), result.surface_size);
       }
       if (result.frame_size) {
-        await rt.storage.set(STORAGE_KEYS.FrameSize, result.frame_size);
+        await rt.storage.set(scopedKey(STORAGE_KEYS.FrameSize, t), result.frame_size);
       }
       const errMean = result.reprojection_error_mean ?? 0;
       const errMax = result.reprojection_error_max ?? 0;

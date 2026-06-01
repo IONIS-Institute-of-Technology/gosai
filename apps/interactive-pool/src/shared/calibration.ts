@@ -41,10 +41,22 @@ export interface CalibrationData {
   readonly frameSize: SizeXY | null;
 }
 
-/** Fetch a single calibration storage value, returning `null` on 404. */
-async function fetchCalibrationKey<T>(key: string): Promise<T | null> {
-  const url = `${SERVER_BASE_URL}/v1/apps/${CALIBRATION_APP_SLUG}/storage/${encodeURIComponent(key)}`;
-  const res = await fetch(url);
+function calibrationUrl(key: string): string {
+  return `${SERVER_BASE_URL}/v1/apps/${CALIBRATION_APP_SLUG}/storage/${encodeURIComponent(key)}`;
+}
+
+/**
+ * Fetch a single calibration storage value, returning `null` on 404. Prefers
+ * this app's own per-app profile (`<key>__<appSlug>`) and falls back to the
+ * legacy global key so existing single-app calibrations keep working.
+ */
+async function fetchCalibrationKey<T>(key: string, appSlug: string): Promise<T | null> {
+  const scoped = await fetch(calibrationUrl(`${key}__${appSlug}`));
+  if (scoped.status === 200) return (await scoped.json()) as T;
+  if (scoped.status !== 404) {
+    throw new Error(`calibration storage[${key}__${appSlug}] -> ${scoped.status}`);
+  }
+  const res = await fetch(calibrationUrl(key));
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`calibration storage[${key}] -> ${res.status}`);
   return (await res.json()) as T;
@@ -55,9 +67,10 @@ async function fetchCalibrationKey<T>(key: string): Promise<T | null> {
 export async function loadCalibration(
   rt: ExperienceRuntimeContext,
 ): Promise<CalibrationData> {
+  const appSlug = rt.app.appSlug;
   const safe = async <T>(key: string): Promise<T | null> => {
     try {
-      return await fetchCalibrationKey<T>(key);
+      return await fetchCalibrationKey<T>(key, appSlug);
     } catch (err) {
       rt.log.warn(`calibration[${key}] fetch failed`, { err: String(err) });
       return null;

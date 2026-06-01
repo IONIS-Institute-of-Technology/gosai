@@ -145,9 +145,40 @@ A matching `gosai.app.json`:
   "slug": "my-app",
   "name": "My App",
   "version": "0.1.0",
+  "requirements": { "display": true, "camera": true },
   "experiences": [{ "slug": "main", "name": "Main", "entry": "dist/main.js" }]
 }
 ```
+
+## Running apps in parallel & per-app devices
+
+Multiple apps can run at the same time. To keep them from fighting over the same
+hardware, GOSAI binds drivers **per app** (the *binding* is the app slug):
+
+- **Exclusive drivers** (the default) — `camera`, `microphone`, and anything that
+  depends on them (`hand_pose`, `pose`, `ball`, ...) — get their own instance per
+  app, so two apps can read two different cameras simultaneously.
+- **Shared drivers** — `speaker` and device-less utilities like `heartbeat` — are
+  shared across apps (apps pointed at the same speaker mix into one stream).
+
+An app declares which device *slots* it needs with a top-level `requirements`
+object in its manifest:
+
+```jsonc
+"requirements": {
+  "display": true,      // opens a window (fullscreen or windowed)
+  "camera": true,       // binds an exclusive camera
+  "microphone": false,
+  "speaker": false
+}
+```
+
+Each declared slot shows up in the dashboard's per-app **device assignments**
+panel, where you pick the concrete camera / microphone / speaker and the target
+display (with a fullscreen ⇄ windowed toggle). Assignments persist to
+`~/.gosai/apps/<slug>/_config/settings.json` and are applied when the app starts
+(camera/microphone changes also hot-apply to a running instance). Calibration is
+likewise stored per app, so each app maps its own camera onto its own display.
 
 ## Packaging
 

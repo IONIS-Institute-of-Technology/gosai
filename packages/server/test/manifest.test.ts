@@ -100,4 +100,49 @@ describe('validateManifest', () => {
     expect(m.experiences[0]?.exclusive).toBe(true);
     expect(m.experiences[0]?.allowed).toEqual(['menu']);
   });
+
+  test('parses app-level device requirements', () => {
+    const m = validateManifest(PATH, {
+      slug: 'r',
+      name: 'R',
+      version: '0.1.0',
+      experiences: [{ slug: 'a', name: 'A', entry: './a.ts' }],
+      requirements: { display: true, camera: true, microphone: false },
+    });
+    expect(m.requirements).toEqual({ display: true, camera: true, microphone: false });
+  });
+
+  test('omits requirements when not provided', () => {
+    const m = validateManifest(PATH, {
+      slug: 'r',
+      name: 'R',
+      version: '0.1.0',
+      experiences: [{ slug: 'a', name: 'A', entry: './a.ts' }],
+    });
+    expect(m.requirements).toBeUndefined();
+  });
+
+  test('rejects non-boolean requirement flags', () => {
+    expect(() =>
+      validateManifest(PATH, {
+        slug: 'r',
+        name: 'R',
+        version: '0.1.0',
+        experiences: [{ slug: 'a', name: 'A', entry: './a.ts' }],
+        requirements: { camera: 'yes' },
+      }),
+    ).toThrow(ManifestError);
+  });
+
+  test('rejects a non-object requirements field', () => {
+    expect(() =>
+      validateManifest(PATH, {
+        slug: 'r',
+        name: 'R',
+        version: '0.1.0',
+        experiences: [{ slug: 'a', name: 'A', entry: './a.ts' }],
+        requirements: ['camera'],
+      }),
+    ).toThrow(ManifestError);
+  });
 });

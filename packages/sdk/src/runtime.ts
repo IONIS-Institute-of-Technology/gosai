@@ -43,7 +43,7 @@ export async function runExperience<TState>(
 
   await waitForConnection(client);
 
-  const drivers = new DriverClientImpl(client);
+  const drivers = new DriverClientImpl(client, options.appSlug);
   const storage = new StorageClientImpl(options.appSlug, client, options.serverBaseUrl);
   const log = new AppLoggerImpl(`app:${options.appSlug}:${options.experienceSlug}`, client);
   const router = new ExperienceRouterImpl(options.appSlug, client);

@@ -4,13 +4,14 @@ import {
   PROTOCOL_VERSION,
   type ClientMessage,
 } from '@gosai/shared/protocol';
+import type { AppDeviceSettingsPatch } from '@gosai/shared';
 import { ServerEvents } from '@gosai/shared/events';
 import type { GosaiPaths } from './paths.js';
 import { Logger } from './logger/index.js';
 import { EventBus, WebSocketGateway, type ClientData } from './ipc/index.js';
-import { ConfigStore } from './config/index.js';
-import { DriverManager } from './drivers/index.js';
-import { applyCameraSettings } from './drivers/camera-config.js';
+import { AppSettingsStore, ConfigStore } from './config/index.js';
+import { DriverManager, SYSTEM_BINDING } from './drivers/index.js';
+import { applyAppDeviceSettings, applyCameraSettings } from './drivers/camera-config.js';
 import { AppManager } from './apps/index.js';
 import { AppStorage } from './apps/storage.js';
 import { SystemMonitor } from './monitor/index.js';
@@ -36,6 +37,7 @@ export interface GosaiServer {
   readonly apps: AppManager;
   readonly monitor: SystemMonitor;
   readonly config: ConfigStore;
+  readonly appSettings: AppSettingsStore;
 }
 
 export async function createServer(options: ServerOptions): Promise<GosaiServer> {
@@ -47,6 +49,11 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
   logger.subscribe((entry) => bus.emit(ServerEvents.Log, entry, 'logger'));
 
   const config = new ConfigStore(options.paths.config, bus, logger.child('config'));
+  const appSettings = new AppSettingsStore(
+    options.paths.apps,
+    bus,
+    logger.child('app-config'),
+  );
 
   const pythonDir = resolvePythonDir(options.pythonDir);
 
@@ -54,8 +61,15 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
     pythonDir,
     logger,
     bus,
-    getDriverConfig: (driver) =>
-      driver === 'camera' ? { ...config.get().camera } : undefined,
+    // Per-app device assignments take priority; the camera falls back to the
+    // global default so single-app setups keep working without per-app config.
+    getDriverConfig: (binding, driver) => {
+      const app = binding === SYSTEM_BINDING ? undefined : appSettings.get(binding);
+      if (driver === 'camera') return { ...(app?.camera ?? config.get().camera) };
+      if (driver === 'microphone') return app?.microphone ? { ...app.microphone } : undefined;
+      if (driver === 'speaker') return app?.speaker ? { ...app.speaker } : undefined;
+      return undefined;
+    },
   });
 
   if (options.enablePython !== false && pythonHasBridge(pythonDir)) {
@@ -86,7 +100,7 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
         log.warn('driver cleanup failed', { clientId, err: String(err) }),
       ),
   });
-  registerHandlers(gateway, { apps, drivers, config, logger, bus });
+  registerHandlers(gateway, { apps, drivers, config, appSettings, logger, bus });
 
   const app = new Hono();
 
@@ -253,6 +267,7 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
     apps,
     monitor,
     config,
+    appSettings,
     async stop() {
       log.info('shutting down');
       monitor.stop();
@@ -278,11 +293,12 @@ function registerHandlers(
     apps: AppManager;
     drivers: DriverManager;
     config: ConfigStore;
+    appSettings: AppSettingsStore;
     logger: Logger;
     bus: EventBus;
   },
 ): void {
-  const { apps, drivers, config, logger, bus } = ctx;
+  const { apps, drivers, config, appSettings, logger, bus } = ctx;
 
   gateway.registerHandler('apps:list', () => ({ apps: apps.listApps() }));
   gateway.registerHandler('app:install', async (msg: ClientMessage) => {
@@ -317,27 +333,47 @@ function registerHandlers(
   });
 
   gateway.registerHandler('drivers:list', () => ({ drivers: drivers.listDrivers() }));
+  gateway.registerHandler('devices:list', async () => await drivers.listDevices());
   gateway.registerHandler('driver:get-data', async (msg: ClientMessage) => {
-    const payload = (msg as { payload: { driver?: string; event?: string } }).payload;
+    const payload = (msg as { payload: { driver?: string; event?: string; binding?: string } })
+      .payload;
     if (!payload?.driver || !payload.event) throw new Error('driver and event are required');
-    return await drivers.getData(payload.driver, payload.event);
+    return await drivers.getData(payload.binding ?? SYSTEM_BINDING, payload.driver, payload.event);
   });
   gateway.registerHandler('driver:execute', async (msg: ClientMessage) => {
-    const payload = (msg as { payload: { driver?: string; action?: string; data?: unknown } })
-      .payload;
+    const payload = (
+      msg as { payload: { driver?: string; action?: string; data?: unknown; binding?: string } }
+    ).payload;
     if (!payload?.driver || !payload.action) throw new Error('driver and action are required');
-    return await drivers.execute(payload.driver, payload.action, payload.data);
+    return await drivers.execute(
+      payload.binding ?? SYSTEM_BINDING,
+      payload.driver,
+      payload.action,
+      payload.data,
+    );
   });
   gateway.registerHandler('driver:subscribe', async (msg: ClientMessage, ctx) => {
-    const payload = (msg as { payload: { driver?: string; event?: string } }).payload;
+    const payload = (msg as { payload: { driver?: string; event?: string; binding?: string } })
+      .payload;
     if (!payload?.driver || !payload.event) throw new Error('driver and event are required');
-    await drivers.subscribe(payload.driver, payload.event, ctx.clientId);
+    await drivers.subscribe(
+      payload.binding ?? SYSTEM_BINDING,
+      payload.driver,
+      payload.event,
+      ctx.clientId,
+    );
     return { ok: true };
   });
   gateway.registerHandler('driver:unsubscribe', async (msg: ClientMessage, ctx) => {
-    const payload = (msg as { payload: { driver?: string; event?: string } }).payload;
+    const payload = (msg as { payload: { driver?: string; event?: string; binding?: string } })
+      .payload;
     if (!payload?.driver || !payload.event) throw new Error('driver and event are required');
-    await drivers.unsubscribe(payload.driver, payload.event, ctx.clientId);
+    await drivers.unsubscribe(
+      payload.binding ?? SYSTEM_BINDING,
+      payload.driver,
+      payload.event,
+      ctx.clientId,
+    );
     return { ok: true };
   });
 
@@ -346,7 +382,22 @@ function registerHandlers(
   gateway.registerHandler('config:set', async (msg: ClientMessage) => {
     const payload = (msg as { payload: Record<string, unknown> }).payload;
     const next = config.update(payload);
-    await applyCameraSettings(drivers, next.camera, logger.child('camera'));
+    await applyCameraSettings(drivers, 'system', next.camera, logger.child('camera'));
+    return next;
+  });
+
+  gateway.registerHandler('app:config:get', (msg: ClientMessage) => {
+    const payload = (msg as { payload: { appSlug?: string } }).payload;
+    if (!payload?.appSlug) throw new Error('appSlug is required');
+    return appSettings.get(payload.appSlug);
+  });
+  gateway.registerHandler('app:config:set', async (msg: ClientMessage) => {
+    const payload = (
+      msg as { payload: { appSlug?: string; settings?: AppDeviceSettingsPatch } }
+    ).payload;
+    if (!payload?.appSlug) throw new Error('appSlug is required');
+    const next = appSettings.update(payload.appSlug, payload.settings ?? {});
+    await applyAppDeviceSettings(drivers, payload.appSlug, next, logger.child('app-config'));
     return next;
   });
 

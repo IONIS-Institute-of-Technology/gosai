@@ -7,6 +7,9 @@
  */
 
 import type {
+  AppDeviceSettings,
+  AppDeviceSettingsPatch,
+  DeviceCatalog,
   DriverInfo,
   GlobalConfig,
   InstalledApp,
@@ -40,9 +43,12 @@ export type ServerMessage =
   | MessageEnvelope<'server:log', LogEntry>
   | MessageEnvelope<'server:performance', PerformanceSample>
   | MessageEnvelope<'server:config-changed', GlobalConfig>
+  | MessageEnvelope<'app:config-changed', { appSlug: string; settings: AppDeviceSettings }>
   | MessageEnvelope<
-      'driver:event',
-      { driver: string; event: string; data: unknown; ts: number }
+      // Driver events are routed per binding: the concrete event name is
+      // `driver:event:<binding>` so clients only receive their own app's stream.
+      `driver:event:${string}`,
+      { driver: string; event: string; data: unknown; ts: number; binding: string }
     >
   | MessageEnvelope<'driver:state-changed', DriverInfo>
   | MessageEnvelope<'drivers:list-changed', { drivers: DriverInfo[] }>
@@ -65,13 +71,24 @@ export type ClientMessage =
   | MessageEnvelope<'experience:stop', { appSlug: string; experienceSlug: string }>
   | MessageEnvelope<'experiences:list', Record<string, never>>
   | MessageEnvelope<'drivers:list', Record<string, never>>
-  | MessageEnvelope<'driver:get-data', { driver: string; event: string }>
-  | MessageEnvelope<'driver:execute', { driver: string; action: string; data?: unknown }>
-  | MessageEnvelope<'driver:subscribe', { driver: string; event: string }>
-  | MessageEnvelope<'driver:unsubscribe', { driver: string; event: string }>
+  // `binding` identifies the requesting app (its slug) so the server can route
+  // to the right per-app driver instance. Omitted => the `system` binding.
+  | MessageEnvelope<'driver:get-data', { driver: string; event: string; binding?: string }>
+  | MessageEnvelope<
+      'driver:execute',
+      { driver: string; action: string; data?: unknown; binding?: string }
+    >
+  | MessageEnvelope<'driver:subscribe', { driver: string; event: string; binding?: string }>
+  | MessageEnvelope<'driver:unsubscribe', { driver: string; event: string; binding?: string }>
+  | MessageEnvelope<'devices:list', Record<string, never>>
   | MessageEnvelope<'logs:history', { limit?: number; level?: string }>
   | MessageEnvelope<'config:get', Record<string, never>>
-  | MessageEnvelope<'config:set', Partial<GlobalConfig>>;
+  | MessageEnvelope<'config:set', Partial<GlobalConfig>>
+  | MessageEnvelope<'app:config:get', { appSlug: string }>
+  | MessageEnvelope<'app:config:set', { appSlug: string; settings: AppDeviceSettingsPatch }>;
+
+/** Response payload for `devices:list`. */
+export type DeviceListResult = DeviceCatalog;
 
 /**
  * Python <-> Server bridge protocol (stdio newline-delimited JSON).
@@ -79,21 +96,29 @@ export type ClientMessage =
 export type BridgeRequest =
   | { type: 'ping'; id: string }
   | { type: 'list-drivers'; id: string }
-  | { type: 'start-driver'; id: string; driver: string; config?: Record<string, unknown> }
-  | { type: 'stop-driver'; id: string; driver: string }
-  | { type: 'subscribe'; id: string; driver: string; event: string }
-  | { type: 'unsubscribe'; id: string; driver: string; event: string }
-  | { type: 'get-data'; id: string; driver: string; event: string }
-  | { type: 'execute'; id: string; driver: string; action: string; data?: unknown }
+  | { type: 'list-cameras'; id: string }
+  | { type: 'list-audio-devices'; id: string }
+  | {
+      type: 'start-driver';
+      id: string;
+      instance: string;
+      driver: string;
+      config?: Record<string, unknown>;
+    }
+  | { type: 'stop-driver'; id: string; instance: string; driver: string }
+  | { type: 'subscribe'; id: string; instance: string; driver: string; event: string }
+  | { type: 'unsubscribe'; id: string; instance: string; driver: string; event: string }
+  | { type: 'get-data'; id: string; instance: string; driver: string; event: string }
+  | { type: 'execute'; id: string; instance: string; driver: string; action: string; data?: unknown }
   | { type: 'shutdown'; id: string };
 
 export type BridgeResponse =
   | { type: 'pong'; id: string; ts: number }
   | { type: 'result'; id: string; ok: true; data?: unknown }
   | { type: 'result'; id: string; ok: false; error: string }
-  | { type: 'event'; driver: string; event: string; data: unknown; ts: number }
+  | { type: 'event'; instance: string; driver: string; event: string; data: unknown; ts: number }
   | { type: 'log'; level: string; source: string; message: string; ts: number }
-  | { type: 'driver-state'; driver: string; state: string }
+  | { type: 'driver-state'; instance: string; driver: string; state: string }
   | { type: 'performance'; source: string; metric: string; value: number; ts: number }
   | { type: 'ready'; version: string };
 
@@ -104,5 +129,6 @@ export interface BridgeManifest {
     readonly actions: readonly string[];
     readonly dependencies: readonly string[];
     readonly description?: string;
+    readonly shared?: boolean;
   }[];
 }

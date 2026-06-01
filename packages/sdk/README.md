@@ -52,9 +52,30 @@ A starter template is at `templates/basic/` in the GOSAI repo.
   "python": {
     "requirements": "python/requirements.txt"
   },
-  "startup": ["main"]
+  "startup": ["main"],
+  "requirements": {            // device slots this app binds (per app)
+    "display": true,           // opens a window (fullscreen/windowed)
+    "camera": true,            // exclusive: this app gets its own camera
+    "microphone": false,       // exclusive
+    "speaker": false           // shareable across apps
+  }
 }
 ```
+
+### Devices & bindings
+
+Apps run in parallel, each bound to its own devices (the *binding* is the app
+slug). The top-level `requirements` object declares which device slots an app
+needs; the dashboard then lets the operator assign a concrete camera /
+microphone / speaker / display per app, persisted to
+`paths.apps/<slug>/_config/settings.json`.
+
+- `camera` / `microphone` are **exclusive** — each app gets its own device.
+- `speaker` and device-less drivers (`heartbeat`) are **shared** across apps.
+
+This is transparent to app code: `rt.drivers.on('camera', ...)` always resolves
+to *your* app's bound camera. The SDK subscribes to a per-app event topic and
+tags requests with the binding for you.
 
 ## Experience API
 

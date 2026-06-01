@@ -7,6 +7,15 @@ newline-delimited JSON.
 Drivers are discovered from:
 - The `gosai_py.drivers` namespace (built-in drivers).
 - Any modules listed via `register_drivers()` (used by app-shipped drivers).
+
+Multi-instance / bindings
+--------------------------
+The same driver *class* can run as several independent instances, one per
+"instance" namespace. The Node side decides the namespace (an app slug for
+exclusive drivers like the camera, or `shared`/`shared:dev<n>` for shareable
+drivers like the speaker) and passes it as `instance` on every request. Drivers,
+subscriptions, and emitted events are all keyed by `(instance, name)` so two
+apps can each bind their own camera without interfering.
 """
 
 from __future__ import annotations
@@ -28,16 +37,23 @@ from gosai_py.version import __version__
 
 JsonDict = dict[str, Any]
 
+DEFAULT_INSTANCE = "system"
+
 
 class _BridgeContext(DriverContext):
-    """Bridge-internal helper that exposes the I/O surface to drivers."""
+    """Bridge-internal helper that exposes the I/O surface to drivers.
 
-    def __init__(self, bridge: Bridge, driver_name: str) -> None:
+    Bound to a single `(instance, driver)` so emits and internal subscriptions
+    stay within the driver's instance namespace.
+    """
+
+    def __init__(self, bridge: Bridge, driver_name: str, instance: str) -> None:
         self._bridge = bridge
         self._driver = driver_name
+        self._instance = instance
 
     def emit(self, event: str, data: Any) -> None:
-        self._bridge._emit_event(self._driver, event, data)
+        self._bridge._emit_event(self._instance, self._driver, event, data)
 
     def log(self, level: str, message: str) -> None:
         self._bridge._emit_log(level, self._driver, message)
@@ -46,13 +62,13 @@ class _BridgeContext(DriverContext):
         self._bridge._emit_performance(self._driver, metric, value)
 
     def subscribe(self, driver: str, event: str, callback: Callable[[Any], None]) -> None:
-        self._bridge._subscribe_internal(driver, event, callback)
+        self._bridge._subscribe_internal(self._instance, driver, event, callback)
 
     def unsubscribe(self, driver: str, event: str, callback: Callable[[Any], None]) -> None:
-        self._bridge._unsubscribe_internal(driver, event, callback)
+        self._bridge._unsubscribe_internal(self._instance, driver, event, callback)
 
     def get_event_data(self, driver: str, event: str) -> Any:
-        return self._bridge._get_event_data(driver, event)
+        return self._bridge._get_event_data(self._instance, driver, event)
 
 
 class Bridge:
@@ -65,11 +81,13 @@ class Bridge:
         self._stdout_fd = os.dup(1)
         self._running = False
         self._driver_classes: dict[str, type[BaseDriver]] = {}
-        self._driver_instances: dict[str, BaseDriver] = {}
+        # Keyed by (instance, driver name).
+        self._driver_instances: dict[tuple[str, str], BaseDriver] = {}
+        # Keyed by (instance, driver, event).
         self._internal_subscribers: dict[
-            tuple[str, str], list[Callable[[Any], None]]
+            tuple[str, str, str], list[Callable[[Any], None]]
         ] = {}
-        self._external_subscribers: dict[tuple[str, str], int] = {}
+        self._external_subscribers: dict[tuple[str, str, str], int] = {}
         self._lock = threading.RLock()
 
     # ------------------------------------------------------------------
@@ -114,14 +132,16 @@ class Bridge:
         with self._write_lock:
             os.write(self._stdout_fd, data)
 
-    def _emit_event(self, driver: str, event: str, data: Any) -> None:
+    def _emit_event(self, instance: str, driver: str, event: str, data: Any) -> None:
         # External (Node-side) subscribers
-        if self._external_subscribers.get((driver, event), 0) > 0 or self._external_subscribers.get(
-            (driver, "*"), 0
-        ) > 0:
+        if (
+            self._external_subscribers.get((instance, driver, event), 0) > 0
+            or self._external_subscribers.get((instance, driver, "*"), 0) > 0
+        ):
             self._write(
                 {
                     "type": "event",
+                    "instance": instance,
                     "driver": driver,
                     "event": event,
                     "data": data,
@@ -129,7 +149,7 @@ class Bridge:
                 }
             )
         # Internal (other Python drivers) subscribers
-        callbacks = self._internal_subscribers.get((driver, event), [])
+        callbacks = self._internal_subscribers.get((instance, driver, event), [])
         for cb in list(callbacks):
             try:
                 cb(data)
@@ -158,8 +178,10 @@ class Bridge:
             }
         )
 
-    def _emit_driver_state(self, driver: str, state: str) -> None:
-        self._write({"type": "driver-state", "driver": driver, "state": state})
+    def _emit_driver_state(self, instance: str, driver: str, state: str) -> None:
+        self._write(
+            {"type": "driver-state", "instance": instance, "driver": driver, "state": state}
+        )
 
     def _respond(self, req_id: str, ok: bool, data: Any = None, error: str | None = None) -> None:
         msg: JsonDict = {"type": "result", "id": req_id, "ok": ok}
@@ -173,39 +195,41 @@ class Bridge:
     # Driver lifecycle
     # ------------------------------------------------------------------
 
-    def _start_driver(self, name: str, config: JsonDict | None = None) -> None:
+    def _start_driver(
+        self, instance: str, name: str, config: JsonDict | None = None
+    ) -> None:
         with self._lock:
-            if name in self._driver_instances:
+            if (instance, name) in self._driver_instances:
                 return
             cls = self._driver_classes.get(name)
             if cls is None:
                 raise KeyError(f"unknown driver: {name}")
-            # Resolve dependencies first.
+            # Resolve dependencies first, within the same instance namespace.
             for dep in cls.dependencies:
-                if dep not in self._driver_instances:
-                    self._start_driver(dep)
-            instance = cls(_BridgeContext(self, cls.name))
-            if config and hasattr(instance, "apply_config"):
-                instance.apply_config(config)
-            self._driver_instances[name] = instance
-        self._emit_driver_state(name, "starting")
+                if (instance, dep) not in self._driver_instances:
+                    self._start_driver(instance, dep)
+            obj = cls(_BridgeContext(self, cls.name, instance))
+            if config and hasattr(obj, "apply_config"):
+                obj.apply_config(config)
+            self._driver_instances[(instance, name)] = obj
+        self._emit_driver_state(instance, name, "starting")
         try:
-            instance._bridge_start()
-            self._emit_driver_state(name, "running")
+            obj._bridge_start()
+            self._emit_driver_state(instance, name, "running")
         except Exception:
-            self._emit_driver_state(name, "errored")
+            self._emit_driver_state(instance, name, "errored")
             raise
 
-    def _stop_driver(self, name: str) -> None:
+    def _stop_driver(self, instance: str, name: str) -> None:
         with self._lock:
-            instance = self._driver_instances.pop(name, None)
-        if instance is None:
+            obj = self._driver_instances.pop((instance, name), None)
+        if obj is None:
             return
-        self._emit_driver_state(name, "stopping")
+        self._emit_driver_state(instance, name, "stopping")
         try:
-            instance._bridge_stop()
+            obj._bridge_stop()
         finally:
-            self._emit_driver_state(name, "available")
+            self._emit_driver_state(instance, name, "available")
 
     def _list_drivers(self) -> JsonDict:
         return {
@@ -216,18 +240,53 @@ class Bridge:
                     "events": list(cls.events),
                     "actions": list(cls.actions),
                     "dependencies": list(cls.dependencies),
+                    "shared": bool(getattr(cls, "shared", False)),
                 }
                 for cls in self._driver_classes.values()
             ]
         }
 
-    def _get_event_data(self, driver: str, event: str) -> Any:
-        instance = self._driver_instances.get(driver)
-        if instance is None:
-            return None
-        return instance.get_event_data(event)
+    def _list_cameras(self) -> JsonDict:
+        from gosai_py.drivers.camera import CameraDriver
 
-    def _execute(self, driver: str, action: str, data: Any) -> Any:
+        return {"devices": CameraDriver.probe_devices()}
+
+    def _list_audio_devices(self) -> JsonDict:
+        try:
+            import sounddevice as sd  # type: ignore[import-not-found]
+        except ImportError as exc:
+            return {"ok": False, "error": f"sounddevice not available: {exc}"}
+        devices = sd.query_devices()
+        defaults = sd.default.device
+        default_in = defaults[0] if isinstance(defaults, (list, tuple)) else defaults
+        default_out = defaults[1] if isinstance(defaults, (list, tuple)) else defaults
+        microphones = [
+            {
+                "index": idx,
+                "label": d.get("name") or f"Input {idx}",
+                "is_default": idx == default_in,
+            }
+            for idx, d in enumerate(devices)
+            if d.get("max_input_channels", 0) > 0
+        ]
+        speakers = [
+            {
+                "index": idx,
+                "label": d.get("name") or f"Output {idx}",
+                "is_default": idx == default_out,
+            }
+            for idx, d in enumerate(devices)
+            if d.get("max_output_channels", 0) > 0
+        ]
+        return {"ok": True, "microphones": microphones, "speakers": speakers}
+
+    def _get_event_data(self, instance: str, driver: str, event: str) -> Any:
+        obj = self._driver_instances.get((instance, driver))
+        if obj is None:
+            return None
+        return obj.get_event_data(event)
+
+    def _execute(self, instance: str, driver: str, action: str, data: Any) -> Any:
         if driver == "camera" and action == "list_formats":
             from gosai_py.drivers.camera import CameraDriver
 
@@ -236,24 +295,24 @@ class Bridge:
                 device = int(data["device"])
             return CameraDriver.probe_formats(device)
 
-        instance = self._driver_instances.get(driver)
-        if instance is None:
-            raise KeyError(f"driver {driver!r} not running")
-        if action not in instance.actions:
+        obj = self._driver_instances.get((instance, driver))
+        if obj is None:
+            raise KeyError(f"driver {driver!r} not running for instance {instance!r}")
+        if action not in obj.actions:
             raise ValueError(f"driver {driver!r} does not support action {action!r}")
-        return instance.execute(action, data)
+        return obj.execute(action, data)
 
     # ------------------------------------------------------------------
     # Subscriptions
     # ------------------------------------------------------------------
 
-    def _subscribe_external(self, driver: str, event: str) -> None:
-        key = (driver, event)
+    def _subscribe_external(self, instance: str, driver: str, event: str) -> None:
+        key = (instance, driver, event)
         with self._lock:
             self._external_subscribers[key] = self._external_subscribers.get(key, 0) + 1
 
-    def _unsubscribe_external(self, driver: str, event: str) -> None:
-        key = (driver, event)
+    def _unsubscribe_external(self, instance: str, driver: str, event: str) -> None:
+        key = (instance, driver, event)
         with self._lock:
             count = self._external_subscribers.get(key, 0) - 1
             if count <= 0:
@@ -262,16 +321,16 @@ class Bridge:
                 self._external_subscribers[key] = count
 
     def _subscribe_internal(
-        self, driver: str, event: str, callback: Callable[[Any], None]
+        self, instance: str, driver: str, event: str, callback: Callable[[Any], None]
     ) -> None:
-        key = (driver, event)
+        key = (instance, driver, event)
         with self._lock:
             self._internal_subscribers.setdefault(key, []).append(callback)
 
     def _unsubscribe_internal(
-        self, driver: str, event: str, callback: Callable[[Any], None]
+        self, instance: str, driver: str, event: str, callback: Callable[[Any], None]
     ) -> None:
-        key = (driver, event)
+        key = (instance, driver, event)
         with self._lock:
             callbacks = self._internal_subscribers.get(key)
             if not callbacks:
@@ -290,6 +349,9 @@ class Bridge:
     def handle(self, request: JsonDict) -> None:
         req_type = request.get("type")
         req_id = request.get("id", "")
+        instance = request.get("instance")
+        if not isinstance(instance, str) or not instance:
+            instance = DEFAULT_INSTANCE
 
         if req_type == "ping":
             self._write({"type": "pong", "id": req_id, "ts": time.time()})
@@ -297,6 +359,20 @@ class Bridge:
 
         if req_type == "list-drivers":
             self._respond(req_id, True, self._list_drivers())
+            return
+
+        if req_type == "list-cameras":
+            try:
+                self._respond(req_id, True, self._list_cameras())
+            except Exception as exc:
+                self._respond(req_id, False, error=f"{exc!r}")
+            return
+
+        if req_type == "list-audio-devices":
+            try:
+                self._respond(req_id, True, self._list_audio_devices())
+            except Exception as exc:
+                self._respond(req_id, False, error=f"{exc!r}")
             return
 
         if req_type == "start-driver":
@@ -307,7 +383,7 @@ class Bridge:
             config = request.get("config")
             driver_config = config if isinstance(config, dict) else None
             try:
-                self._start_driver(driver, driver_config)
+                self._start_driver(instance, driver, driver_config)
                 self._respond(req_id, True, {"driver": driver, "state": "running"})
             except Exception as exc:
                 self._respond(req_id, False, error=f"{exc!r}")
@@ -319,7 +395,7 @@ class Bridge:
                 self._respond(req_id, False, error="driver name missing")
                 return
             try:
-                self._stop_driver(driver)
+                self._stop_driver(instance, driver)
                 self._respond(req_id, True, {"driver": driver, "state": "available"})
             except Exception as exc:
                 self._respond(req_id, False, error=f"{exc!r}")
@@ -331,7 +407,7 @@ class Bridge:
             if not isinstance(driver, str) or not isinstance(event, str):
                 self._respond(req_id, False, error="driver/event required")
                 return
-            self._subscribe_external(driver, event)
+            self._subscribe_external(instance, driver, event)
             self._respond(req_id, True)
             return
 
@@ -341,7 +417,7 @@ class Bridge:
             if not isinstance(driver, str) or not isinstance(event, str):
                 self._respond(req_id, False, error="driver/event required")
                 return
-            self._unsubscribe_external(driver, event)
+            self._unsubscribe_external(instance, driver, event)
             self._respond(req_id, True)
             return
 
@@ -351,7 +427,7 @@ class Bridge:
             if not isinstance(driver, str) or not isinstance(event, str):
                 self._respond(req_id, False, error="driver/event required")
                 return
-            self._respond(req_id, True, self._get_event_data(driver, event))
+            self._respond(req_id, True, self._get_event_data(instance, driver, event))
             return
 
         if req_type == "execute":
@@ -362,7 +438,7 @@ class Bridge:
                 self._respond(req_id, False, error="driver/action required")
                 return
             try:
-                result = self._execute(driver, action, data)
+                result = self._execute(instance, driver, action, data)
                 self._respond(req_id, True, result)
             except Exception as exc:
                 self._respond(req_id, False, error=f"{exc!r}")
@@ -406,10 +482,10 @@ class Bridge:
             pass
 
         with self._lock:
-            names = list(self._driver_instances.keys())
-        for name in names:
+            keys = list(self._driver_instances.keys())
+        for inst, name in keys:
             try:
-                self._stop_driver(name)
+                self._stop_driver(inst, name)
             except Exception as exc:
                 self._emit_log("warn", "bridge", f"failed to stop {name}: {exc!r}")
         return 0

@@ -5,6 +5,7 @@
   "description": "Augmented-reality pool table: projects interactive visuals onto a billiard table using camera-detected balls, hands, and cue. Includes always-on overlays (balls, cue, hands), a gesture-driven menu, and several launchable experiences (rabbits game, affine functions, triangle geometry, univers, ambient display, and a live ball-stream relay).",
   "author": "GOSAI",
   "default": "main",
+  "requirements": { "display": true, "camera": true },
   "experiences": [
     {
       "slug": "main",

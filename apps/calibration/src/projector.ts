@@ -21,6 +21,7 @@ import {
 import {
   WIZARD_EVENTS,
   STORAGE_KEYS,
+  CALIBRATION_TARGET_KEY,
   type MarkerImage,
   type MarkerSlot,
   type MarkerTransform,
@@ -35,6 +36,7 @@ import {
   MAX_SCALE,
   applyTransformToLayout,
   makeMarkerLayout,
+  scopedKey,
   setBodyFullscreen,
 } from './shared.js';
 
@@ -50,6 +52,8 @@ export interface ProjectorState {
   step: WizardStep;
   layout: MarkerSlot[];
   transform: MarkerTransform;
+  /** Slug of the app being calibrated for; namespaces the profile keys. */
+  target: string | null;
   /** Last known camera frame size; used to scale the preview img to its
    * natural dimensions before applying the camera->display warp. */
   previewFrameSize: { w: number; h: number } | null;
@@ -110,6 +114,7 @@ export function initProjectorState(): ProjectorState {
     step: 'markers',
     layout: [],
     transform: { ...DEFAULT_MARKER_TRANSFORM },
+    target: null,
     previewFrameSize: null,
     previewWarpApplied: false,
     eventSubs: [],
@@ -124,6 +129,8 @@ export async function startProjector(
   state: ProjectorState,
 ): Promise<void> {
   rt.log.info('projector role starting');
+
+  state.target = (await rt.storage.get<string>(CALIBRATION_TARGET_KEY).catch(() => null)) ?? null;
 
   const width = window.innerWidth;
   const height = window.innerHeight;
@@ -296,7 +303,9 @@ async function applyPreviewWarp(
 
   // Pull the homography we just computed; fall back to the legacy stretched
   // preview if it is missing (e.g. user re-entered preview before compute).
-  const homography = await rt.storage.get<number[]>(STORAGE_KEYS.Homography).catch(() => null);
+  const homography = await rt.storage
+    .get<number[]>(scopedKey(STORAGE_KEYS.Homography, state.target))
+    .catch(() => null);
   if (!homography || !Array.isArray(homography) || homography.length !== 9) {
     rt.log.warn('preview warp: homography not found, falling back to letterbox');
     return;
@@ -356,7 +365,7 @@ async function applyPreviewWarp(
   // warped to projector pixels) and draw a thin guideline polygon so the user
   // can visually confirm the projection aligns with the physical surface.
   const surfaceQuadDisplay = await rt.storage
-    .get<SurfaceQuadDisplay>(STORAGE_KEYS.SurfaceQuadDisplay)
+    .get<SurfaceQuadDisplay>(scopedKey(STORAGE_KEYS.SurfaceQuadDisplay, state.target))
     .catch(() => null);
   drawPreviewOverlay(state, dispW, dispH, surfaceQuadDisplay);
 }

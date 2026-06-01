@@ -13,6 +13,9 @@ Configurable via class attributes on subclasses or via the legacy
 from __future__ import annotations
 
 import contextlib
+import os
+import platform
+import re
 import time
 from typing import Any, ClassVar
 
@@ -34,6 +37,12 @@ _PROBE_FPS: tuple[int, ...] = (5, 10, 15, 24, 25, 30, 60)
 # When the driver cannot read discrete FPS modes, these targets are still valid
 # because the capture loop software-throttles to `_fps_target`.
 _SOFTWARE_FPS: tuple[int, ...] = (15, 24, 30, 60)
+
+
+def _video_node_number(entry: str) -> int:
+    """Sort key for `/sys/class/video4linux` entries (video10 after video2)."""
+    match = re.fullmatch(r"video(\d+)", entry)
+    return int(match.group(1)) if match else 1_000_000
 
 
 class CameraDriver(BaseDriver):
@@ -71,6 +80,101 @@ class CameraDriver(BaseDriver):
             self._height = int(cfg["height"])
         if "fps" in cfg:
             self._fps_target = float(cfg["fps"])
+
+    @classmethod
+    def probe_devices(cls, max_index: int = 8) -> list[dict[str, Any]]:
+        """Enumerate connected cameras with human-readable names.
+
+        Prefers fast, native enumeration that yields real device names without
+        opening each camera (macOS `system_profiler`, Linux sysfs). Opening a
+        device with OpenCV costs ~1s each on macOS, so the per-index open-probe
+        is only a last-resort fallback. Returned indices match what
+        `cv2.VideoCapture(index)` opens on that platform.
+        """
+        system = platform.system()
+        with contextlib.suppress(Exception):
+            if system == "Darwin":
+                devices = cls._probe_devices_macos()
+                if devices:
+                    return devices
+            elif system == "Linux":
+                devices = cls._probe_devices_linux()
+                if devices:
+                    return devices
+        return cls._probe_devices_opencv(max_index)
+
+    @staticmethod
+    def _probe_devices_macos() -> list[dict[str, Any]]:
+        """Camera names via `system_profiler` (~0.3s, no device opening).
+
+        OpenCV's AVFoundation backend sorts capture devices by `uniqueID`, so we
+        apply the same ordering to keep our index aligned with
+        `cv2.VideoCapture(index)`.
+        """
+        import json
+        import subprocess
+
+        out = subprocess.check_output(
+            ["system_profiler", "-json", "-detailLevel", "full", "SPCameraDataType"],
+            timeout=10,
+            stderr=subprocess.DEVNULL,
+        )
+        cams = json.loads(out).get("SPCameraDataType", [])
+        cams = sorted(cams, key=lambda c: str(c.get("spcamera_unique-id", "")))
+        return [
+            {"index": idx, "label": cam.get("_name") or f"Camera {idx}"}
+            for idx, cam in enumerate(cams)
+        ]
+
+    @staticmethod
+    def _probe_devices_linux() -> list[dict[str, Any]]:
+        """Camera names via V4L2 sysfs. Skips secondary nodes (metadata) by only
+        keeping each device's primary capture node (sysfs `index` == 0)."""
+        base = "/sys/class/video4linux"
+        if not os.path.isdir(base):
+            return []
+        devices: list[dict[str, Any]] = []
+        for entry in sorted(os.listdir(base), key=_video_node_number):
+            match = re.fullmatch(r"video(\d+)", entry)
+            if not match:
+                continue
+            node = int(match.group(1))
+            dpath = os.path.join(base, entry)
+            with contextlib.suppress(OSError), open(os.path.join(dpath, "index")) as fh:
+                if fh.read().strip() != "0":
+                    continue
+            name = f"Camera {node}"
+            with contextlib.suppress(OSError), open(os.path.join(dpath, "name")) as fh:
+                name = fh.read().strip() or name
+            devices.append({"index": node, "label": name})
+        return devices
+
+    @classmethod
+    def _probe_devices_opencv(cls, max_index: int) -> list[dict[str, Any]]:
+        """Last-resort probe: open each index until two consecutive misses.
+
+        Slow (each open can take ~1s) and yields only generic labels, so this
+        only runs when native enumeration is unavailable.
+        """
+        try:
+            import cv2  # type: ignore[import-not-found]
+        except ImportError:
+            return []
+        devices: list[dict[str, Any]] = []
+        misses = 0
+        for idx in range(max_index):
+            cap = cv2.VideoCapture(idx)
+            opened = bool(cap.isOpened())
+            with contextlib.suppress(Exception):
+                cap.release()
+            if opened:
+                devices.append({"index": idx, "label": f"Camera {idx}"})
+                misses = 0
+            else:
+                misses += 1
+                if misses >= 2 and idx > 0:
+                    break
+        return devices
 
     @classmethod
     def probe_formats(cls, device: int = 0) -> dict[str, Any]:

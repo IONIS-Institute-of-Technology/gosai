@@ -32,6 +32,8 @@ class SpeakerDriver(BaseDriver):
         "set_samplerate",
     )
     loop_interval_s: ClassVar[float | None] = None  # callback driven
+    # Output device: multiple apps may target the same speaker (the OS mixes).
+    shared: ClassVar[bool] = True
 
     def __init__(self, context: DriverContext) -> None:
         super().__init__(context)
@@ -41,6 +43,13 @@ class SpeakerDriver(BaseDriver):
         self._blocksize = 1024
         self._buffer: queue.Queue[Any] = queue.Queue()
         self._stream: Any = None
+
+    def apply_config(self, cfg: dict[str, Any]) -> None:
+        """Apply persisted settings before the output stream opens."""
+        if "device" in cfg:
+            self._device = None if cfg["device"] is None else int(cfg["device"])
+        if "samplerate" in cfg and cfg["samplerate"] is not None:
+            self._samplerate = int(cfg["samplerate"])
 
     def pre_run(self) -> None:
         self._open_stream()

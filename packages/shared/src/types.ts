@@ -31,6 +31,22 @@ export interface DriverInfo {
   readonly actions: readonly string[];
   readonly dependencies: readonly string[];
   readonly subscribers: readonly string[];
+  /**
+   * Sharing policy. `false` (default) means the driver is exclusive: each app
+   * binding gets its own device-bound instance. `true` means the driver can be
+   * shared across apps (e.g. speaker output, device-less utilities).
+   */
+  readonly shared: boolean;
+  /** Running instances of this driver, keyed by binding/device. */
+  readonly instances?: readonly DriverInstanceInfo[];
+}
+
+/** A single running instance of a driver, bound to an app and/or device. */
+export interface DriverInstanceInfo {
+  /** Namespace the instance lives in: an app slug (exclusive) or `shared`/`shared:dev<n>`. */
+  readonly instance: string;
+  readonly state: DriverState;
+  readonly subscribers: readonly string[];
 }
 
 export interface ExperienceDescriptor {
@@ -67,6 +83,19 @@ export interface AppManifest {
   readonly python?: PythonConfig;
   readonly startup?: readonly string[];
   readonly builtin?: boolean;
+  /**
+   * Device kinds this app needs. Drives the per-app device picker in the
+   * dashboard. Omitted kinds default to `false`.
+   */
+  readonly requirements?: AppRequirements;
+}
+
+/** Device kinds an app declares it needs, so the dashboard can offer pickers. */
+export interface AppRequirements {
+  readonly display?: boolean;
+  readonly camera?: boolean;
+  readonly microphone?: boolean;
+  readonly speaker?: boolean;
 }
 
 export interface InstalledApp {
@@ -114,6 +143,63 @@ export interface CameraFormatsResult {
   readonly device: number;
   readonly formats?: readonly CameraFormat[];
   readonly error?: string;
+}
+
+export interface MicrophoneSettings {
+  /** sounddevice input index, or null for the system default. */
+  readonly device: number | null;
+  readonly samplerate?: number;
+  readonly channels?: number;
+}
+
+export interface SpeakerSettings {
+  /** sounddevice output index, or null for the system default. */
+  readonly device: number | null;
+  readonly samplerate?: number;
+}
+
+export type DisplayMode = 'fullscreen' | 'windowed';
+
+export interface AppDisplaySettings {
+  /** Electron display id, or null to fall back to the global/primary display. */
+  readonly id: number | null;
+  readonly mode: DisplayMode;
+}
+
+/**
+ * Per-application device assignments, persisted per app slug. Camera and
+ * microphone are exclusive (each app binds its own device); speaker and display
+ * may be shared across apps.
+ */
+export interface AppDeviceSettings {
+  readonly display?: AppDisplaySettings;
+  readonly camera?: CameraSettings;
+  readonly microphone?: MicrophoneSettings;
+  readonly speaker?: SpeakerSettings;
+}
+
+/**
+ * Patch shape for updating per-app device settings. Each device block may be
+ * partial; the store shallow-merges it over the existing block.
+ */
+export interface AppDeviceSettingsPatch {
+  readonly display?: Partial<AppDisplaySettings>;
+  readonly camera?: Partial<CameraSettings>;
+  readonly microphone?: Partial<MicrophoneSettings>;
+  readonly speaker?: Partial<SpeakerSettings>;
+}
+
+/** A single enumerated hardware device offered to the per-app device picker. */
+export interface DeviceOption {
+  readonly index: number;
+  readonly label: string;
+  readonly isDefault?: boolean;
+}
+
+export interface DeviceCatalog {
+  readonly cameras: readonly DeviceOption[];
+  readonly microphones: readonly DeviceOption[];
+  readonly speakers: readonly DeviceOption[];
 }
 
 export interface GlobalConfig {

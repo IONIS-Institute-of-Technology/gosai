@@ -5,6 +5,7 @@
   "description": "Minimal GOSAI app showing experience lifecycle, driver subscription, and canvas rendering.",
   "author": "GOSAI",
   "default": "main",
+  "requirements": { "display": true },
   "experiences": [
     {
       "slug": "main",

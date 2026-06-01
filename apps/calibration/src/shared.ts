@@ -74,6 +74,22 @@ export const STORAGE_KEYS = {
   MarkersLayout: 'markers_layout',
 } as const;
 
+/**
+ * Storage key holding the slug of the app currently being calibrated for. The
+ * dashboard writes it before opening the wizard windows; both wizard windows
+ * read it at startup so the profile they write/read is namespaced per app.
+ */
+export const CALIBRATION_TARGET_KEY = '__target';
+
+/**
+ * Namespace a calibration storage key by the target app slug so each app keeps
+ * its own profile (e.g. `homography__interactive-pool`). When `target` is empty
+ * the legacy unscoped key is returned, preserving single-app setups.
+ */
+export function scopedKey(key: string, target?: string | null): string {
+  return target ? `${key}__${target}` : key;
+}
+
 /** Default surface (canvas / app reference) resolution. */
 export const DEFAULT_SURFACE_SIZE = { width: 1920, height: 1080 } as const;
 

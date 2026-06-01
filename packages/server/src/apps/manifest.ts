@@ -5,7 +5,7 @@
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AppManifest, ExperienceDescriptor } from '@gosai/shared';
+import type { AppManifest, AppRequirements, ExperienceDescriptor } from '@gosai/shared';
 
 export interface DiscoveredApp {
   readonly manifest: AppManifest;
@@ -100,6 +100,8 @@ export function validateManifest(path: string, value: unknown): AppManifest {
     startup = startupRaw as string[];
   }
 
+  const requirements = parseRequirements(path, v.requirements);
+
   let python: AppManifest['python'];
   if (v.python !== undefined) {
     if (typeof v.python !== 'object' || v.python === null) {
@@ -123,9 +125,28 @@ export function validateManifest(path: string, value: unknown): AppManifest {
     ...(defaultSlug !== undefined ? { default: defaultSlug } : {}),
     ...(python ? { python } : {}),
     ...(startup ? { startup } : {}),
+    ...(requirements ? { requirements } : {}),
     builtin,
   };
   return result;
+}
+
+function parseRequirements(path: string, value: unknown): AppRequirements | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new ManifestError(path, '`requirements` must be an object');
+  }
+  const r = value as Record<string, unknown>;
+  const display = optionalBool(path, r, 'display');
+  const camera = optionalBool(path, r, 'camera');
+  const microphone = optionalBool(path, r, 'microphone');
+  const speaker = optionalBool(path, r, 'speaker');
+  return {
+    ...(display !== undefined ? { display } : {}),
+    ...(camera !== undefined ? { camera } : {}),
+    ...(microphone !== undefined ? { microphone } : {}),
+    ...(speaker !== undefined ? { speaker } : {}),
+  };
 }
 
 function validateExperience(path: string, value: unknown, label: string): ExperienceDescriptor {

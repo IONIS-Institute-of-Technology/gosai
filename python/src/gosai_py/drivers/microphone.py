@@ -39,6 +39,15 @@ class MicrophoneDriver(BaseDriver):
         self._blocksize = 1024
         self._stream: Any = None
 
+    def apply_config(self, cfg: dict[str, Any]) -> None:
+        """Apply persisted settings before the input stream opens."""
+        if "device" in cfg:
+            self._device = None if cfg["device"] is None else int(cfg["device"])
+        if "samplerate" in cfg and cfg["samplerate"] is not None:
+            self._samplerate = int(cfg["samplerate"])
+        if "channels" in cfg and cfg["channels"] is not None:
+            self._channels = int(cfg["channels"])
+
     def pre_run(self) -> None:
         self._open_stream()
 

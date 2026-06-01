@@ -29,9 +29,15 @@ export interface BridgeOptions {
   readonly venvName?: string;
   readonly env?: Record<string, string>;
   readonly logger: ChildLogger;
-  readonly onEvent: (driver: string, event: string, data: unknown, ts: number) => void;
+  readonly onEvent: (
+    instance: string,
+    driver: string,
+    event: string,
+    data: unknown,
+    ts: number,
+  ) => void;
   readonly onLog: (level: string, source: string, message: string) => void;
-  readonly onDriverState: (driver: string, state: string) => void;
+  readonly onDriverState: (instance: string, driver: string, state: string) => void;
   readonly onPerformance: (source: string, metric: string, value: number, ts: number) => void;
   readonly onExit?: (code: number | null, signal: number | null) => void;
 }
@@ -295,13 +301,13 @@ export class PythonBridge {
         return;
       }
       case 'event':
-        this.options.onEvent(msg.driver, msg.event, msg.data, msg.ts);
+        this.options.onEvent(msg.instance, msg.driver, msg.event, msg.data, msg.ts);
         return;
       case 'log':
         this.options.onLog(msg.level, msg.source, msg.message);
         return;
       case 'driver-state':
-        this.options.onDriverState(msg.driver, msg.state);
+        this.options.onDriverState(msg.instance, msg.driver, msg.state);
         return;
       case 'performance':
         this.options.onPerformance(msg.source, msg.metric, msg.value, msg.ts);

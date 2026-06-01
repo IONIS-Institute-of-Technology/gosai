@@ -61,6 +61,11 @@ class BaseDriver:
     actions: ClassVar[tuple[str, ...]] = ()
     dependencies: ClassVar[tuple[str, ...]] = ()
     loop_interval_s: ClassVar[float | None] = 0.01
+    # Sharing policy. False (default) => exclusive: each app binding gets its own
+    # device-bound instance. True => the driver may be shared across apps (e.g.
+    # audio output, device-less utilities). A driver that depends on an exclusive
+    # driver is treated as exclusive regardless of this flag.
+    shared: ClassVar[bool] = False
 
     def __init__(self, context: DriverContext) -> None:
         self._context = context

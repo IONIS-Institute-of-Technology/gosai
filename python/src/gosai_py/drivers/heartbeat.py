@@ -19,6 +19,7 @@ class HeartbeatDriver(BaseDriver):
     actions = ("echo",)
     dependencies = ()
     loop_interval_s = 0.5
+    shared = True
 
     def __init__(self, context: Any) -> None:
         super().__init__(context)

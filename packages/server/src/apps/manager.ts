@@ -123,7 +123,7 @@ export class AppManager {
 
     try {
       for (const driverName of exp.drivers) {
-        await this.options.drivers.subscribe(driverName, '*', key);
+        await this.options.drivers.subscribe(appSlug, driverName, '*', key);
       }
       const running: RunningExperience = { ...entry, state: 'running' };
       this.running.set(key, running);
@@ -159,7 +159,7 @@ export class AppManager {
     const drivers = record?.getExperience(experienceSlug).drivers ?? [];
     for (const driverName of drivers) {
       try {
-        await this.options.drivers.unsubscribe(driverName, '*', key);
+        await this.options.drivers.unsubscribe(appSlug, driverName, '*', key);
       } catch (err) {
         this.log.warn('driver unsubscribe failed', { driver: driverName, err: String(err) });
       }

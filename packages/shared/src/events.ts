@@ -8,9 +8,14 @@
 export const ServerEvents = {
   Welcome: 'server:welcome',
   ConfigChanged: 'server:config-changed',
+  AppConfigChanged: 'app:config-changed',
   Log: 'server:log',
   PerformanceSample: 'server:performance',
 
+  /**
+   * Prefix for per-binding driver event topics. The concrete event name is
+   * `driver:event:<binding>` so each app only receives its own driver stream.
+   */
   DriverEvent: 'driver:event',
   DriverStateChanged: 'driver:state-changed',
   DriversListChanged: 'drivers:list-changed',
@@ -43,11 +48,14 @@ export const ClientCommands = {
   DriverExecute: 'driver:execute',
   DriverSubscribe: 'driver:subscribe',
   DriverUnsubscribe: 'driver:unsubscribe',
+  DevicesList: 'devices:list',
 
   LogsHistory: 'logs:history',
 
   ConfigGet: 'config:get',
   ConfigSet: 'config:set',
+  AppConfigGet: 'app:config:get',
+  AppConfigSet: 'app:config:set',
 } as const;
 
 export type ClientCommandName = (typeof ClientCommands)[keyof typeof ClientCommands];
