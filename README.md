@@ -63,13 +63,13 @@ gosai-2/
 
 ## Requirements
 
-| Tool        | Min version | Notes                                    |
-| ----------- | ----------- | ---------------------------------------- |
-| **Bun**     | 1.2         | TypeScript runtime + bundler             |
-| **uv**      | 0.5         | Python package + virtual env manager     |
-| **Node**    | 20.19       | Electron requires it                     |
-| **Python**  | 3.11        | The drivers target 3.11+                 |
-| **git**     | -           | For cloning external apps                |
+| Tool       | Min version | Notes                                |
+| ---------- | ----------- | ------------------------------------ |
+| **Bun**    | 1.2         | TypeScript runtime + bundler         |
+| **uv**     | 0.5         | Python package + virtual env manager |
+| **Node**   | 20.19       | Electron requires it                 |
+| **Python** | 3.11        | The drivers target 3.11+             |
+| **git**    | -           | For cloning external apps            |
 
 ## Quick Start
 
@@ -93,22 +93,22 @@ To install a new app paste its git URL into the Apps tab of the dashboard.
 
 ## Scripts
 
-| Command                   | Purpose                                     |
-| ------------------------- | ------------------------------------------- |
-| `bun run dev`             | Server + desktop with hot reload            |
-| `bun run dev:server`      | Only the server                             |
-| `bun run dev:desktop`     | Only the Electron app                       |
-| `bun run build:sdk`       | Build the SDK runtime served at `/sdk-runtime.js` |
-| `bun run build`           | Build every package                         |
-| `bun run build:apps`      | Build the built-in apps + template          |
-| `bun run build:server-bin`| Compile the server to a single executable   |
-| `bun run typecheck`       | TypeScript check across the workspace       |
-| `bun run python:sync`     | `uv sync` for the Python runtime            |
-| `bun run python:lint`     | `ruff check src` for the Python runtime     |
-| `bun run python:test`     | `pytest` for the Python runtime             |
-| `bun run package:mac`     | Build server bin + macOS DMG (arm64+x64)    |
-| `bun run package:linux`   | Build server bin + Linux AppImage           |
-| `bun run clean`           | Remove all build artifacts                  |
+| Command                    | Purpose                                           |
+| -------------------------- | ------------------------------------------------- |
+| `bun run dev`              | Server + desktop with hot reload                  |
+| `bun run dev:server`       | Only the server                                   |
+| `bun run dev:desktop`      | Only the Electron app                             |
+| `bun run build:sdk`        | Build the SDK runtime served at `/sdk-runtime.js` |
+| `bun run build`            | Build every package                               |
+| `bun run build:apps`       | Build the built-in apps + template                |
+| `bun run build:server-bin` | Compile the server to a single executable         |
+| `bun run typecheck`        | TypeScript check across the workspace             |
+| `bun run python:sync`      | `uv sync` for the Python runtime                  |
+| `bun run python:lint`      | `ruff check src` for the Python runtime           |
+| `bun run python:test`      | `pytest` for the Python runtime                   |
+| `bun run package:mac`      | Build server bin + macOS DMG (arm64+x64)          |
+| `bun run package:linux`    | Build server bin + Linux AppImage                 |
+| `bun run clean`            | Remove all build artifacts                        |
 
 ## Authoring an app
 
@@ -153,7 +153,7 @@ A matching `gosai.app.json`:
 ## Running apps in parallel & per-app devices
 
 Multiple apps can run at the same time. To keep them from fighting over the same
-hardware, GOSAI binds drivers **per app** (the *binding* is the app slug):
+hardware, GOSAI binds drivers **per app** (the _binding_ is the app slug):
 
 - **Exclusive drivers** (the default) — `camera`, `microphone`, and anything that
   depends on them (`hand_pose`, `pose`, `ball`, ...) — get their own instance per
@@ -161,7 +161,7 @@ hardware, GOSAI binds drivers **per app** (the *binding* is the app slug):
 - **Shared drivers** — `speaker` and device-less utilities like `heartbeat` — are
   shared across apps (apps pointed at the same speaker mix into one stream).
 
-An app declares which device *slots* it needs with a top-level `requirements`
+An app declares which device _slots_ it needs with a top-level `requirements`
 object in its manifest:
 
 ```jsonc

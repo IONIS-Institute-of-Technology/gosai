@@ -22,7 +22,5 @@ export async function stopAllAppExperiences(
   running: RunningExperience[],
 ): Promise<void> {
   const forApp = running.filter((r) => r.appSlug === appSlug);
-  await Promise.all(
-    forApp.map((r) => stopExperienceFully(client, r.appSlug, r.experienceSlug)),
-  );
+  await Promise.all(forApp.map((r) => stopExperienceFully(client, r.appSlug, r.experienceSlug)));
 }

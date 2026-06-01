@@ -26,6 +26,8 @@
     "typecheck": "bun run --filter '@gosai/*' typecheck",
     "test": "bun run --filter '@gosai/*' test",
     "lint": "bun run --filter '@gosai/*' lint",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "clean": "bun run --filter '@gosai/*' clean && rm -rf node_modules",
     "python:sync": "cd python && uv sync",
     "python:lint": "cd python && uv run ruff check src",

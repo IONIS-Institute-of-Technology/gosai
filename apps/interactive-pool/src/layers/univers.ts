@@ -213,13 +213,7 @@ function drawSolarSystem(ctx: CanvasRenderingContext2D, sys: SolarSystem): void 
   ctx.rotate(sys.tilt);
 
   // Sun.
-  fillCircle(
-    ctx,
-    0,
-    0,
-    sys.sunR,
-    `rgb(${sys.sunColor[0]},${sys.sunColor[1]},${sys.sunColor[2]})`,
-  );
+  fillCircle(ctx, 0, 0, sys.sunR, `rgb(${sys.sunColor[0]},${sys.sunColor[1]},${sys.sunColor[2]})`);
 
   for (const planet of sys.planets) {
     planet.theta += planet.velocity;

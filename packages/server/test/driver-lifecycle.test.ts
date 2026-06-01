@@ -14,11 +14,7 @@
 import { describe, expect, test } from 'bun:test';
 import { Logger } from '../src/logger/logger.js';
 import { EventBus } from '../src/ipc/bus.js';
-import {
-  DriverManager,
-  SYSTEM_BINDING,
-  type DriverManifestEntry,
-} from '../src/drivers/manager.js';
+import { DriverManager, SYSTEM_BINDING, type DriverManifestEntry } from '../src/drivers/manager.js';
 import type { PythonBridge } from '../src/drivers/bridge.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -167,9 +163,7 @@ describe('driver lifecycle', () => {
     // Stopping app A's camera leaves app B's running.
     bridge.events = [];
     await manager.unsubscribe('appA', 'camera', '*', 'a');
-    const camStops = bridge.events.filter(
-      (e) => e.type === 'stop-driver' && e.driver === 'camera',
-    );
+    const camStops = bridge.events.filter((e) => e.type === 'stop-driver' && e.driver === 'camera');
     expect(camStops.map((e) => e.instance)).toEqual(['appA']);
     expect(manager.isInstanceRunning('appA', 'camera')).toBe(false);
     expect(manager.isInstanceRunning('appB', 'camera')).toBe(true);

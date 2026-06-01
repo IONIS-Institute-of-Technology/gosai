@@ -177,9 +177,7 @@ export default defineExperience<State>({
       void configureHandPoseDriver(rt, state.calibration, {
         width: REF_WIDTH,
         height: REF_HEIGHT,
-      }).catch((err) =>
-        rt.log.warn('configureHandPoseDriver failed', { err: String(err) }),
-      );
+      }).catch((err) => rt.log.warn('configureHandPoseDriver failed', { err: String(err) }));
       // Apply CSS matrix3d keystone correction so the rendered canvas lands on
       // the physical surface exactly, regardless of projector or camera angle.
       applyKeystone(state, state.calibration.surfaceQuadDisplay);
@@ -207,10 +205,7 @@ export default defineExperience<State>({
     state.launchable.set('affine', createAffineLayer(state.feed));
     state.launchable.set('triangles', createTrianglesLayer(state.feed));
     state.launchable.set('univers', createUniversLayer(state.feed));
-    state.launchable.set(
-      'ambient_display',
-      createAmbientDisplayLayer(state.feed, rt.drivers),
-    );
+    state.launchable.set('ambient_display', createAmbientDisplayLayer(state.feed, rt.drivers));
 
     // Driver subscriptions feed `state.feed` in place.
     wireDrivers(state, rt);
@@ -383,9 +378,7 @@ function parseBalls(data: unknown): ParsedBall[] | null {
   }
   // Legacy shape: [[x, y], [x, y], ...]
   if (Array.isArray(data)) {
-    return data
-      .map((entry) => coerceBall(entry))
-      .filter((b): b is ParsedBall => b !== null);
+    return data.map((entry) => coerceBall(entry)).filter((b): b is ParsedBall => b !== null);
   }
   return null;
 }

@@ -81,5 +81,9 @@ function StatePill({ state }: { state: string }): React.ReactElement {
     errored: 'bg-red-950 text-red-300',
   };
   const cls = colors[state] ?? colors.available!;
-  return <span className={`rounded px-2 py-0.5 text-[10px] uppercase tracking-wider ${cls}`}>{state}</span>;
+  return (
+    <span className={`rounded px-2 py-0.5 text-[10px] uppercase tracking-wider ${cls}`}>
+      {state}
+    </span>
+  );
 }

@@ -15,25 +15,33 @@ export class StorageClientImpl implements StorageClient {
   ) {}
 
   async get<T = unknown>(key: string, fallback?: T): Promise<T | undefined> {
-    const res = await fetch(`${this.baseUrl}/v1/apps/${this.appSlug}/storage/${encodeURIComponent(key)}`);
+    const res = await fetch(
+      `${this.baseUrl}/v1/apps/${this.appSlug}/storage/${encodeURIComponent(key)}`,
+    );
     if (res.status === 404) return fallback;
     if (!res.ok) throw new Error(`storage.get(${key}) -> ${res.status}`);
     return (await res.json()) as T;
   }
 
   async set(key: string, value: unknown): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/v1/apps/${this.appSlug}/storage/${encodeURIComponent(key)}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(value),
-    });
+    const res = await fetch(
+      `${this.baseUrl}/v1/apps/${this.appSlug}/storage/${encodeURIComponent(key)}`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(value),
+      },
+    );
     if (!res.ok) throw new Error(`storage.set(${key}) -> ${res.status}`);
   }
 
   async remove(key: string): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/v1/apps/${this.appSlug}/storage/${encodeURIComponent(key)}`, {
-      method: 'DELETE',
-    });
+    const res = await fetch(
+      `${this.baseUrl}/v1/apps/${this.appSlug}/storage/${encodeURIComponent(key)}`,
+      {
+        method: 'DELETE',
+      },
+    );
     if (!res.ok && res.status !== 404) throw new Error(`storage.remove(${key}) -> ${res.status}`);
   }
 

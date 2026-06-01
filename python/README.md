@@ -14,10 +14,10 @@ YOLO runs on the NVIDIA GPU via CUDA. On macOS, `onnxruntime` uses CoreML instea
 
 Optional overrides:
 
-| Variable | Effect |
-| -------- | ------ |
-| `GOSAI_ORT_DEVICE=cuda` | Force NVIDIA CUDA (then CPU fallback) |
-| `GOSAI_ORT_DEVICE=cpu` | Force CPU only |
+| Variable                 | Effect                                   |
+| ------------------------ | ---------------------------------------- |
+| `GOSAI_ORT_DEVICE=cuda`  | Force NVIDIA CUDA (then CPU fallback)    |
+| `GOSAI_ORT_DEVICE=cpu`   | Force CPU only                           |
 | `GOSAI_CUDA_DEVICE_ID=0` | Which NVIDIA GPU (0 = first CUDA device) |
 
 After start, check logs for `active=CUDAExecutionProvider` (or `CoreMLExecutionProvider` on Mac).

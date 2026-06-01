@@ -18,47 +18,48 @@ storage roundtrip works.
 
 ### TypeScript SDK (`packages/sdk/src/`)
 
-| File | Purpose |
-|------|---------|
-| `index.ts` | Public exports: `defineExperience`, `runExperience`, renderer helpers, types. |
-| `types.ts` | All public types (`ExperienceDefinition`, `ExperienceRuntimeContext`, `DriverClient`, `StorageClient`, `AppLogger`, `ExperienceRouter`, `FrameInfo`, etc.) plus re-exports of `@gosai/shared` types. |
-| `experience.ts` | `defineExperience` helper - small typed wrapper that produces an `ExperienceDefinition`. |
-| `connection.ts` | `ServerClient`: auto-reconnecting WebSocket, lazy subscribe-on-listen, RPC with timeouts, dispatched events by exact name + namespace wildcard + `*`. |
-| `driver-client.ts` | `DriverClientImpl`: maps `drivers.on(name, event, cb)` to server subscriptions + local event-driven dispatch. |
-| `storage.ts` | `StorageClientImpl`: REST-backed per-app key/value store. |
-| `logger.ts` | `AppLoggerImpl`: forwards entries to the server via `app:log` RPC. |
-| `experience-router.ts` | `ExperienceRouterImpl`: tracks current experience, lets apps switch between experiences programmatically. |
-| `runtime.ts` | `runExperience`: connect WS, build the runtime context, drive the lifecycle (`init` -> `start` -> render loop -> `stop`), handle cleanup. |
-| `renderer.ts` | DOM helpers for fullscreen canvas creation. |
+| File                   | Purpose                                                                                                                                                                                              |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `index.ts`             | Public exports: `defineExperience`, `runExperience`, renderer helpers, types.                                                                                                                        |
+| `types.ts`             | All public types (`ExperienceDefinition`, `ExperienceRuntimeContext`, `DriverClient`, `StorageClient`, `AppLogger`, `ExperienceRouter`, `FrameInfo`, etc.) plus re-exports of `@gosai/shared` types. |
+| `experience.ts`        | `defineExperience` helper - small typed wrapper that produces an `ExperienceDefinition`.                                                                                                             |
+| `connection.ts`        | `ServerClient`: auto-reconnecting WebSocket, lazy subscribe-on-listen, RPC with timeouts, dispatched events by exact name + namespace wildcard + `*`.                                                |
+| `driver-client.ts`     | `DriverClientImpl`: maps `drivers.on(name, event, cb)` to server subscriptions + local event-driven dispatch.                                                                                        |
+| `storage.ts`           | `StorageClientImpl`: REST-backed per-app key/value store.                                                                                                                                            |
+| `logger.ts`            | `AppLoggerImpl`: forwards entries to the server via `app:log` RPC.                                                                                                                                   |
+| `experience-router.ts` | `ExperienceRouterImpl`: tracks current experience, lets apps switch between experiences programmatically.                                                                                            |
+| `runtime.ts`           | `runExperience`: connect WS, build the runtime context, drive the lifecycle (`init` -> `start` -> render loop -> `stop`), handle cleanup.                                                            |
+| `renderer.ts`          | DOM helpers for fullscreen canvas creation.                                                                                                                                                          |
 
 The SDK builds two artifacts:
+
 - `dist/index.d.ts` etc. for TypeScript consumers via `workspace:*`.
 - `dist/browser.js` (14.5 KB ESM) served by the GOSAI server at
   `/sdk-runtime.js` and used as an import-map target by app-host pages.
 
 ### Server additions (`packages/server/src/`)
 
-| Change | Description |
-|--------|-------------|
-| `apps/storage.ts` | `AppStorage`: per-app JSON KV under `paths.apps/<slug>/_data/storage/`, with key sanitisation to prevent path traversal. |
-| `server.ts` (REST endpoints) | `GET/POST/DELETE /v1/apps/:slug/storage/:key`, `GET /v1/apps/:slug/storage` (list keys). |
-| `server.ts` (static files) | `GET /v1/apps/:slug/static/*`: serves any file from an installed app's directory with MIME guessing and path-traversal protection. |
-| `server.ts` (sdk runtime) | `GET /sdk-runtime.js`: serves the SDK browser bundle so apps can import `@gosai/sdk` via import map. |
-| `server.ts` (app:log handler) | New WS RPC handler that re-emits app log entries through the central `Logger`. |
+| Change                        | Description                                                                                                                        |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/storage.ts`             | `AppStorage`: per-app JSON KV under `paths.apps/<slug>/_data/storage/`, with key sanitisation to prevent path traversal.           |
+| `server.ts` (REST endpoints)  | `GET/POST/DELETE /v1/apps/:slug/storage/:key`, `GET /v1/apps/:slug/storage` (list keys).                                           |
+| `server.ts` (static files)    | `GET /v1/apps/:slug/static/*`: serves any file from an installed app's directory with MIME guessing and path-traversal protection. |
+| `server.ts` (sdk runtime)     | `GET /sdk-runtime.js`: serves the SDK browser bundle so apps can import `@gosai/sdk` via import map.                               |
+| `server.ts` (app:log handler) | New WS RPC handler that re-emits app log entries through the central `Logger`.                                                     |
 
 ### Python SDK additions (`python/src/gosai_py/`)
 
-| File | Purpose |
-|------|---------|
-| `processor.py` | `BaseProcessor`: subclass of `BaseDriver` that auto-subscribes to `(driver, event)` pairs and exposes `on_data(driver, event, data)`. App-shipped Python processors extend this. |
-| `serialization.py` | `to_msgpack` / `from_msgpack`, `frame_to_jpeg_base64`, `frame_to_png_base64`. Heavy-frame transport helpers. |
-| `__init__.py` | Now re-exports `BaseDriver`, `BaseProcessor`, `DriverContext`. |
+| File               | Purpose                                                                                                                                                                          |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `processor.py`     | `BaseProcessor`: subclass of `BaseDriver` that auto-subscribes to `(driver, event)` pairs and exposes `on_data(driver, event, data)`. App-shipped Python processors extend this. |
+| `serialization.py` | `to_msgpack` / `from_msgpack`, `frame_to_jpeg_base64`, `frame_to_png_base64`. Heavy-frame transport helpers.                                                                     |
+| `__init__.py`      | Now re-exports `BaseDriver`, `BaseProcessor`, `DriverContext`.                                                                                                                   |
 
 ### App-host runtime (`packages/desktop/src/renderer/`)
 
-| File | Change |
-|------|--------|
-| `app-host.html` | Adds an `importmap` that resolves `@gosai/sdk` to `http://127.0.0.1:7777/sdk-runtime.js`. CSP allows scripts and images from the local server. |
+| File                   | Change                                                                                                                                                                                                       |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `app-host.html`        | Adds an `importmap` that resolves `@gosai/sdk` to `http://127.0.0.1:7777/sdk-runtime.js`. CSP allows scripts and images from the local server.                                                               |
 | `app-host/AppHost.tsx` | Reads `?app=` and `?experience=` query params, fetches the app catalogue, dynamically `import()`s the experience module from `/v1/apps/.../static/<entry>`, then calls `runExperience` from the SDK runtime. |
 
 ### Template (`templates/basic/`)

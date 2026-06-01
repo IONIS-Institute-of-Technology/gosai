@@ -261,11 +261,7 @@ export class AppManager {
   }
 
   private broadcastList(): void {
-    this.options.bus.emit(
-      ServerEvents.AppsListChanged,
-      { apps: this.listApps() },
-      'apps',
-    );
+    this.options.bus.emit(ServerEvents.AppsListChanged, { apps: this.listApps() }, 'apps');
   }
 
   private broadcastExperienceState(state: RunningExperience): void {

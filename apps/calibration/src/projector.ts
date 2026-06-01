@@ -167,8 +167,7 @@ export async function startProjector(
     const cx = width / 2;
     const cy = height / 2;
     state.markerLayer.style.transformOrigin = `${cx}px ${cy}px`;
-    state.markerLayer.style.transform =
-      `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
+    state.markerLayer.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
     updateTransformStatus(state);
   };
 
@@ -214,7 +213,10 @@ export async function startProjector(
     if (state.step !== 'markers') return;
     e.preventDefault();
     const direction = e.deltaY < 0 ? 1 : -1;
-    const newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, state.transform.scale + direction * ZOOM_STEP));
+    const newScale = Math.min(
+      MAX_SCALE,
+      Math.max(MIN_SCALE, state.transform.scale + direction * ZOOM_STEP),
+    );
     state.transform.scale = newScale;
     onTransformChange();
   };
@@ -326,9 +328,7 @@ async function applyPreviewWarp(
   // If the warped image lands entirely outside the projector window we have
   // a stale or bogus homography -- keep the legacy letterbox preview rather
   // than throwing a confusing all-black screen at the user.
-  const intersects = corners.some(
-    (c) => c.x >= 0 && c.x <= dispW && c.y >= 0 && c.y <= dispH,
-  );
+  const intersects = corners.some((c) => c.x >= 0 && c.x <= dispW && c.y >= 0 && c.y <= dispH);
   if (!intersects) {
     rt.log.warn('preview warp: warped corners do not intersect display, skipping');
     return;
@@ -401,10 +401,7 @@ function drawPreviewOverlay(
   if (surfaceQuadDisplay?.points?.length === 4) {
     const ns = 'http://www.w3.org/2000/svg';
     const polygon = document.createElementNS(ns, 'polygon');
-    polygon.setAttribute(
-      'points',
-      surfaceQuadDisplay.points.map((p) => `${p.x},${p.y}`).join(' '),
-    );
+    polygon.setAttribute('points', surfaceQuadDisplay.points.map((p) => `${p.x},${p.y}`).join(' '));
     polygon.setAttribute('fill', 'none');
     polygon.setAttribute('stroke', '#4ade80');
     polygon.setAttribute('stroke-width', '4');
@@ -432,8 +429,7 @@ function updateTransformStatus(state: ProjectorState): void {
   if (state.step !== 'markers') return;
   const { offsetX, offsetY, scale } = state.transform;
   const zoomPct = Math.round(scale * 100);
-  state.status.textContent =
-    `markers projected · ↔ ${offsetX} ↕ ${offsetY} · zoom ${zoomPct}%  [arrows: pan · scroll: zoom]`;
+  state.status.textContent = `markers projected · ↔ ${offsetX} ↕ ${offsetY} · zoom ${zoomPct}%  [arrows: pan · scroll: zoom]`;
 }
 
 function applyStep(state: ProjectorState, step: WizardStep, message?: string): void {

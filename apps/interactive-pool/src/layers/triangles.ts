@@ -16,7 +16,15 @@
 
 import { type FrameContext, type Layer } from '../shared/types.js';
 import { strokeLine, strokeRect } from '../shared/canvas-utils.js';
-import { dist, lineIntersection, mirror, midpoint, perpendicularExtremity, triangleAngleDeg, type Vec2 } from '../shared/math.js';
+import {
+  dist,
+  lineIntersection,
+  mirror,
+  midpoint,
+  perpendicularExtremity,
+  triangleAngleDeg,
+  type Vec2,
+} from '../shared/math.js';
 import type { PoolFeed } from '../shared/feed.js';
 
 const MAX_TRIANGLES = 3;
@@ -146,9 +154,7 @@ function derive(a: Vec2, b: Vec2, c: Vec2): DerivedTriangle {
   const perpExtCA = perpendicularExtremity(midCA, a);
   const perpExtCA_mirror = mirror(perpExtCA, midCA);
 
-  const cc =
-    lineIntersection(perpExtAB, perpExtAB_mirror, perpExtBC, perpExtBC_mirror) ??
-    centroid;
+  const cc = lineIntersection(perpExtAB, perpExtAB_mirror, perpExtBC, perpExtBC_mirror) ?? centroid;
 
   return {
     a,

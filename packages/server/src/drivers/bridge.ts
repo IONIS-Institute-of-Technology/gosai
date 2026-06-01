@@ -11,10 +11,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Subprocess } from 'bun';
-import type {
-  BridgeRequest,
-  BridgeResponse,
-} from '@gosai/shared/protocol';
+import type { BridgeRequest, BridgeResponse } from '@gosai/shared/protocol';
 
 /** Discriminated-union-friendly Omit<BridgeRequest, 'id'>. */
 export type BridgeRequestSansId = BridgeRequest extends infer T
@@ -323,7 +320,9 @@ export class PythonBridge {
     error: Error | undefined,
   ): void {
     if (this.rejectReady) {
-      this.rejectReady(error ?? new Error(`Bridge exited (code=${exitCode}, signal=${signalCode})`));
+      this.rejectReady(
+        error ?? new Error(`Bridge exited (code=${exitCode}, signal=${signalCode})`),
+      );
       this.resolveReady = null;
       this.rejectReady = null;
     }

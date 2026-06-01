@@ -42,13 +42,7 @@ module.exports = {
     {
       from: path.resolve(__dirname, '..', '..', 'python'),
       to: 'python',
-      filter: [
-        '**/*',
-        '!.venv/**',
-        '!**/__pycache__/**',
-        '!**/*.pyc',
-        '!**/.pytest_cache/**',
-      ],
+      filter: ['**/*', '!.venv/**', '!**/__pycache__/**', '!**/*.pyc', '!**/.pytest_cache/**'],
     },
     {
       from: path.resolve(__dirname, '..', '..', 'apps'),

@@ -107,13 +107,7 @@ const STEP_HELP: Record<WizardStep, string> = {
   abort: 'Calibration aborted. No data was saved.',
 };
 
-const ORDERED_STEPS: WizardStep[] = [
-  'markers',
-  'pool-corners',
-  'compute',
-  'preview',
-  'done',
-];
+const ORDERED_STEPS: WizardStep[] = ['markers', 'pool-corners', 'compute', 'preview', 'done'];
 
 export function initControlState(): ControlState {
   setBodyFullscreen();
@@ -691,9 +685,7 @@ async function runCompute(rt: ExperienceRuntimeContext, state: ControlState): Pr
     // not been observed yet.
     const surfaceSize: SizeXY = DEFAULT_SURFACE_SIZE;
     const focusQuadParam =
-      state.corners.length === 4
-        ? state.corners.map((p) => ({ x: p.x, y: p.y }))
-        : undefined;
+      state.corners.length === 4 ? state.corners.map((p) => ({ x: p.x, y: p.y })) : undefined;
     const frameSizeParam = state.camFrameSize
       ? { width: state.camFrameSize.w, height: state.camFrameSize.h }
       : undefined;
@@ -737,7 +729,9 @@ async function runCompute(rt: ExperienceRuntimeContext, state: ControlState): Pr
         await rt.storage.set(scopedKey(STORAGE_KEYS.HomographySurface, t), result.surface_matrix);
       } else {
         // Clear any stale surface matrix so apps fall back cleanly.
-        await rt.storage.remove(scopedKey(STORAGE_KEYS.HomographySurface, t)).catch(() => undefined);
+        await rt.storage
+          .remove(scopedKey(STORAGE_KEYS.HomographySurface, t))
+          .catch(() => undefined);
       }
       if (Array.isArray(result.surface_inverse)) {
         await rt.storage.set(
@@ -762,7 +756,9 @@ async function runCompute(rt: ExperienceRuntimeContext, state: ControlState): Pr
         };
         await rt.storage.set(scopedKey(STORAGE_KEYS.SurfaceQuadDisplay, t), quadDisplay);
       } else {
-        await rt.storage.remove(scopedKey(STORAGE_KEYS.SurfaceQuadDisplay, t)).catch(() => undefined);
+        await rt.storage
+          .remove(scopedKey(STORAGE_KEYS.SurfaceQuadDisplay, t))
+          .catch(() => undefined);
       }
       if (result.surface_size) {
         await rt.storage.set(scopedKey(STORAGE_KEYS.SurfaceSize, t), result.surface_size);

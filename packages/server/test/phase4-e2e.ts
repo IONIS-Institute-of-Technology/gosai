@@ -57,7 +57,10 @@ try {
   };
   const hello = apps.apps.find((a) => a.manifest.slug === 'hello-gosai');
   if (!hello) throw new Error('hello-gosai not discovered');
-  console.log('[phase4] discovered hello-gosai with experiences:', hello.manifest.experiences.map((e) => e.slug));
+  console.log(
+    '[phase4] discovered hello-gosai with experiences:',
+    hello.manifest.experiences.map((e) => e.slug),
+  );
 
   // 2. SDK runtime is served.
   const sdkRes = await fetch(`http://127.0.0.1:${PORT}/sdk-runtime.js`);
@@ -79,14 +82,11 @@ try {
   console.log('[phase4] /v1/apps/hello-gosai/static/dist/main.js ok, size', entryText.length);
 
   // 4. Storage roundtrip.
-  const setRes = await fetch(
-    `http://127.0.0.1:${PORT}/v1/apps/hello-gosai/storage/last-tick`,
-    {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(42),
-    },
-  );
+  const setRes = await fetch(`http://127.0.0.1:${PORT}/v1/apps/hello-gosai/storage/last-tick`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(42),
+  });
   if (!setRes.ok) throw new Error(`storage.set returned ${setRes.status}`);
   const getRes = await fetch(`http://127.0.0.1:${PORT}/v1/apps/hello-gosai/storage/last-tick`);
   const getValue = await getRes.json();

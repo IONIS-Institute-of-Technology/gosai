@@ -227,7 +227,10 @@ export function SettingsPanel(): React.ReactElement {
                     </option>
                   ) : (
                     resolutionOptions.map((f) => (
-                      <option key={formatKey(f.width, f.height)} value={formatKey(f.width, f.height)}>
+                      <option
+                        key={formatKey(f.width, f.height)}
+                        value={formatKey(f.width, f.height)}
+                      >
                         {f.width}×{f.height}
                       </option>
                     ))

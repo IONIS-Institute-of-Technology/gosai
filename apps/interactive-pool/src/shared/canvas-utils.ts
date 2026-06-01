@@ -98,10 +98,7 @@ export function applyReferenceTransform(ctx: CanvasRenderingContext2D): void {
  * explicit CSS pixels for the duration of the transform so the math is
  * consistent with the destination quad expressed in window pixels.
  */
-export function applyKeystoneTransform(
-  canvas: HTMLCanvasElement,
-  destination: Quad,
-): void {
+export function applyKeystoneTransform(canvas: HTMLCanvasElement, destination: Quad): void {
   const parent = canvas.parentElement;
   const ref = parent ?? document.documentElement;
   const refRect = ref.getBoundingClientRect();

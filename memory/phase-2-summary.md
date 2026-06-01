@@ -13,40 +13,40 @@ has been validated end-to-end with a heartbeat driver.
 
 ### Server-side TypeScript (`packages/server/src/`)
 
-| Module | Purpose |
-|--------|---------|
-| `logger/` | `Logger` + `ChildLogger`: structured entries, configurable min level, in-memory backlog (500 entries), disk persistence with rotation at 5 MB, subscriber notifications. |
-| `ipc/bus.ts` | `EventBus`: in-process pub/sub with exact, namespace wildcard (`prefix:*`), and global (`*`) listeners. Listener exceptions are swallowed so they can never propagate. |
-| `ipc/gateway.ts` | `WebSocketGateway`: bridges the EventBus to clients. Welcome envelopes, typed RPC request/response routing via `id`, per-client subscription sets, broadcast based on subscription patterns. |
-| `config/config.ts` | `ConfigStore`: global config persisted as JSON in `paths.config/global.json`. Emits `server:config-changed` on update. |
-| `drivers/bridge.ts` | `PythonBridge`: spawns `python/.venv/bin/gosai-bridge` via `Bun.spawn`. Multiplexes JSON-line requests, handles ready/pong/result/event/log/driver-state/performance messages. Includes start/stop, timeouts, and request cancellation. |
+| Module               | Purpose                                                                                                                                                                                                                                                |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `logger/`            | `Logger` + `ChildLogger`: structured entries, configurable min level, in-memory backlog (500 entries), disk persistence with rotation at 5 MB, subscriber notifications.                                                                               |
+| `ipc/bus.ts`         | `EventBus`: in-process pub/sub with exact, namespace wildcard (`prefix:*`), and global (`*`) listeners. Listener exceptions are swallowed so they can never propagate.                                                                                 |
+| `ipc/gateway.ts`     | `WebSocketGateway`: bridges the EventBus to clients. Welcome envelopes, typed RPC request/response routing via `id`, per-client subscription sets, broadcast based on subscription patterns.                                                           |
+| `config/config.ts`   | `ConfigStore`: global config persisted as JSON in `paths.config/global.json`. Emits `server:config-changed` on update.                                                                                                                                 |
+| `drivers/bridge.ts`  | `PythonBridge`: spawns `python/.venv/bin/gosai-bridge` via `Bun.spawn`. Multiplexes JSON-line requests, handles ready/pong/result/event/log/driver-state/performance messages. Includes start/stop, timeouts, and request cancellation.                |
 | `drivers/manager.ts` | `DriverManager`: tracks driver state, propagates `driver:event` and `driver:state-changed` on the bus, resolves dependencies, manages subscription reference counts, exposes `startDriver`/`stopDriver`/`subscribe`/`unsubscribe`/`execute`/`getData`. |
-| `apps/manifest.ts` | `gosai.app.json` parsing and validation. Enforces slug pattern, required fields, experience shape, optional python config. |
-| `apps/installer.ts` | `installApp`, `uninstallApp`, `linkBuiltinApp`. Clones git repos via `git clone --depth 1` with 5 min timeout, runs `uv pip install -r requirements.txt` when declared, atomic rename into the apps directory. |
-| `apps/manager.ts` | `AppManager`: catalogue of installed apps + running experiences, lifecycle (`startExperience`, `stopExperience`), exclusive mode enforcement, required experience auto-start, per-app `_data` and `_config` directories. |
-| `monitor/monitor.ts` | `SystemMonitor`: CPU% / memory / uptime sampled every 2 s. Subscribes to `server:performance` from the bus and keeps the last 200 samples. |
-| `server.ts` | Composes everything: instantiates `Logger`, `EventBus`, `ConfigStore`, `DriverManager`, `AppManager`, `SystemMonitor`, `WebSocketGateway`. Registers command handlers and REST routes. Graceful shutdown. |
-| `index.ts` | Resolves `GOSAI_PORT`, `GOSAI_HOST`, `GOSAI_PYTHON_DIR`, `GOSAI_BUILTIN_APPS`, signals. |
+| `apps/manifest.ts`   | `gosai.app.json` parsing and validation. Enforces slug pattern, required fields, experience shape, optional python config.                                                                                                                             |
+| `apps/installer.ts`  | `installApp`, `uninstallApp`, `linkBuiltinApp`. Clones git repos via `git clone --depth 1` with 5 min timeout, runs `uv pip install -r requirements.txt` when declared, atomic rename into the apps directory.                                         |
+| `apps/manager.ts`    | `AppManager`: catalogue of installed apps + running experiences, lifecycle (`startExperience`, `stopExperience`), exclusive mode enforcement, required experience auto-start, per-app `_data` and `_config` directories.                               |
+| `monitor/monitor.ts` | `SystemMonitor`: CPU% / memory / uptime sampled every 2 s. Subscribes to `server:performance` from the bus and keeps the last 200 samples.                                                                                                             |
+| `server.ts`          | Composes everything: instantiates `Logger`, `EventBus`, `ConfigStore`, `DriverManager`, `AppManager`, `SystemMonitor`, `WebSocketGateway`. Registers command handlers and REST routes. Graceful shutdown.                                              |
+| `index.ts`           | Resolves `GOSAI_PORT`, `GOSAI_HOST`, `GOSAI_PYTHON_DIR`, `GOSAI_BUILTIN_APPS`, signals.                                                                                                                                                                |
 
 ### Python (`python/src/gosai_py/`)
 
-| Module | Purpose |
-|--------|---------|
-| `driver.py` | `BaseDriver` + `DriverContext`. Drivers declare `name`, `description`, `events`, `actions`, `dependencies`, `loop_interval_s`. Lifecycle hooks: `pre_run`, `loop`, `on_event`, `execute`, `cleanup`. Built-in performance recording for each loop iteration. Stop event for clean shutdown. |
-| `bridge.py` | Full bridge runtime. Discovers drivers via `pkgutil.iter_modules` over `gosai_py.drivers`, maintains class registry, per-driver instances, internal callback subs (Python -> Python) and external subscriber counts (Python -> Node). Handles `ping`, `list-drivers`, `start-driver`, `stop-driver`, `subscribe`, `unsubscribe`, `get-data`, `execute`, `shutdown`. |
-| `drivers/heartbeat.py` | First built-in driver. Emits `tick` every 500 ms, supports an `echo` action. Used for end-to-end plumbing tests. |
+| Module                 | Purpose                                                                                                                                                                                                                                                                                                                                                             |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `driver.py`            | `BaseDriver` + `DriverContext`. Drivers declare `name`, `description`, `events`, `actions`, `dependencies`, `loop_interval_s`. Lifecycle hooks: `pre_run`, `loop`, `on_event`, `execute`, `cleanup`. Built-in performance recording for each loop iteration. Stop event for clean shutdown.                                                                         |
+| `bridge.py`            | Full bridge runtime. Discovers drivers via `pkgutil.iter_modules` over `gosai_py.drivers`, maintains class registry, per-driver instances, internal callback subs (Python -> Python) and external subscriber counts (Python -> Node). Handles `ping`, `list-drivers`, `start-driver`, `stop-driver`, `subscribe`, `unsubscribe`, `get-data`, `execute`, `shutdown`. |
+| `drivers/heartbeat.py` | First built-in driver. Emits `tick` every 500 ms, supports an `echo` action. Used for end-to-end plumbing tests.                                                                                                                                                                                                                                                    |
 
 ### REST endpoints (HTTP)
 
-| Path | Description |
-|------|-------------|
-| `GET /healthz` | Liveness probe |
-| `GET /v1/info` | Protocol/server version + storage paths |
-| `GET /v1/apps` | Installed apps |
-| `GET /v1/drivers` | Driver manifest + state |
-| `GET /v1/experiences` | Currently running experiences |
-| `GET /v1/config` | Current global config |
-| `GET /v1/logs` | In-memory log backlog |
+| Path                  | Description                             |
+| --------------------- | --------------------------------------- |
+| `GET /healthz`        | Liveness probe                          |
+| `GET /v1/info`        | Protocol/server version + storage paths |
+| `GET /v1/apps`        | Installed apps                          |
+| `GET /v1/drivers`     | Driver manifest + state                 |
+| `GET /v1/experiences` | Currently running experiences           |
+| `GET /v1/config`      | Current global config                   |
+| `GET /v1/logs`        | In-memory log backlog                   |
 
 ### WebSocket commands (sent to `/ws`)
 

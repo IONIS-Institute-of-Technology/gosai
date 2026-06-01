@@ -41,7 +41,10 @@ const server = await createServer({
 
 try {
   const drivers = (await fetchJson(`/v1/drivers`)) as { drivers: Array<{ name: string }> };
-  console.log('[smoke] /v1/drivers names:', drivers.drivers.map((d) => d.name));
+  console.log(
+    '[smoke] /v1/drivers names:',
+    drivers.drivers.map((d) => d.name),
+  );
   if (!drivers.drivers.some((d) => d.name === 'heartbeat')) {
     throw new Error('heartbeat driver missing from manifest - is the bridge running?');
   }
@@ -139,7 +142,10 @@ async function rpc(ws: WebSocket, type: string, payload: unknown): Promise<unkno
   return new Promise<unknown>((resolveRpc, rejectRpc) => {
     const id = crypto.randomUUID();
     const listener = (ev: MessageEvent): void => {
-      let parsed: { type: string; payload?: { requestId?: string; ok?: boolean; data?: unknown; error?: { message: string } } };
+      let parsed: {
+        type: string;
+        payload?: { requestId?: string; ok?: boolean; data?: unknown; error?: { message: string } };
+      };
       try {
         parsed = JSON.parse(String(ev.data));
       } catch {

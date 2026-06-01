@@ -47,13 +47,9 @@ export class ConfigStore {
       ...this.state,
       ...patch,
       autoStartApps:
-        patch.autoStartApps !== undefined
-          ? [...patch.autoStartApps]
-          : this.state.autoStartApps,
+        patch.autoStartApps !== undefined ? [...patch.autoStartApps] : this.state.autoStartApps,
       camera:
-        patch.camera !== undefined
-          ? { ...this.state.camera, ...patch.camera }
-          : this.state.camera,
+        patch.camera !== undefined ? { ...this.state.camera, ...patch.camera } : this.state.camera,
     };
     this.state = next;
     this.persist();

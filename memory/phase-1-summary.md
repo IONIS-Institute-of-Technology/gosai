@@ -63,18 +63,18 @@ gosai-2/
 
 ## Key Technical Decisions Locked In
 
-| Concern | Choice | Notes |
-|---------|--------|-------|
-| Monorepo | Bun workspaces with `workspace:*` protocol | Glob includes `packages/*`, `apps/*`, `templates/*` |
-| TypeScript | strict mode + project references + composite | `tsconfig.base.json` is the single source of truth |
-| Server runtime | Bun's native `Bun.serve` + Hono routes | Native WebSocket support |
-| Frontend build | electron-vite v2.3 with React 19 + Tailwind v4 | Two HTML entries (`dashboard`, `app-host`) |
-| Python | uv 0.11, Python 3.12 (pinned via `.python-version`) | Extras: `cv`, `audio`, `ml`, `speech`, `realsense`, `dev` |
-| IPC bus | WebSocket (server↔desktop) + stdio JSON-lines (server↔python) | Wire formats defined in `@gosai/shared/protocol` |
-| Logging | Structured `LogEntry` type ready | Implementation lands in Phase 2 |
-| Bridge protocol | newline-delimited JSON | `BridgeRequest`/`BridgeResponse` types in shared |
-| Storage layout | `~/.gosai/{apps,logs,data,config}` (override via `GOSAI_HOME`) | Created lazily on server boot |
-| Server port | `7777` by default (override via `GOSAI_PORT`) | Bound to `127.0.0.1` only - no external access |
+| Concern         | Choice                                                         | Notes                                                     |
+| --------------- | -------------------------------------------------------------- | --------------------------------------------------------- |
+| Monorepo        | Bun workspaces with `workspace:*` protocol                     | Glob includes `packages/*`, `apps/*`, `templates/*`       |
+| TypeScript      | strict mode + project references + composite                   | `tsconfig.base.json` is the single source of truth        |
+| Server runtime  | Bun's native `Bun.serve` + Hono routes                         | Native WebSocket support                                  |
+| Frontend build  | electron-vite v2.3 with React 19 + Tailwind v4                 | Two HTML entries (`dashboard`, `app-host`)                |
+| Python          | uv 0.11, Python 3.12 (pinned via `.python-version`)            | Extras: `cv`, `audio`, `ml`, `speech`, `realsense`, `dev` |
+| IPC bus         | WebSocket (server↔desktop) + stdio JSON-lines (server↔python)  | Wire formats defined in `@gosai/shared/protocol`          |
+| Logging         | Structured `LogEntry` type ready                               | Implementation lands in Phase 2                           |
+| Bridge protocol | newline-delimited JSON                                         | `BridgeRequest`/`BridgeResponse` types in shared          |
+| Storage layout  | `~/.gosai/{apps,logs,data,config}` (override via `GOSAI_HOME`) | Created lazily on server boot                             |
+| Server port     | `7777` by default (override via `GOSAI_PORT`)                  | Bound to `127.0.0.1` only - no external access            |
 
 ## Protocol Surfaces (already defined)
 
@@ -82,7 +82,7 @@ gosai-2/
 
 ```ts
 interface MessageEnvelope<TType, TPayload> {
-  v: 1;                // PROTOCOL_VERSION
+  v: 1; // PROTOCOL_VERSION
   id?: string;
   type: TType;
   payload: TPayload;

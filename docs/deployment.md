@@ -60,9 +60,9 @@ When the packaged app launches:
 
 ## Troubleshooting
 
-| Symptom                                       | Likely cause                                                        |
-| --------------------------------------------- | ------------------------------------------------------------------- |
-| "Address already in use" on startup           | Another process holds port 7777. Set `GOSAI_PORT=<free>` and retry. |
-| "no server binary found; skipping autostart"  | The `Resources/server/gosai-server` blob is missing from the build. |
-| Python drivers don't start                    | `.venv` failed to build. Inspect logs in `~/Library/Logs/GOSAI/`.   |
-| App install fails with "git: command not found" | `git` is not in PATH for the GUI process.                          |
+| Symptom                                         | Likely cause                                                        |
+| ----------------------------------------------- | ------------------------------------------------------------------- |
+| "Address already in use" on startup             | Another process holds port 7777. Set `GOSAI_PORT=<free>` and retry. |
+| "no server binary found; skipping autostart"    | The `Resources/server/gosai-server` blob is missing from the build. |
+| Python drivers don't start                      | `.venv` failed to build. Inspect logs in `~/Library/Logs/GOSAI/`.   |
+| App install fails with "git: command not found" | `git` is not in PATH for the GUI process.                           |

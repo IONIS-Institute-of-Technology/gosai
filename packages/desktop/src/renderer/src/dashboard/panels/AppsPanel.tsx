@@ -137,7 +137,8 @@ export function AppsPanel(): React.ReactElement {
       <Panel title="Install an app">
         <div className="space-y-3">
           <p className="text-xs text-neutral-400">
-            Paste a git repository URL containing a <code className="font-mono">gosai.app.json</code>.
+            Paste a git repository URL containing a{' '}
+            <code className="font-mono">gosai.app.json</code>.
           </p>
           <div className="flex gap-2">
             <input
@@ -351,7 +352,11 @@ function AppRow({
         </button>
 
         {needsCalibration ? (
-          <CalibrationControl status={calStatus} busy={calibrating} onClick={() => void calibrate()} />
+          <CalibrationControl
+            status={calStatus}
+            busy={calibrating}
+            onClick={() => void calibrate()}
+          />
         ) : null}
 
         {defaultExp ? (
@@ -623,7 +628,9 @@ function DeviceSettingsSection({
               defaultLabel={scanning ? 'Scanning…' : 'Default'}
               options={devices?.cameras ?? []}
               disabled={saving}
-              onChange={(device) => void save({ camera: { ...settings.camera, device: device ?? 0 } })}
+              onChange={(device) =>
+                void save({ camera: { ...settings.camera, device: device ?? 0 } })
+              }
             />
           ) : null}
 

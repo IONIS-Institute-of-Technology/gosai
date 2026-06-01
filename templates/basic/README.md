@@ -44,29 +44,31 @@ the current tick count and elapsed time.
 
 ```jsonc
 {
-  "slug": "hello-gosai",      // required, kebab-case
-  "name": "Hello GOSAI",       // required, human-readable
-  "version": "0.1.0",          // required
+  "slug": "hello-gosai", // required, kebab-case
+  "name": "Hello GOSAI", // required, human-readable
+  "version": "0.1.0", // required
   "description": "...",
   "author": "GOSAI",
   "icon": "./assets/icon.png", // optional, served via /v1/apps/.../static/...
-  "experiences": [             // at least one required
+  "experiences": [
+    // at least one required
     {
-      "slug": "main",          // required, kebab-case unique per app
+      "slug": "main", // required, kebab-case unique per app
       "name": "Main",
       "description": "...",
       "entry": "dist/main.js", // ESM module relative to app root
       "python": "src/main.py", // optional Python processor module
-      "drivers": ["heartbeat"],// drivers auto-started for this experience
-      "exclusive": false,      // if true, stops other non-allowed experiences
-      "allowed": [],           // experiences that can co-run when exclusive
-      "required": []           // experiences that must also be running
-    }
+      "drivers": ["heartbeat"], // drivers auto-started for this experience
+      "exclusive": false, // if true, stops other non-allowed experiences
+      "allowed": [], // experiences that can co-run when exclusive
+      "required": [], // experiences that must also be running
+    },
   ],
-  "python": {                  // optional python deps for the app
-    "requirements": "requirements.txt"
+  "python": {
+    // optional python deps for the app
+    "requirements": "requirements.txt",
   },
-  "startup": ["main"]          // experiences to autostart
+  "startup": ["main"], // experiences to autostart
 }
 ```
 
@@ -79,10 +81,14 @@ export default defineExperience<MyState>({
   slug: 'main',
   name: 'Main',
 
-  init(): MyState { /* synchronous setup */ },
+  init(): MyState {
+    /* synchronous setup */
+  },
 
   async start(rt, state) {
-    rt.drivers.on('camera', 'color', (frame) => { /* ... */ });
+    rt.drivers.on('camera', 'color', (frame) => {
+      /* ... */
+    });
     await rt.storage.set('foo', 42);
     rt.log.info('hello');
   },
@@ -91,11 +97,14 @@ export default defineExperience<MyState>({
     // called every animation frame
   },
 
-  async stop(rt, state) { /* cleanup */ },
+  async stop(rt, state) {
+    /* cleanup */
+  },
 });
 ```
 
 The `rt` (runtime) object provides:
+
 - `rt.drivers.on(driver, event, listener)` - subscribe to driver events
 - `rt.drivers.get(driver, event)` - get latest value
 - `rt.drivers.execute(driver, action, data)` - invoke driver actions

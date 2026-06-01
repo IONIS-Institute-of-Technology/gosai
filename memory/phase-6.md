@@ -12,18 +12,18 @@ JSON-line protocol instead of pickle + Redis.
 All drivers live under `python/src/gosai_py/drivers/` and are auto-discovered
 by `gosai_py.bridge.Bridge.discover_builtin()`.
 
-| Driver                       | Events                                      | Actions                                                                | Depends on    |
-| ---------------------------- | ------------------------------------------- | ---------------------------------------------------------------------- | ------------- |
-| `hand_pose`                  | `raw_data`                                  | `set_flip`, `set_window`                                               | `camera`      |
-| `pose`                       | `raw_data`                                  | `set_flip`, `set_window`                                               | `camera`      |
-| `hand_sign`                  | `sign`                                      | -                                                                      | `hand_pose`   |
-| `ball`                       | `balls`, `fps`                              | `set_background`, `set_homography`, `set_output_size`, `set_min_area`, `set_threshold` | `camera`      |
-| `microphone`                 | `audio_stream`, `settings`                  | `list_devices`, `set_device`, `set_samplerate`                         | -             |
-| `speaker`                    | `settings`, `underrun`                      | `play`, `clear`, `list_devices`, `set_device`, `set_samplerate`        | -             |
-| `speech_to_text`             | `transcription`                             | `transcribe`, `set_model`                                              | -             |
-| `speech_activity_detection`  | `activity`                                  | `predict`                                                              | `microphone`  |
-| `frequency_analysis`         | `frequency`                                 | `set_max_frequency`, `set_window_size`                                 | `microphone`  |
-| `interpolate`                | `interpolated_data`                         | `interpolate_points`, `reset`                                          | -             |
+| Driver                      | Events                     | Actions                                                                                | Depends on   |
+| --------------------------- | -------------------------- | -------------------------------------------------------------------------------------- | ------------ |
+| `hand_pose`                 | `raw_data`                 | `set_flip`, `set_window`                                                               | `camera`     |
+| `pose`                      | `raw_data`                 | `set_flip`, `set_window`                                                               | `camera`     |
+| `hand_sign`                 | `sign`                     | -                                                                                      | `hand_pose`  |
+| `ball`                      | `balls`, `fps`             | `set_background`, `set_homography`, `set_output_size`, `set_min_area`, `set_threshold` | `camera`     |
+| `microphone`                | `audio_stream`, `settings` | `list_devices`, `set_device`, `set_samplerate`                                         | -            |
+| `speaker`                   | `settings`, `underrun`     | `play`, `clear`, `list_devices`, `set_device`, `set_samplerate`                        | -            |
+| `speech_to_text`            | `transcription`            | `transcribe`, `set_model`                                                              | -            |
+| `speech_activity_detection` | `activity`                 | `predict`                                                                              | `microphone` |
+| `frequency_analysis`        | `frequency`                | `set_max_frequency`, `set_window_size`                                                 | `microphone` |
+| `interpolate`               | `interpolated_data`        | `interpolate_points`, `reset`                                                          | -            |
 
 The existing `camera`, `calibration`, `heartbeat` drivers from Phase 2/5 are
 also still present (13 drivers total).
@@ -97,7 +97,7 @@ Both pass locally.
   thread-safe across instances; we instantiate at most one per driver and
   the bridge only ever runs a single instance per driver name.
 - **Silero VAD** loads on first use via `torch.hub.load(...,
-  trust_repo=True)`. The first call hits the network. We don't ship a
+trust_repo=True)`. The first call hits the network. We don't ship a
   bundled copy yet; Phase 7 packaging should bake the model into the dist.
 - **faster-whisper** model files are large and downloaded on first run.
   Phase 7 should either ship them or expose a setup step that pre-pulls

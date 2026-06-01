@@ -191,11 +191,7 @@ export class WebSocketGateway {
     }
   }
 
-  private respondOk(
-    socket: ServerWebSocket<ClientData>,
-    requestId: string,
-    data: unknown,
-  ): void {
+  private respondOk(socket: ServerWebSocket<ClientData>, requestId: string, data: unknown): void {
     this.send(socket, {
       v: PROTOCOL_VERSION,
       type: 'response',

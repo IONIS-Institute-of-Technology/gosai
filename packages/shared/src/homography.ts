@@ -38,11 +38,7 @@ export type Quad = readonly [Point2D, Point2D, Point2D, Point2D];
  * Apply a 3x3 row-major homography to a single point.
  * Returns `(0, 0)` if the homogeneous denominator collapses (degenerate point).
  */
-export function perspectiveTransformPoint(
-  H: ArrayLike<number>,
-  x: number,
-  y: number,
-): Point2D {
+export function perspectiveTransformPoint(H: ArrayLike<number>, x: number, y: number): Point2D {
   const w = H[6]! * x + H[7]! * y + H[8]!;
   if (Math.abs(w) < 1e-12) return { x: 0, y: 0 };
   return {
@@ -146,11 +142,7 @@ export function quadToQuadHomography(src: Quad, dst: Quad): number[] {
  *
  * then serialises in column-major order as required by the CSS spec.
  */
-export function computeCSSMatrix3d(
-  width: number,
-  height: number,
-  dstCorners: Quad,
-): string {
+export function computeCSSMatrix3d(width: number, height: number, dstCorners: Quad): string {
   const src: Quad = [
     { x: 0, y: 0 },
     { x: width, y: 0 },
@@ -169,12 +161,7 @@ export function computeCSSMatrix3d(
     i = H[8]!;
   // Column-major serialisation of the embedded 4x4 matrix.
   return (
-    'matrix3d(' +
-    `${a},${d},0,${g},` +
-    `${b},${e},0,${h},` +
-    `0,0,1,0,` +
-    `${c},${f},0,${i}` +
-    ')'
+    'matrix3d(' + `${a},${d},0,${g},` + `${b},${e},0,${h},` + `0,0,1,0,` + `${c},${f},0,${i}` + ')'
   );
 }
 
@@ -183,10 +170,7 @@ export function computeCSSMatrix3d(
  * composing camera->display with display->surface to get camera->surface
  * directly.
  */
-export function multiplyHomographies(
-  A: ArrayLike<number>,
-  B: ArrayLike<number>,
-): number[] {
+export function multiplyHomographies(A: ArrayLike<number>, B: ArrayLike<number>): number[] {
   const out = new Array<number>(9).fill(0);
   for (let row = 0; row < 3; row++) {
     for (let col = 0; col < 3; col++) {

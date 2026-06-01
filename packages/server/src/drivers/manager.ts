@@ -92,8 +92,7 @@ export class DriverManager {
         this.handleDriverEvent(instance, driver, event, data, ts),
       onLog: (level, source, message) =>
         options.logger.log(`python:${source}`, normalizeLevel(level), message),
-      onDriverState: (instance, driver, state) =>
-        this.handleDriverState(instance, driver, state),
+      onDriverState: (instance, driver, state) => this.handleDriverState(instance, driver, state),
       onPerformance: (source, metric, value, ts) =>
         options.bus.emit(
           'server:performance',
@@ -212,7 +211,12 @@ export class DriverManager {
       const record = bySubscriber.get(subscriber);
       if (!record) continue;
       const { instance, driver } = this.splitInstanceKey(key);
-      targets.push({ instance, driver, binding: record.binding, events: Array.from(record.events) });
+      targets.push({
+        instance,
+        driver,
+        binding: record.binding,
+        events: Array.from(record.events),
+      });
     }
     if (targets.length === 0) return;
     this.log.info('cleaning up driver subscriptions for disconnected client', {
@@ -247,12 +251,7 @@ export class DriverManager {
     return this.bridge.request({ type: 'get-data', instance, driver, event });
   }
 
-  async execute(
-    binding: string,
-    driver: string,
-    action: string,
-    data: unknown,
-  ): Promise<unknown> {
+  async execute(binding: string, driver: string, action: string, data: unknown): Promise<unknown> {
     this.requireDriver(driver);
     const instance = this.instanceFor(binding, driver);
     return this.bridge.request({ type: 'execute', instance, driver, action, data });
@@ -508,9 +507,7 @@ export class DriverManager {
       state: rt.state,
       subscribers: this.flattenSubscribers(this.instanceKey(rt.instance, rt.driver)),
     }));
-    const subscribers = Array.from(
-      new Set(instanceInfos.flatMap((i) => i.subscribers)),
-    );
+    const subscribers = Array.from(new Set(instanceInfos.flatMap((i) => i.subscribers)));
     return {
       name: entry.name,
       ...(entry.description ? { description: entry.description } : {}),
@@ -557,12 +554,7 @@ export class DriverManager {
   // Subscriber bookkeeping
   // ------------------------------------------------------------------
 
-  private recordSubscriber(
-    key: string,
-    subscriber: string,
-    event: string,
-    binding: string,
-  ): void {
+  private recordSubscriber(key: string, subscriber: string, event: string, binding: string): void {
     let bySubscriber = this.subscribers.get(key);
     if (!bySubscriber) {
       bySubscriber = new Map();

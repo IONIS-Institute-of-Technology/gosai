@@ -158,9 +158,7 @@ try {
     }
     for (const dep of expected.dependencies) {
       if (!got.dependencies.includes(dep)) {
-        issues.push(
-          `${name} missing dependency ${dep}; has ${JSON.stringify(got.dependencies)}`,
-        );
+        issues.push(`${name} missing dependency ${dep}; has ${JSON.stringify(got.dependencies)}`);
       }
     }
   }

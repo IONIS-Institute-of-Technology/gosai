@@ -138,5 +138,9 @@ export function LogsPanel(): React.ReactElement {
 
 function formatTime(ts: number): string {
   const d = new Date(ts);
-  return d.toLocaleTimeString(undefined, { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+  return (
+    d.toLocaleTimeString(undefined, { hour12: false }) +
+    '.' +
+    String(d.getMilliseconds()).padStart(3, '0')
+  );
 }

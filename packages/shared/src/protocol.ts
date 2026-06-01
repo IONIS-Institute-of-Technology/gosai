@@ -109,7 +109,14 @@ export type BridgeRequest =
   | { type: 'subscribe'; id: string; instance: string; driver: string; event: string }
   | { type: 'unsubscribe'; id: string; instance: string; driver: string; event: string }
   | { type: 'get-data'; id: string; instance: string; driver: string; event: string }
-  | { type: 'execute'; id: string; instance: string; driver: string; action: string; data?: unknown }
+  | {
+      type: 'execute';
+      id: string;
+      instance: string;
+      driver: string;
+      action: string;
+      data?: unknown;
+    }
   | { type: 'shutdown'; id: string };
 
 export type BridgeResponse =

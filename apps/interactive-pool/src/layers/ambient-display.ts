@@ -54,11 +54,7 @@ interface Firework {
  * tests / future runtimes plug in their own subscription source.
  */
 export interface DriverSource {
-  on(
-    driver: string,
-    event: string,
-    listener: (data: unknown) => void,
-  ): DriverSubscription;
+  on(driver: string, event: string, listener: (data: unknown) => void): DriverSubscription;
 }
 
 export function createAmbientDisplayLayer(_feed: PoolFeed, drivers: DriverSource): Layer {

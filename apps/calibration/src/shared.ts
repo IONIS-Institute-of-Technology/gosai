@@ -109,13 +109,7 @@ export interface SurfaceQuadDisplay {
  * Wizard step machine. Steps run in order; `done` signals the dashboard to
  * close both windows. `abort` is used when the user cancels mid-flow.
  */
-export type WizardStep =
-  | 'markers'
-  | 'pool-corners'
-  | 'compute'
-  | 'preview'
-  | 'done'
-  | 'abort';
+export type WizardStep = 'markers' | 'pool-corners' | 'compute' | 'preview' | 'done' | 'abort';
 
 /**
  * Events broadcast between the control and projector windows via

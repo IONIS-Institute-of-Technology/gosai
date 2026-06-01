@@ -13,21 +13,21 @@ clean dark-themed UI.
 
 ### Main Process (`src/main/`)
 
-| File | Purpose |
-|------|---------|
-| `index.ts` | Boot sequence: create registries, register IPC, open dashboard, lifecycle handlers (SIGTERM, before-quit cleanup). Optional autostart of the GOSAI server when packaged. |
-| `windows.ts` | `WindowRegistry`: dashboard window (1280x800, dark chrome, autohide menu) + N fullscreen frameless kiosk-mode app-host windows positioned by display id. Provides display enumeration via Electron's `screen` API. |
-| `terminal.ts` | `TerminalRegistry`: node-pty backed terminal manager (shell = `$SHELL` on POSIX, `powershell.exe` on Windows). Emits `data` and `exit` events. |
-| `ipc.ts` | All IPC channel handlers using `ipcMain.handle`. Routes display queries, app-host open/close/list, terminal create/write/resize/dispose, and forwards terminal data/exit events to the originating WebContents. |
-| `channels.ts` | Single source of truth for IPC channel names, importable from main and preload. |
-| `server-runner.ts` | Optional child-process launcher for the GOSAI server. Active only when packaged or when `GOSAI_AUTOSTART_SERVER=1`. Phase 7 will wire this to the bundled binary. |
+| File               | Purpose                                                                                                                                                                                                            |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `index.ts`         | Boot sequence: create registries, register IPC, open dashboard, lifecycle handlers (SIGTERM, before-quit cleanup). Optional autostart of the GOSAI server when packaged.                                           |
+| `windows.ts`       | `WindowRegistry`: dashboard window (1280x800, dark chrome, autohide menu) + N fullscreen frameless kiosk-mode app-host windows positioned by display id. Provides display enumeration via Electron's `screen` API. |
+| `terminal.ts`      | `TerminalRegistry`: node-pty backed terminal manager (shell = `$SHELL` on POSIX, `powershell.exe` on Windows). Emits `data` and `exit` events.                                                                     |
+| `ipc.ts`           | All IPC channel handlers using `ipcMain.handle`. Routes display queries, app-host open/close/list, terminal create/write/resize/dispose, and forwards terminal data/exit events to the originating WebContents.    |
+| `channels.ts`      | Single source of truth for IPC channel names, importable from main and preload.                                                                                                                                    |
+| `server-runner.ts` | Optional child-process launcher for the GOSAI server. Active only when packaged or when `GOSAI_AUTOSTART_SERVER=1`. Phase 7 will wire this to the bundled binary.                                                  |
 
 ### Preload Scripts (`src/preload/`)
 
-| File | Exposed API (via contextBridge) |
-|------|--------------------------------|
+| File           | Exposed API (via contextBridge)                                                                                                                          |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `dashboard.ts` | `window.gosai`: version, platform, displays (`list`), appHost (`open`/`close`/`list`), terminal (`create`/`write`/`resize`/`dispose`/`onData`/`onExit`). |
-| `app-host.ts` | `window.gosaiApp`: version, platform (more in Phase 4). |
+| `app-host.ts`  | `window.gosaiApp`: version, platform (more in Phase 4).                                                                                                  |
 
 Both preloads use `contextBridge.exposeInMainWorld` with `contextIsolation: true`. Dashboard runs without sandbox because it spans node-pty IPC traffic; app-host runs **with** sandbox enabled for isolation.
 
@@ -66,11 +66,11 @@ src/renderer/
 
 ### Build configuration
 
-| File | Notes |
-|------|-------|
-| `electron.vite.config.ts` | Three sub-builds: main (Lib SSR), preload (CJS, separate dashboard + appHost entries), renderer (Vite, two HTML entries with React + Tailwind v4 plugins). |
-| `tsconfig.{json,node,web}.json` | Already correct from Phase 1; renderer config does not pull in main/preload, types.d.ts uses inline declarations. |
-| `package.json` | Added `node-pty@^1.0.0`, `@xterm/xterm@^5.5.0`, `@xterm/addon-fit@^0.10.0`. |
+| File                            | Notes                                                                                                                                                      |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `electron.vite.config.ts`       | Three sub-builds: main (Lib SSR), preload (CJS, separate dashboard + appHost entries), renderer (Vite, two HTML entries with React + Tailwind v4 plugins). |
+| `tsconfig.{json,node,web}.json` | Already correct from Phase 1; renderer config does not pull in main/preload, types.d.ts uses inline declarations.                                          |
+| `package.json`                  | Added `node-pty@^1.0.0`, `@xterm/xterm@^5.5.0`, `@xterm/addon-fit@^0.10.0`.                                                                                |
 
 ## Behavior the User Can See
 
@@ -95,7 +95,7 @@ src/renderer/
 
 ## Conventions
 
-1. **Server traffic** is direct from the renderer to `ws://127.0.0.1:7777/ws` using `ServerClient`. The main process is *not* a relay for normal server data - that would add latency and complexity. Main is only in the path for things that need Node APIs (display info, window creation, terminal pty).
+1. **Server traffic** is direct from the renderer to `ws://127.0.0.1:7777/ws` using `ServerClient`. The main process is _not_ a relay for normal server data - that would add latency and complexity. Main is only in the path for things that need Node APIs (display info, window creation, terminal pty).
 2. **IPC channel names** live in `src/main/channels.ts`. Anything new must go there.
 3. **Re-subscribing on reconnect**: `ServerClient` remembers subscribed events and re-sends `subscribe` on reconnect.
 4. **Display selection**: `Settings -> Display` writes to `GlobalConfig.displayId`. The Apps panel's start handler reads it (via `gosai.displays.list()`); when no preference is set it falls back to primary. Future: present a chooser dialog when the user has multiple displays and hasn't picked one.

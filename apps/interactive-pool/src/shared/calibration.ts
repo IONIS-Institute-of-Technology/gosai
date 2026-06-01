@@ -64,9 +64,7 @@ async function fetchCalibrationKey<T>(key: string, appSlug: string): Promise<T |
 
 /** Load every calibration key in parallel. Each failed fetch is reported via
  * the runtime logger but never blocks the overall load. */
-export async function loadCalibration(
-  rt: ExperienceRuntimeContext,
-): Promise<CalibrationData> {
+export async function loadCalibration(rt: ExperienceRuntimeContext): Promise<CalibrationData> {
   const appSlug = rt.app.appSlug;
   const safe = async <T>(key: string): Promise<T | null> => {
     try {
@@ -77,24 +75,18 @@ export async function loadCalibration(
     }
   };
 
-  const [
-    homography,
-    homographySurface,
-    surfaceQuadRaw,
-    surfaceSize,
-    frameSize,
-  ] = await Promise.all([
-    safe<number[]>('homography'),
-    safe<number[]>('homography_surface'),
-    safe<{ points: Point2D[] }>('surface_quad_display'),
-    safe<SizeXY>('surface_size'),
-    safe<SizeXY>('frame_size'),
-  ]);
+  const [homography, homographySurface, surfaceQuadRaw, surfaceSize, frameSize] = await Promise.all(
+    [
+      safe<number[]>('homography'),
+      safe<number[]>('homography_surface'),
+      safe<{ points: Point2D[] }>('surface_quad_display'),
+      safe<SizeXY>('surface_size'),
+      safe<SizeXY>('frame_size'),
+    ],
+  );
 
   const surfaceQuadDisplay =
-    surfaceQuadRaw?.points && surfaceQuadRaw.points.length === 4
-      ? surfaceQuadRaw.points
-      : null;
+    surfaceQuadRaw?.points && surfaceQuadRaw.points.length === 4 ? surfaceQuadRaw.points : null;
 
   return {
     homography,
@@ -124,9 +116,7 @@ export async function configureBallDriver(
     rt.log.warn('ball driver not configured: no homography available');
     return;
   }
-  const outputSize = cal.homographySurface
-    ? (cal.surfaceSize ?? fallbackSize)
-    : fallbackSize;
+  const outputSize = cal.homographySurface ? (cal.surfaceSize ?? fallbackSize) : fallbackSize;
 
   await rt.drivers
     .execute('ball', 'set_homography', homography)
@@ -171,12 +161,8 @@ export async function configureHandPoseDriver(
       width: surfaceSize.width,
       height: surfaceSize.height,
     })
-    .catch((err) =>
-      rt.log.warn('hand_pose.set_surface_size failed', { err: String(err) }),
-    );
+    .catch((err) => rt.log.warn('hand_pose.set_surface_size failed', { err: String(err) }));
   await rt.drivers
     .execute('hand_pose', 'set_homography', cal.homographySurface)
-    .catch((err) =>
-      rt.log.warn('hand_pose.set_homography failed', { err: String(err) }),
-    );
+    .catch((err) => rt.log.warn('hand_pose.set_homography failed', { err: String(err) }));
 }

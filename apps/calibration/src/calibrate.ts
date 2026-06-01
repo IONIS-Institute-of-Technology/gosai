@@ -19,12 +19,7 @@ import {
   stopProjector,
   type ProjectorState,
 } from './projector.js';
-import {
-  initControlState,
-  startControl,
-  stopControl,
-  type ControlState,
-} from './control.js';
+import { initControlState, startControl, stopControl, type ControlState } from './control.js';
 
 type State =
   | { role: 'projector'; projector: ProjectorState }

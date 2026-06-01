@@ -30,7 +30,7 @@ A starter template is at `templates/basic/` in the GOSAI repo.
 
 ```jsonc
 {
-  "slug": "my-app",          // kebab-case unique identifier
+  "slug": "my-app", // kebab-case unique identifier
   "name": "My App",
   "version": "0.1.0",
   "description": "...",
@@ -38,33 +38,34 @@ A starter template is at `templates/basic/` in the GOSAI repo.
   "icon": "./assets/icon.png",
   "experiences": [
     {
-      "slug": "main",         // unique within this app
+      "slug": "main", // unique within this app
       "name": "Main",
       "description": "...",
-      "entry": "dist/main.js",// ESM module, browser target
+      "entry": "dist/main.js", // ESM module, browser target
       "python": "python/main.py", // optional
-      "drivers": ["hand_pose"],   // auto-started + auto-subscribed
-      "exclusive": false,         // closes other experiences when started
-      "allowed": [],              // experiences allowed to co-run when exclusive
-      "required": []              // experiences that must also be running
-    }
+      "drivers": ["hand_pose"], // auto-started + auto-subscribed
+      "exclusive": false, // closes other experiences when started
+      "allowed": [], // experiences allowed to co-run when exclusive
+      "required": [], // experiences that must also be running
+    },
   ],
   "python": {
-    "requirements": "python/requirements.txt"
+    "requirements": "python/requirements.txt",
   },
   "startup": ["main"],
-  "requirements": {            // device slots this app binds (per app)
-    "display": true,           // opens a window (fullscreen/windowed)
-    "camera": true,            // exclusive: this app gets its own camera
-    "microphone": false,       // exclusive
-    "speaker": false           // shareable across apps
-  }
+  "requirements": {
+    // device slots this app binds (per app)
+    "display": true, // opens a window (fullscreen/windowed)
+    "camera": true, // exclusive: this app gets its own camera
+    "microphone": false, // exclusive
+    "speaker": false, // shareable across apps
+  },
 }
 ```
 
 ### Devices & bindings
 
-Apps run in parallel, each bound to its own devices (the *binding* is the app
+Apps run in parallel, each bound to its own devices (the _binding_ is the app
 slug). The top-level `requirements` object declares which device slots an app
 needs; the dashboard then lets the operator assign a concrete camera /
 microphone / speaker / display per app, persisted to
@@ -74,7 +75,7 @@ microphone / speaker / display per app, persisted to
 - `speaker` and device-less drivers (`heartbeat`) are **shared** across apps.
 
 This is transparent to app code: `rt.drivers.on('camera', ...)` always resolves
-to *your* app's bound camera. The SDK subscribes to a per-app event topic and
+to _your_ app's bound camera. The SDK subscribes to a per-app event topic and
 tags requests with the binding for you.
 
 ## Experience API
@@ -87,37 +88,45 @@ export default defineExperience<State>({
   name: 'Main',
   description: 'optional',
 
-  init() { /* sync setup, runs before `start` */ return state; },
+  init() {
+    /* sync setup, runs before `start` */ return state;
+  },
 
-  async start(rt, state) { /* one-shot setup */ },
+  async start(rt, state) {
+    /* one-shot setup */
+  },
 
-  render(rt, state, frame) { /* per-rAF; optional */ },
+  render(rt, state, frame) {
+    /* per-rAF; optional */
+  },
 
-  async stop(rt, state) { /* cleanup */ },
+  async stop(rt, state) {
+    /* cleanup */
+  },
 });
 ```
 
 The runtime context (`rt`) provides:
 
-| Property | Description |
-|----------|-------------|
-| `rt.app.appSlug`, `rt.app.experienceSlug` | identity |
-| `rt.app.server` | underlying `ServerConnection` (advanced) |
-| `rt.drivers.on(driver, event, listener)` | subscribe to a driver event; returns `{ unsubscribe() }` |
-| `rt.drivers.get(driver, event)` | get the most recent value for an event |
-| `rt.drivers.execute(driver, action, data?)` | invoke a driver action |
-| `rt.storage.get/set/remove/list` | per-app KV storage backed by `paths.apps/<slug>/_data/storage/` |
-| `rt.log.debug/info/warn/error` | logs routed to the GOSAI logger |
-| `rt.router.switchTo(slug)` | start another experience, stopping the current one |
-| `rt.router.stop(slug?)` | stop an experience (defaults to current) |
+| Property                                    | Description                                                     |
+| ------------------------------------------- | --------------------------------------------------------------- |
+| `rt.app.appSlug`, `rt.app.experienceSlug`   | identity                                                        |
+| `rt.app.server`                             | underlying `ServerConnection` (advanced)                        |
+| `rt.drivers.on(driver, event, listener)`    | subscribe to a driver event; returns `{ unsubscribe() }`        |
+| `rt.drivers.get(driver, event)`             | get the most recent value for an event                          |
+| `rt.drivers.execute(driver, action, data?)` | invoke a driver action                                          |
+| `rt.storage.get/set/remove/list`            | per-app KV storage backed by `paths.apps/<slug>/_data/storage/` |
+| `rt.log.debug/info/warn/error`              | logs routed to the GOSAI logger                                 |
+| `rt.router.switchTo(slug)`                  | start another experience, stopping the current one              |
+| `rt.router.stop(slug?)`                     | stop an experience (defaults to current)                        |
 
 `FrameInfo` for `render`:
 
 ```ts
 interface FrameInfo {
-  timestamp: number;   // performance.now()
-  deltaMs: number;     // since previous frame
-  frameCount: number;  // 0-based
+  timestamp: number; // performance.now()
+  deltaMs: number; // since previous frame
+  frameCount: number; // 0-based
 }
 ```
 

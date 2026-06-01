@@ -16,12 +16,7 @@
  * UI reads correctly from the projector's perspective.
  */
 
-import {
-  REF_HEIGHT,
-  REF_WIDTH,
-  type FrameContext,
-  type Layer,
-} from '../shared/types.js';
+import { REF_HEIGHT, REF_WIDTH, type FrameContext, type Layer } from '../shared/types.js';
 import { fillRect, strokeRect } from '../shared/canvas-utils.js';
 import type { PoolFeed } from '../shared/feed.js';
 import { loadSound, type SoundHandle } from '../shared/audio.js';
@@ -199,12 +194,7 @@ function step(
       }
     } else {
       // Open -> close path.
-      if (
-        gapX > 250 &&
-        gapX < 500 &&
-        gapY < 100 &&
-        Math.abs(state.menuX - tipA.x) < 300
-      ) {
+      if (gapX > 250 && gapX < 500 && gapY < 100 && Math.abs(state.menuX - tipA.x) < 300) {
         state.yTrigger = tipA.y;
         state.triggerArmed = true;
         state.triggerCounter = 0;

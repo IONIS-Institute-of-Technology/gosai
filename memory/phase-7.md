@@ -17,7 +17,7 @@ installer.
 3. Move to `apps/<slug>/`.
 4. `bun install --silent` if there are any non-SDK dependencies. The SDK
    itself is provided at runtime via the import map, so apps declaring
-   only `@gosai/sdk` (workspace:* or otherwise) skip install gracefully.
+   only `@gosai/sdk` (workspace:\* or otherwise) skip install gracefully.
 5. `bun run build` if the app declares a build script.
 6. `uv pip install -r <requirements>` if the manifest declares Python
    requirements.
@@ -106,14 +106,14 @@ The test runs in ~30 s on a warm cache and is green.
 
 ## Validation matrix
 
-| Check                             | Result                                  |
-| --------------------------------- | --------------------------------------- |
-| `bun run typecheck`               | clean                                   |
-| `bun run python:lint`             | clean                                   |
-| `bun run python:test`             | 7 passed                                |
-| Phase 5 e2e                       | green (calibration drivers + static)    |
-| Phase 6 e2e                       | green (all 13 drivers discovered)       |
-| Phase 7 e2e                       | green (install -> run -> stop -> uninstall) |
-| `bun run build`                   | clean (all 4 TS packages + apps)        |
-| `bun run build:server-bin`        | clean, 60 MB executable                 |
-| `bun --filter @gosai/desktop run build` | clean (main + preload + renderer)  |
+| Check                                   | Result                                      |
+| --------------------------------------- | ------------------------------------------- |
+| `bun run typecheck`                     | clean                                       |
+| `bun run python:lint`                   | clean                                       |
+| `bun run python:test`                   | 7 passed                                    |
+| Phase 5 e2e                             | green (calibration drivers + static)        |
+| Phase 6 e2e                             | green (all 13 drivers discovered)           |
+| Phase 7 e2e                             | green (install -> run -> stop -> uninstall) |
+| `bun run build`                         | clean (all 4 TS packages + apps)            |
+| `bun run build:server-bin`              | clean, 60 MB executable                     |
+| `bun --filter @gosai/desktop run build` | clean (main + preload + renderer)           |

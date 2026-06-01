@@ -79,14 +79,14 @@ git init && git add . && git commit -m "initial"
 
 ## Environment variables
 
-| Variable                  | Effect                                            |
-| ------------------------- | ------------------------------------------------- |
-| `GOSAI_HOST`              | Server bind host (default `127.0.0.1`).           |
-| `GOSAI_PORT`              | Server bind port (default `7777`).                |
-| `GOSAI_PYTHON_DIR`        | Override the Python source/venv directory.        |
-| `GOSAI_BUILTIN_APPS`      | Override the built-in apps discovery root.        |
-| `GOSAI_PYTHON=0`          | Disable the Python bridge entirely.               |
-| `GOSAI_AUTOSTART_SERVER=1`| Force the desktop app to spawn the server itself. |
+| Variable                   | Effect                                            |
+| -------------------------- | ------------------------------------------------- |
+| `GOSAI_HOST`               | Server bind host (default `127.0.0.1`).           |
+| `GOSAI_PORT`               | Server bind port (default `7777`).                |
+| `GOSAI_PYTHON_DIR`         | Override the Python source/venv directory.        |
+| `GOSAI_BUILTIN_APPS`       | Override the built-in apps discovery root.        |
+| `GOSAI_PYTHON=0`           | Disable the Python bridge entirely.               |
+| `GOSAI_AUTOSTART_SERVER=1` | Force the desktop app to spawn the server itself. |
 
 ## Tests
 

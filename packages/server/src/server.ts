@@ -1,9 +1,6 @@
 import { resolve } from 'node:path';
 import { Hono } from 'hono';
-import {
-  PROTOCOL_VERSION,
-  type ClientMessage,
-} from '@gosai/shared/protocol';
+import { PROTOCOL_VERSION, type ClientMessage } from '@gosai/shared/protocol';
 import type { AppDeviceSettingsPatch } from '@gosai/shared';
 import { ServerEvents } from '@gosai/shared/events';
 import type { GosaiPaths } from './paths.js';
@@ -49,11 +46,7 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
   logger.subscribe((entry) => bus.emit(ServerEvents.Log, entry, 'logger'));
 
   const config = new ConfigStore(options.paths.config, bus, logger.child('config'));
-  const appSettings = new AppSettingsStore(
-    options.paths.apps,
-    bus,
-    logger.child('app-config'),
-  );
+  const appSettings = new AppSettingsStore(options.paths.apps, bus, logger.child('app-config'));
 
   const pythonDir = resolvePythonDir(options.pythonDir);
 
@@ -96,9 +89,9 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
 
   const gateway = new WebSocketGateway(bus, logger.child('ipc'), {
     onClientDisconnect: (clientId) =>
-      drivers.unsubscribeAll(clientId).catch((err) =>
-        log.warn('driver cleanup failed', { clientId, err: String(err) }),
-      ),
+      drivers
+        .unsubscribeAll(clientId)
+        .catch((err) => log.warn('driver cleanup failed', { clientId, err: String(err) })),
   });
   registerHandlers(gateway, { apps, drivers, config, appSettings, logger, bus });
 
@@ -392,9 +385,8 @@ function registerHandlers(
     return appSettings.get(payload.appSlug);
   });
   gateway.registerHandler('app:config:set', async (msg: ClientMessage) => {
-    const payload = (
-      msg as { payload: { appSlug?: string; settings?: AppDeviceSettingsPatch } }
-    ).payload;
+    const payload = (msg as { payload: { appSlug?: string; settings?: AppDeviceSettingsPatch } })
+      .payload;
     if (!payload?.appSlug) throw new Error('appSlug is required');
     const next = appSettings.update(payload.appSlug, payload.settings ?? {});
     await applyAppDeviceSettings(drivers, payload.appSlug, next, logger.child('app-config'));
@@ -413,7 +405,11 @@ function registerHandlers(
     if (!payload?.appSlug || !payload.topic) {
       throw new Error('appSlug and topic are required');
     }
-    bus.emit(`app:${payload.appSlug}:${payload.topic}`, payload.data ?? null, `app:${payload.appSlug}`);
+    bus.emit(
+      `app:${payload.appSlug}:${payload.topic}`,
+      payload.data ?? null,
+      `app:${payload.appSlug}`,
+    );
     return { ok: true };
   });
 
@@ -438,7 +434,8 @@ function registerHandlers(
 function guessMime(filePath: string): string {
   const lower = filePath.toLowerCase();
   if (lower.endsWith('.html')) return 'text/html; charset=utf-8';
-  if (lower.endsWith('.js') || lower.endsWith('.mjs')) return 'application/javascript; charset=utf-8';
+  if (lower.endsWith('.js') || lower.endsWith('.mjs'))
+    return 'application/javascript; charset=utf-8';
   if (lower.endsWith('.json')) return 'application/json; charset=utf-8';
   if (lower.endsWith('.css')) return 'text/css; charset=utf-8';
   if (lower.endsWith('.png')) return 'image/png';

@@ -43,7 +43,9 @@ const server = await createServer({
 try {
   // App discovered
   const appsRes = (await fetchJson('/v1/apps')) as {
-    apps: Array<{ manifest: { slug: string; builtin?: boolean; experiences: Array<{ slug: string }> } }>;
+    apps: Array<{
+      manifest: { slug: string; builtin?: boolean; experiences: Array<{ slug: string }> };
+    }>;
   };
   const calibration = appsRes.apps.find((a) => a.manifest.slug === 'calibration');
   if (!calibration) throw new Error('calibration app not discovered');

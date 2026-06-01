@@ -106,11 +106,16 @@ try {
   await rpc(ws, 'app:install', { source: `file://${sourceRepo}` });
 
   const apps = (await (await fetch(`${baseUrl}/v1/apps`)).json()) as {
-    apps: Array<{ manifest: { slug: string; experiences: Array<{ slug: string }> }; installPath: string }>;
+    apps: Array<{
+      manifest: { slug: string; experiences: Array<{ slug: string }> };
+      installPath: string;
+    }>;
   };
   const installed = apps.apps.find((a) => a.manifest.slug === 'hello-gosai');
   if (!installed) {
-    throw new Error(`hello-gosai not installed; got ${JSON.stringify(apps.apps.map((a) => a.manifest.slug))}`);
+    throw new Error(
+      `hello-gosai not installed; got ${JSON.stringify(apps.apps.map((a) => a.manifest.slug))}`,
+    );
   }
   console.log('[phase7] installed:', installed.manifest.slug, '@', installed.installPath);
 

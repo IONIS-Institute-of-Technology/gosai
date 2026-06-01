@@ -71,9 +71,7 @@ const api = {
       ipcRenderer.invoke(IPC_CHANNELS.ControlWindowShow, { windowId }) as Promise<boolean>,
   },
 
-  onExperienceEnded: (
-    listener: (payload: { appSlug: string; experienceSlug: string }) => void,
-  ) => {
+  onExperienceEnded: (listener: (payload: { appSlug: string; experienceSlug: string }) => void) => {
     const channel = IPC_CHANNELS.ExperienceEnded;
     const handler = (
       _ev: Electron.IpcRendererEvent,
