@@ -29,6 +29,12 @@ import {
 
 import { assetUrl } from './shared/assets.js';
 import { applyReferenceTransform, createCompositorCanvas, fitCanvas } from './shared/canvas.js';
+import {
+  DEFAULT_CONFIG,
+  loadConfig,
+  toMirrorDriverConfig,
+  type SecondSelfConfig,
+} from './shared/config.js';
 import type { LayerDeps } from './shared/deps.js';
 import { createMirrorFeed, type MirrorFeed } from './shared/feed.js';
 import { LayerManager, type LayerDef } from './shared/menu-controller.js';
@@ -57,25 +63,6 @@ import { createShowPingLayer } from './layers/show-ping.js';
 import { createSignGameLayer } from './layers/sign-game.js';
 import { createSignTrainingLayer } from './layers/sign-training.js';
 import { createTheremineLayer } from './layers/theremine.js';
-
-/**
- * Config pushed to the `pose_to_mirror` driver on start.
- *
- * `mode: 'direct'` is the webcam selfie overlay that works on any camera with no
- * calibration (the default for laptops/dev). For the physical augmented-mirror
- * rig, switch to `mode: 'reflection'` and tune the geometry below (values from
- * the legacy config.json: screen size mm, offsets, camera tilt).
- */
-const MIRROR_CONFIG = {
-  mode: 'direct',
-  x_offset: -230,
-  y_offset: 100,
-  screen_width_mm: 392.85,
-  screen_height_mm: 698.4,
-  width: REF_WIDTH,
-  height: REF_HEIGHT,
-  tilt_deg: 17,
-};
 
 /** SLR action set (16 signs) shared by sign-game and sign-training. */
 const SIGN_ACTIONS = [
@@ -108,6 +95,7 @@ interface State {
   synth: Synth;
   manager: LayerManager;
   subs: DriverSubscription[];
+  config: SecondSelfConfig;
 }
 
 export default defineExperience<State>({
@@ -132,11 +120,18 @@ export default defineExperience<State>({
       synth,
       manager: placeholder,
       subs: [],
+      config: DEFAULT_CONFIG,
     };
   },
 
   async start(rt: ExperienceRuntimeContext, state: State): Promise<void> {
     rt.log.info('second-self: starting compositor');
+
+    state.config = await loadConfig(rt);
+    rt.log.info('second-self: config loaded', {
+      mode: state.config.projection.mode,
+      displayFit: state.config.display.fit,
+    });
 
     const deps: LayerDeps = {
       feed: state.feed,
@@ -155,7 +150,7 @@ export default defineExperience<State>({
 
     // Configure the mirror projection + SLR action set (best-effort).
     void rt.drivers
-      .execute('pose_to_mirror', 'set_mirror_config', MIRROR_CONFIG)
+      .execute('pose_to_mirror', 'set_mirror_config', toMirrorDriverConfig(state.config))
       .catch((err) => rt.log.warn('set_mirror_config failed', { err: String(err) }));
     void rt.drivers
       .execute('slr', 'set_actions', SIGN_ACTIONS)
@@ -177,12 +172,13 @@ export default defineExperience<State>({
     state.ctx.fillStyle = '#000000';
     state.ctx.fillRect(0, 0, state.canvas.width, state.canvas.height);
 
-    applyReferenceTransform(state.ctx);
+    const { referenceWidth, referenceHeight, fit } = state.config.display;
+    applyReferenceTransform(state.ctx, fit, referenceWidth, referenceHeight);
 
     const frameCtx: FrameContext = {
       ctx: state.ctx,
-      refWidth: REF_WIDTH,
-      refHeight: REF_HEIGHT,
+      refWidth: referenceWidth,
+      refHeight: referenceHeight,
       timestamp: frame.timestamp,
       deltaMs: frame.deltaMs > 0 ? frame.deltaMs : 16.6,
       frameCount: frame.frameCount,

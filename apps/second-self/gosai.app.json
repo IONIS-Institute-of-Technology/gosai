@@ -16,5 +16,150 @@
       "drivers": ["pose", "pose_to_mirror", "frequency_analysis", "slr"]
     }
   ],
-  "startup": ["main"]
+  "startup": ["main"],
+  "settings": {
+    "storageKey": "config",
+    "groups": [
+      {
+        "label": "Projection",
+        "description": "How the webcam frame maps into the experience.",
+        "fields": [
+          {
+            "key": "projection.mode",
+            "label": "Mode",
+            "type": "select",
+            "description": "Direct = webcam selfie overlay. Reflection = physical mirror rig.",
+            "default": "direct",
+            "options": [
+              { "value": "direct", "label": "Direct (webcam)" },
+              { "value": "reflection", "label": "Reflection (mirror)" }
+            ]
+          },
+          {
+            "key": "projection.mirror",
+            "label": "Mirror horizontally",
+            "type": "boolean",
+            "description": "Selfie-style left/right flip (direct mode).",
+            "default": true
+          },
+          {
+            "key": "projection.cameraFit",
+            "label": "Camera fit",
+            "type": "select",
+            "description": "How the camera frame fills the reference space.",
+            "default": "contain",
+            "options": [
+              { "value": "contain", "label": "Contain (no crop)" },
+              { "value": "cover", "label": "Cover (crop to fill)" }
+            ]
+          },
+          {
+            "key": "projection.zoom",
+            "label": "Zoom",
+            "type": "number",
+            "description": ">1 crops in for a fuller portrait fill.",
+            "default": 1.0,
+            "min": 0.5,
+            "max": 3,
+            "step": 0.05
+          }
+        ]
+      },
+      {
+        "label": "Display",
+        "description": "How the portrait reference space maps onto the physical screen.",
+        "fields": [
+          {
+            "key": "display.fit",
+            "label": "Screen fit",
+            "type": "select",
+            "default": "contain",
+            "options": [
+              { "value": "contain", "label": "Contain (letterbox)" },
+              { "value": "cover", "label": "Cover (fill + crop)" },
+              { "value": "stretch", "label": "Stretch (distort)" }
+            ]
+          },
+          {
+            "key": "display.referenceWidth",
+            "label": "Reference width",
+            "type": "number",
+            "default": 1080,
+            "min": 1,
+            "step": 1
+          },
+          {
+            "key": "display.referenceHeight",
+            "label": "Reference height",
+            "type": "number",
+            "default": 1920,
+            "min": 1,
+            "step": 1
+          }
+        ]
+      },
+      {
+        "label": "Mirror calibration",
+        "description": "Physical augmented-mirror rig (used only in reflection mode; millimetres / degrees).",
+        "fields": [
+          {
+            "key": "mirror.x_offset",
+            "label": "X offset (mm)",
+            "type": "number",
+            "default": -230,
+            "step": 1
+          },
+          {
+            "key": "mirror.y_offset",
+            "label": "Y offset (mm)",
+            "type": "number",
+            "default": 100,
+            "step": 1
+          },
+          {
+            "key": "mirror.screen_width_mm",
+            "label": "Screen width (mm)",
+            "type": "number",
+            "default": 392.85,
+            "step": 0.01
+          },
+          {
+            "key": "mirror.screen_height_mm",
+            "label": "Screen height (mm)",
+            "type": "number",
+            "default": 698.4,
+            "step": 0.01
+          },
+          {
+            "key": "mirror.tilt_deg",
+            "label": "Tilt (deg)",
+            "type": "number",
+            "default": 17,
+            "step": 0.5
+          },
+          {
+            "key": "mirror.hfov_deg",
+            "label": "Camera HFOV (deg)",
+            "type": "number",
+            "default": 60,
+            "step": 0.5
+          },
+          {
+            "key": "mirror.scale",
+            "label": "Scale",
+            "type": "number",
+            "default": 1.0,
+            "step": 0.01
+          },
+          {
+            "key": "mirror.default_distance_mm",
+            "label": "Default distance (mm)",
+            "type": "number",
+            "default": 1500,
+            "step": 10
+          }
+        ]
+      }
+    ]
+  }
 }

@@ -60,8 +60,47 @@ A starter template is at `templates/basic/` in the GOSAI repo.
     "microphone": false, // exclusive
     "speaker": false, // shareable across apps
   },
+  "settings": {
+    // optional declarative settings — renders an editable form in the dashboard
+    "storageKey": "config", // KV key the config object is saved under (default "config")
+    "groups": [
+      {
+        "label": "Display",
+        "fields": [
+          {
+            "key": "display.fit", // dotted path into the config object
+            "label": "Screen fit",
+            "type": "select", // boolean | number | string | select
+            "default": "contain",
+            "options": [
+              { "value": "contain", "label": "Contain" },
+              { "value": "cover", "label": "Cover" },
+            ],
+          },
+          {
+            "key": "display.zoom",
+            "label": "Zoom",
+            "type": "number",
+            "min": 0.5,
+            "max": 3,
+            "step": 0.05,
+            "default": 1,
+          },
+        ],
+      },
+    ],
+  },
 }
 ```
+
+### Settings (declarative config)
+
+If an app declares a `settings` schema, the dashboard shows a **Settings** button
+on its row that opens a generated form. Values are persisted to the app's
+key/value storage under `settings.storageKey` (default `config`) as a single,
+possibly nested JSON object — field `key`s are dotted paths. Read it from your
+experience with `rt.storage.get(storageKey)`. Settings are read at experience
+start, so changes apply on the next launch.
 
 ### Devices & bindings
 

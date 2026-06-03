@@ -56,28 +56,46 @@ export function fitCanvas(canvas: HTMLCanvasElement): boolean {
   return false;
 }
 
+/** How the reference space is mapped onto the physical canvas. */
+export type DisplayFit = 'contain' | 'cover' | 'stretch';
+
 /**
- * Transform the context so subsequent drawing happens in 1080x1920 reference
- * coordinates.
+ * Transform the context so subsequent drawing happens in reference coordinates,
+ * adapting the logical design space to any physical screen size/orientation:
  *
- * Uses a uniform "contain" fit (preserve aspect ratio, centered) so the portrait
- * mirror space is never distorted. On a display whose aspect ratio differs from
- * 9:16 (e.g. a landscape laptop screen) this letterboxes with black bars rather
- * than stretching. Returns the applied scale and offsets so callers can map
- * pointer/screen coordinates back into reference space if needed.
+ * - `contain` (default): preserve aspect, letterbox. Never distorts; black bars
+ *   on screens whose aspect differs from the reference (e.g. a portrait design
+ *   on a landscape monitor).
+ * - `cover`: preserve aspect, fill the screen and crop the overflow.
+ * - `stretch`: fill exactly, distorting aspect (legacy behavior; rarely wanted).
+ *
+ * Returns the applied scale/offset so callers can map screen<->reference coords.
  */
-export function applyReferenceTransform(ctx: CanvasRenderingContext2D): {
-  scale: number;
-  offsetX: number;
-  offsetY: number;
-} {
+export function applyReferenceTransform(
+  ctx: CanvasRenderingContext2D,
+  fit: DisplayFit = 'contain',
+  refWidth: number = REF_WIDTH,
+  refHeight: number = REF_HEIGHT,
+): { scaleX: number; scaleY: number; offsetX: number; offsetY: number } {
   const cw = ctx.canvas.width;
   const ch = ctx.canvas.height;
-  const scale = Math.min(cw / REF_WIDTH, ch / REF_HEIGHT);
-  const offsetX = (cw - REF_WIDTH * scale) / 2;
-  const offsetY = (ch - REF_HEIGHT * scale) / 2;
-  ctx.setTransform(scale, 0, 0, scale, offsetX, offsetY);
-  return { scale, offsetX, offsetY };
+  let scaleX: number;
+  let scaleY: number;
+  if (fit === 'stretch') {
+    scaleX = cw / refWidth;
+    scaleY = ch / refHeight;
+  } else {
+    const ratio =
+      fit === 'cover'
+        ? Math.max(cw / refWidth, ch / refHeight)
+        : Math.min(cw / refWidth, ch / refHeight);
+    scaleX = ratio;
+    scaleY = ratio;
+  }
+  const offsetX = (cw - refWidth * scaleX) / 2;
+  const offsetY = (ch - refHeight * scaleY) / 2;
+  ctx.setTransform(scaleX, 0, 0, scaleY, offsetX, offsetY);
+  return { scaleX, scaleY, offsetX, offsetY };
 }
 
 // ---------------------------------------------------------------------------

@@ -4,6 +4,12 @@
 
 export type {
   AppManifest,
+  AppRequirements,
+  AppSettingsSchema,
+  AppSettingsGroup,
+  AppSettingsField,
+  AppSettingsFieldType,
+  AppSettingsOption,
   ExperienceDescriptor,
   PythonConfig,
   InstalledApp,

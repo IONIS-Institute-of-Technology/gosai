@@ -5,7 +5,14 @@
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AppManifest, AppRequirements, ExperienceDescriptor } from '@gosai/shared';
+import type {
+  AppManifest,
+  AppRequirements,
+  AppSettingsField,
+  AppSettingsGroup,
+  AppSettingsSchema,
+  ExperienceDescriptor,
+} from '@gosai/shared';
 
 export interface DiscoveredApp {
   readonly manifest: AppManifest;
@@ -101,6 +108,7 @@ export function validateManifest(path: string, value: unknown): AppManifest {
   }
 
   const requirements = parseRequirements(path, v.requirements);
+  const settings = parseSettings(path, v.settings);
 
   let python: AppManifest['python'];
   if (v.python !== undefined) {
@@ -126,6 +134,7 @@ export function validateManifest(path: string, value: unknown): AppManifest {
     ...(python ? { python } : {}),
     ...(startup ? { startup } : {}),
     ...(requirements ? { requirements } : {}),
+    ...(settings ? { settings } : {}),
     builtin,
   };
   return result;
@@ -146,6 +155,74 @@ function parseRequirements(path: string, value: unknown): AppRequirements | unde
     ...(camera !== undefined ? { camera } : {}),
     ...(microphone !== undefined ? { microphone } : {}),
     ...(speaker !== undefined ? { speaker } : {}),
+  };
+}
+
+const FIELD_TYPES = new Set(['boolean', 'number', 'string', 'select']);
+
+function parseSettings(path: string, value: unknown): AppSettingsSchema | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new ManifestError(path, '`settings` must be an object');
+  }
+  const s = value as Record<string, unknown>;
+  if (!Array.isArray(s.groups)) {
+    throw new ManifestError(path, '`settings.groups` must be an array');
+  }
+  const groups = s.groups.map((g, idx) => parseSettingsGroup(path, g, `settings.groups[${idx}]`));
+  const storageKey = typeof s.storageKey === 'string' ? s.storageKey : undefined;
+  return { groups, ...(storageKey !== undefined ? { storageKey } : {}) };
+}
+
+function parseSettingsGroup(path: string, value: unknown, label: string): AppSettingsGroup {
+  if (typeof value !== 'object' || value === null) {
+    throw new ManifestError(path, `${label} must be an object`);
+  }
+  const g = value as Record<string, unknown>;
+  const groupLabel = requireScopedString(path, g, label, 'label');
+  if (!Array.isArray(g.fields)) {
+    throw new ManifestError(path, `${label}.fields must be an array`);
+  }
+  const fields = g.fields.map((f, idx) => parseSettingsField(path, f, `${label}.fields[${idx}]`));
+  return {
+    label: groupLabel,
+    fields,
+    ...(typeof g.description === 'string' ? { description: g.description } : {}),
+  };
+}
+
+function parseSettingsField(path: string, value: unknown, label: string): AppSettingsField {
+  if (typeof value !== 'object' || value === null) {
+    throw new ManifestError(path, `${label} must be an object`);
+  }
+  const f = value as Record<string, unknown>;
+  const key = requireScopedString(path, f, label, 'key');
+  const fieldLabel = requireScopedString(path, f, label, 'label');
+  const type = requireScopedString(path, f, label, 'type');
+  if (!FIELD_TYPES.has(type)) {
+    throw new ManifestError(path, `${label}.type must be one of ${[...FIELD_TYPES].join(', ')}`);
+  }
+  const options =
+    type === 'select' && Array.isArray(f.options)
+      ? f.options
+          .filter((o): o is Record<string, unknown> => typeof o === 'object' && o !== null)
+          .map((o) => ({ value: String(o.value), label: String(o.label ?? o.value) }))
+      : undefined;
+  const def = f.default;
+  const validDefault =
+    typeof def === 'string' || typeof def === 'number' || typeof def === 'boolean'
+      ? def
+      : undefined;
+  return {
+    key,
+    label: fieldLabel,
+    type: type as AppSettingsField['type'],
+    ...(typeof f.description === 'string' ? { description: f.description } : {}),
+    ...(validDefault !== undefined ? { default: validDefault } : {}),
+    ...(options ? { options } : {}),
+    ...(typeof f.min === 'number' ? { min: f.min } : {}),
+    ...(typeof f.max === 'number' ? { max: f.max } : {}),
+    ...(typeof f.step === 'number' ? { step: f.step } : {}),
   };
 }
 

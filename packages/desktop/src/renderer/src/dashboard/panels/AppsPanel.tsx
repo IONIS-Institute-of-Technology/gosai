@@ -17,6 +17,7 @@ import { useServer } from '../../lib/server-context.js';
 import { isNotConnectedError } from '../../lib/server-client.js';
 import { Panel } from '../components/Panel.js';
 import { EmptyState } from '../components/EmptyState.jsx';
+import { AppSettingsModal } from '../components/AppSettingsModal.js';
 
 const SERVER_BASE_URL = 'http://127.0.0.1:7777';
 
@@ -214,6 +215,8 @@ function AppRow({
 }: AppRowProps): React.ReactElement {
   const { client } = useServer();
   const [expanded, setExpanded] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsSchema = app.manifest.settings;
   const requirements = app.manifest.requirements ?? {};
   const hasRequirements =
     !!requirements.display ||
@@ -351,6 +354,17 @@ function AppRow({
           </span>
         </button>
 
+        {settingsSchema ? (
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            className="shrink-0 rounded border border-neutral-700 px-3 py-1.5 text-sm text-neutral-300 transition-colors hover:bg-neutral-800"
+            title="App settings"
+          >
+            Settings
+          </button>
+        ) : null}
+
         {needsCalibration ? (
           <CalibrationControl
             status={calStatus}
@@ -448,6 +462,14 @@ function AppRow({
             </div>
           ) : null}
         </div>
+      ) : null}
+
+      {settingsOpen && settingsSchema ? (
+        <AppSettingsModal
+          app={app}
+          schema={settingsSchema}
+          onClose={() => setSettingsOpen(false)}
+        />
       ) : null}
     </li>
   );

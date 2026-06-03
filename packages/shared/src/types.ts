@@ -88,6 +88,13 @@ export interface AppManifest {
    * dashboard. Omitted kinds default to `false`.
    */
   readonly requirements?: AppRequirements;
+  /**
+   * Declarative settings schema. When present, the dashboard renders an
+   * editable settings form for the app; values are persisted to the app's
+   * key/value storage under {@link AppSettingsSchema.storageKey} as a single
+   * (possibly nested) JSON object, which the app reads via `rt.storage`.
+   */
+  readonly settings?: AppSettingsSchema;
 }
 
 /** Device kinds an app declares it needs, so the dashboard can offer pickers. */
@@ -96,6 +103,48 @@ export interface AppRequirements {
   readonly camera?: boolean;
   readonly microphone?: boolean;
   readonly speaker?: boolean;
+}
+
+/** Supported field input types for {@link AppSettingsField}. */
+export type AppSettingsFieldType = 'boolean' | 'number' | 'string' | 'select';
+
+/** A single editable setting. */
+export interface AppSettingsField {
+  /**
+   * Dotted path into the stored config object (e.g. `"projection.mode"`).
+   * Determines where the value is read/written within the storage object.
+   */
+  readonly key: string;
+  readonly label: string;
+  readonly type: AppSettingsFieldType;
+  readonly description?: string;
+  /** Default value, used when storage has no value for this key. */
+  readonly default?: string | number | boolean;
+  /** Options for `type: "select"`. */
+  readonly options?: readonly AppSettingsOption[];
+  /** Bounds/step for `type: "number"`. */
+  readonly min?: number;
+  readonly max?: number;
+  readonly step?: number;
+}
+
+export interface AppSettingsOption {
+  readonly value: string;
+  readonly label: string;
+}
+
+/** A labelled group of related settings. */
+export interface AppSettingsGroup {
+  readonly label: string;
+  readonly description?: string;
+  readonly fields: readonly AppSettingsField[];
+}
+
+/** Declarative app settings schema (see {@link AppManifest.settings}). */
+export interface AppSettingsSchema {
+  /** Storage key the config object is persisted under. Defaults to `"config"`. */
+  readonly storageKey?: string;
+  readonly groups: readonly AppSettingsGroup[];
 }
 
 export interface InstalledApp {

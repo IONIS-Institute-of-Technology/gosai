@@ -149,6 +149,9 @@ class PoseToMirrorDriver(BaseProcessor):
         # "direct"  -> webcam selfie overlay (no mirror hardware; default).
         # "reflection" -> calibrated projection for the physical mirror rig.
         self._mode: str = "direct"
+        # Direct-mode knobs.
+        self._mirror_flip: bool = True  # horizontal flip (selfie view).
+        self._fit: str = "contain"  # "contain" (letterbox) | "cover" (fill+crop).
         self._mirrored: dict[str, Any] = {}
 
     def execute(self, action: str, data: Any) -> Any:
@@ -157,13 +160,18 @@ class PoseToMirrorDriver(BaseProcessor):
                 mode = data.get("mode")
                 if isinstance(mode, str) and mode in ("direct", "reflection"):
                     self._mode = mode
+                fit = data.get("fit")
+                if isinstance(fit, str) and fit in ("contain", "cover"):
+                    self._fit = fit
+                if "mirror" in data:
+                    self._mirror_flip = bool(data["mirror"])
                 for key, value in data.items():
                     if key in self._config:
                         try:
                             self._config[key] = float(value)
                         except (TypeError, ValueError):
                             self.log("warn", f"set_mirror_config: bad value for {key!r}")
-            return {"mode": self._mode, **self._config}
+            return {"mode": self._mode, "fit": self._fit, "mirror": self._mirror_flip, **self._config}
         return super().execute(action, data)
 
     # ------------------------------------------------------------------
@@ -274,7 +282,9 @@ class PoseToMirrorDriver(BaseProcessor):
                 continue
             nx = point[0] / frame_w
             ny = point[1] / frame_h
-            x = (1.0 - nx) * sx + ox  # horizontal mirror (selfie view).
+            if self._mirror_flip:
+                nx = 1.0 - nx  # horizontal mirror (selfie view).
+            x = nx * sx + ox
             y = ny * sy + oy
             vis = point[2] if len(point) > 2 else 1.0
             mapped.append([x, y, 0.0, vis])
@@ -290,17 +300,20 @@ class PoseToMirrorDriver(BaseProcessor):
         right_hand: list[list[float]],
         left_hand: list[list[float]],
     ) -> None:
-        """Webcam selfie overlay: mirror + aspect-correct fit to the portrait.
+        """Webcam selfie overlay: aspect-correct fit of the camera to the canvas.
 
-        Uses a "contain" fit (preserve aspect, center) so the whole camera frame
-        is visible and nothing is distorted. A landscape webcam therefore shows
-        as a centered band with letterboxing top/bottom; ``zoom`` (>1) can crop
-        in for a fuller portrait. The user's movements map 1:1, mirrored.
+        ``fit='contain'`` (default) shows the whole camera frame (letterboxed if
+        aspect ratios differ); ``fit='cover'`` fills the canvas and crops the
+        overflow. ``zoom`` (>1) crops in further, ``mirror`` flips horizontally
+        for a selfie view. The user's movements map 1:1.
         """
         cfg = self._config
         out_w, out_h = cfg["width"], cfg["height"]
         zoom = max(cfg.get("zoom", 1.0), 0.1)
-        scale = min(out_w / max(frame_w, 1.0), out_h / max(frame_h, 1.0)) * zoom
+        wr = out_w / max(frame_w, 1.0)
+        hr = out_h / max(frame_h, 1.0)
+        ratio = max(wr, hr) if self._fit == "cover" else min(wr, hr)
+        scale = ratio * zoom
         sx = frame_w * scale
         sy = frame_h * scale
         ox = (out_w - sx) / 2.0

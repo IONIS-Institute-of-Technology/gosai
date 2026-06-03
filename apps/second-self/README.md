@@ -92,23 +92,73 @@ bun run typecheck     # tsc --noEmit
 
 The app is registered in the repo root `build:apps` script.
 
-## Mirror calibration
+## Configuration
 
-`pose_to_mirror` needs the physical mirror geometry to align the reflection.
-Defaults come from the legacy `config.json` and are pushed by `main.ts` on start
-(`set_mirror_config`):
+All hardware adaptation is driven by a single persisted config object so the app
+works on any screen, any webcam, and with or without a physical mirror — **no
+rebuild required**. It lives in the app's key/value storage under `config` and is
+deep-merged over the defaults on start (`src/shared/config.ts`).
 
-| Field              | Default         | Meaning                      |
-| ------------------ | --------------- | ---------------------------- |
-| `x_offset`         | `-230`          | Horizontal offset (mm)       |
-| `y_offset`         | `100`           | Vertical offset (mm)         |
-| `screen_width_mm`  | `392.85`        | Physical mirror width        |
-| `screen_height_mm` | `698.4`         | Physical mirror height       |
-| `width`/`height`   | `1080` / `1920` | Display resolution (px)      |
-| `tilt_deg`         | `17`            | Camera tilt above the mirror |
+The easiest way to edit it is the **Settings** button on the app's row in the
+GOSAI dashboard, which renders a form from the declarative `settings` schema in
+`gosai.app.json`. Changes apply on the next launch of the experience. You can
+also set it directly via any GOSAI storage tool:
 
-Tune these per physical install (edit `MIRROR_CONFIG` in `src/main.ts` or push a
-new `set_mirror_config` action at runtime).
+```
+POST /v1/apps/second-self/storage/config
+{
+  "projection": { "mode": "direct", "mirror": true, "cameraFit": "contain", "zoom": 1.0 },
+  "display":    { "fit": "contain" },
+  "mirror":     { "x_offset": -230, "y_offset": 100, "screen_width_mm": 392.85,
+                  "screen_height_mm": 698.4, "tilt_deg": 17 }
+}
+```
+
+The three concerns are independent:
+
+### `projection` — camera frame to reference space (any webcam)
+
+| Field       | Values                  | Meaning                                                                        |
+| ----------- | ----------------------- | ------------------------------------------------------------------------------ |
+| `mode`      | `direct` / `reflection` | `direct` = webcam selfie overlay (default); `reflection` = physical mirror rig |
+| `mirror`    | `true` / `false`        | Horizontal flip for a selfie view                                              |
+| `cameraFit` | `contain` / `cover`     | `contain` shows the whole camera frame; `cover` fills + crops                  |
+| `zoom`      | number (>=0.1)          | `>1` crops in for a fuller portrait fill                                       |
+
+Webcam resolution/aspect is detected automatically (the `pose` driver reports
+the frame size), so no per-camera setup is needed.
+
+### `display` — reference space to physical screen (any size/orientation)
+
+| Field             | Values                          | Meaning                                                                                   |
+| ----------------- | ------------------------------- | ----------------------------------------------------------------------------------------- |
+| `fit`             | `contain` / `cover` / `stretch` | `contain` letterboxes (no distortion, default); `cover` fills + crops; `stretch` distorts |
+| `referenceWidth`  | number (default `1080`)         | Logical design space (experiences are portrait)                                           |
+| `referenceHeight` | number (default `1920`)         | "                                                                                         |
+
+Experiences are authored in the portrait reference space; `display.fit` adapts
+them to any physical screen/orientation distortion-free (e.g. a portrait design
+on a landscape monitor is letterboxed by default).
+
+### `mirror` — physical augmented-mirror calibration (only `reflection` mode)
+
+| Field                 | Default  | Meaning                      |
+| --------------------- | -------- | ---------------------------- |
+| `x_offset`            | `-230`   | Horizontal offset (mm)       |
+| `y_offset`            | `100`    | Vertical offset (mm)         |
+| `screen_width_mm`     | `392.85` | Physical mirror width        |
+| `screen_height_mm`    | `698.4`  | Physical mirror height       |
+| `tilt_deg`            | `17`     | Camera tilt above the mirror |
+| `hfov_deg`            | `60`     | Camera horizontal FOV        |
+| `scale`               | `1.0`    | Per-install distance scale   |
+| `default_distance_mm` | `1500`   | Fallback subject distance    |
+
+**Quick recipes**
+
+- Laptop / any webcam (default): `projection.mode = "direct"`, `display.fit = "contain"`.
+- Fill a portrait screen edge-to-edge: `projection.cameraFit = "cover"` (or raise `zoom`).
+- Landscape monitor without bars: `display.fit = "cover"`.
+- Physical augmented mirror: `projection.mode = "reflection"` + tune the `mirror` block.
 
 ## Assets & notes
 

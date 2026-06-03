@@ -33,6 +33,59 @@ describe('validateManifest', () => {
     expect(() => validateManifest(PATH, { slug: 'a' })).toThrow(ManifestError);
   });
 
+  test('parses a settings schema', () => {
+    const m = validateManifest(PATH, {
+      slug: 'x',
+      name: 'X',
+      version: '0.1.0',
+      experiences: [{ slug: 'a', name: 'A', entry: './a.ts' }],
+      settings: {
+        storageKey: 'config',
+        groups: [
+          {
+            label: 'Projection',
+            fields: [
+              {
+                key: 'projection.mode',
+                label: 'Mode',
+                type: 'select',
+                default: 'direct',
+                options: [
+                  { value: 'direct', label: 'Direct' },
+                  { value: 'reflection', label: 'Reflection' },
+                ],
+              },
+              {
+                key: 'projection.zoom',
+                label: 'Zoom',
+                type: 'number',
+                default: 1,
+                min: 0.1,
+                step: 0.1,
+              },
+            ],
+          },
+        ],
+      },
+    });
+    expect(m.settings?.storageKey).toBe('config');
+    expect(m.settings?.groups).toHaveLength(1);
+    expect(m.settings?.groups[0]?.fields[0]?.options).toHaveLength(2);
+    expect(m.settings?.groups[0]?.fields[1]?.min).toBe(0.1);
+  });
+
+  test('rejects an invalid settings field type', () => {
+    expect(() =>
+      validateManifest(PATH, {
+        slug: 'x',
+        name: 'X',
+        version: '0.1.0',
+        experiences: [{ slug: 'a', name: 'A', entry: './a.ts' }],
+        settings: { groups: [{ label: 'G', fields: [{ key: 'k', label: 'K', type: 'color' }] }] },
+      }),
+    ).toThrow(ManifestError);
+  });
+
   test('parses python config', () => {
     const m = validateManifest(PATH, {
       slug: 'x',
