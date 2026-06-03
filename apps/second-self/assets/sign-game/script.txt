@@ -1,0 +1,405 @@
+#NOTE: ON MY MACHINE, THIS EDITOR DOES NOT RUN IN MICROSOFT EDGE DUE TO ISSUES WITH p5.SOUND. IF THIS HAPPENS TO YOU, CTRL+F FOR "song" IN ENGINE.JS AND COMMENT OUT EACH LINE (SHOULD ONLY BE 3)
+
+$tag(start)
+#./platform/home/apps/sign_game/components/
+$defineC("Aria", "./platform/home/apps/sign_game/components/characters/Aria", color(84, 28, 137))
+$defineC("Grandmother", "./platform/home/apps/sign_game/components/characters/Grandmother", color ( 255 , 225 , 100))
+$defineC("Seller", "./platform/home/apps/sign_game/components/characters/Seller", color ( 255 , 100, 225))
+
+$defineImg(Empty,"./platform/home/apps/sign_game/components/backgrounds/Empty.png")
+$defineImg(Market,"./platform/home/apps/sign_game/components/backgrounds/Market.jpeg")
+$defineImg(Path,"./platform/home/apps/sign_game/components/backgrounds/Path.jpeg")
+$defineImg(City,"./platform/home/apps/sign_game/components/backgrounds/City.jpeg")
+$defineImg(Home,"./platform/home/apps/sign_game/components/backgrounds/Home.jpeg")
+$defineImg(Street,"./platform/home/apps/sign_game/components/backgrounds/Street.jpeg")
+
+$bg(Empty) 
+
+$show("Aria", CENTER)
+
+$addAnimation("Aria", "ok")
+#$menu("Aria", "OkMenu1", 1, "ok", afterOkMenu1)
+
+Aria: Hello, welcome to the mirror sign language learning game. My name is Aria.
+
+$addAnimation("Aria", "ok")
+
+Aria: In this game you will be able to interact with the mirror by making gestures in sign language to live an adventure.
+
+$setSprite("Aria", "Lina01")
+
+Aria: Each time you make a sign, you will have a visual correction to verify that you understood the sign correctly.
+
+$setSprite("Aria", "Lina02")
+
+Aria: You will be able to make choices during the game according to your desires. All in sign language of course!
+
+$setSprite("Aria", "Lina03")
+
+Aria: I'm a little hungry, how about a bite to eat?
+
+$menu("Aria", "YesMenu", 1, "yes", afterYesMenu)
+
+$tag(afterYesMenu)
+
+$bg(Path) 
+
+$setSprite("Aria", "Lina13")
+
+Aria: Would you rather go the left or right way?
+
+$menu("Aria", "leftRightMenu", 2, "left", leftChoice, "right", rightChoice)
+
+$tag(leftChoice)
+
+$tag(rightChoice)
+
+$bg(City)
+
+$show("Aria", CENTER)
+
+$setSprite("Aria", "Lina01")
+
+Aria: We arrived in the city, we can either go to buy something or go directly to the house.
+
+Aria: What do you like best ?
+
+$menu("Aria", "houseStoreMenu", 2, "house", houseChoice, "store", storeChoice)
+
+$tag(houseChoice)
+
+$bg(Home)
+
+$hide("Aria")
+
+$show("Grandmother", LEFT)
+
+$setSprite("Grandmother", "Grandmother01")
+
+Grandmother: Hello ! Welcome, make yourself at home.
+
+$setSprite("Grandmother", "Grandmother02")
+
+$show("Aria", RIGHT)
+
+$setSprite("Aria", "Lina07")
+
+Aria: My grandmother said hello to you, you have to say hello to her at last!
+
+$hide("Grandmother")
+
+$menu("Aria", "helloMenu", 1, "hello", helloChoice)
+
+$tag(helloChoice)
+
+$setSprite("Grandmother", "Grandmother03")
+
+Grandmother: You can watch TV if you feel like it, or you can have a bite to eat. Don't bother.
+
+$setVar(countWatchingTV, 0)
+
+$tag(houseMenu)
+
+$menu("Aria", "homeMenu", 3, "television", televisionChoice, "leave", leaveChoice, "eat", eatChoice)
+
+$tag(televisionChoice)
+
+N: *You watch television*
+
+$tag(checkCountWatchingTV0)
+$if(countWatchingTV, 0, televisionChoice0, checkCountWatchingTV1)
+$tag(checkCountWatchingTV1)
+$if(countWatchingTV, 1, televisionChoice1, checkCountWatchingTV2)
+$tag(checkCountWatchingTV2)
+$if(countWatchingTV, 2, televisionChoice2, checkCountWatchingTV3)
+$tag(checkCountWatchingTV3)
+$if(countWatchingTV, 3, televisionChoice3, checkCountWatchingTV4)
+$tag(checkCountWatchingTV4)
+$if(countWatchingTV, 4, televisionChoice4, checkCountWatchingTV5)
+$tag(checkCountWatchingTV5)
+$if(countWatchingTV, 5, televisionChoice5, checkCountWatchingTV6)
+$tag(checkCountWatchingTV6)
+$if(countWatchingTV, 6, televisionChoice6, checkCountWatchingTV7)
+$tag(checkCountWatchingTV7)
+$if(countWatchingTV, 7, televisionChoice7, checkCountWatchingTV8)
+$tag(checkCountWatchingTV8)
+$if(countWatchingTV, 8, televisionChoice8, checkCountWatchingTV9)
+$tag(checkCountWatchingTV9)
+$if(countWatchingTV, 9, televisionChoice9, checkCountWatchingTV10)
+$tag(checkCountWatchingTV10)
+$if(countWatchingTV, 10, televisionChoice10, checkCountWatchingTV11)
+$tag(checkCountWatchingTV11)
+$if(countWatchingTV, 11, televisionChoice11, checkCountWatchingTV12)
+$tag(checkCountWatchingTV12)
+$if(countWatchingTV, 12, televisionChoice12, checkCountWatchingTV13)
+$tag(checkCountWatchingTV13)
+$if(countWatchingTV, 13, televisionChoice13, checkCountWatchingTV14)
+$tag(checkCountWatchingTV14)
+$if(countWatchingTV, 14, televisionChoice14, checkCountWatchingTV15)
+$tag(checkCountWatchingTV15)
+$if(countWatchingTV, 15, televisionChoice15, checkCountWatchingTV16)
+$tag(checkCountWatchingTV16)
+$if(countWatchingTV, 16, televisionChoice16, checkCountWatchingTV17)
+$tag(checkCountWatchingTV17)
+$if(countWatchingTV, 17, televisionChoice17, checkCountWatchingTV18)
+$tag(checkCountWatchingTV18)
+$if(countWatchingTV, 18, televisionChoice18, checkCountWatchingTV19)
+$tag(checkCountWatchingTV19)
+$if(countWatchingTV, 19, televisionChoice19, checkCountWatchingTV20)
+$tag(checkCountWatchingTV20)
+$if(countWatchingTV, 20, televisionChoice20, checkCountWatchingTV0)
+
+
+$tag(televisionChoice0)
+N: There is an advertisement for an olfactory interface.
+$setVar(countWatchingTV, 1)
+$jump(houseMenu)
+
+$tag(televisionChoice1)
+N: There is an advertisement for a giant 3D printer for buildings.
+$setVar(countWatchingTV, 2)
+$jump(houseMenu)
+
+$tag(televisionChoice2)
+N: There is an advertisement for an augmented billiard table.
+$setVar(countWatchingTV, 3)
+$jump(houseMenu)
+
+$tag(televisionChoice3)
+N: There is an advertisement for a robotic arm.
+$setVar(countWatchingTV, 4)
+$jump(houseMenu)
+
+$tag(televisionChoice4)
+N: There is an advertisement for a smart watch.
+$setVar(countWatchingTV, 5)
+$jump(houseMenu)
+
+$tag(televisionChoice5)
+N: There is an advertisement for an interactive score.
+$setVar(countWatchingTV, 6)
+$jump(houseMenu)
+
+$tag(televisionChoice6)
+N: There is an advertisement for an intelligent prosthesis.
+$setVar(countWatchingTV, 7)
+$jump(houseMenu)
+
+$tag(televisionChoice7)
+N: There is an advertisement for a smartlock.
+$setVar(countWatchingTV, 8)
+$jump(houseMenu)
+
+$tag(televisionChoice8)
+N: There is an advertisement for a Martian rover.
+$setVar(countWatchingTV, 9)
+$jump(houseMenu)
+
+$tag(televisionChoice9)
+N: There is an advertisement for a new manufacturing process for flexible printed circuit boards.
+$setVar(countWatchingTV, 10)
+$jump(houseMenu)
+
+$tag(televisionChoice10)
+N: There is an advertisement for a structure for drone based swarm robotics.
+$setVar(countWatchingTV, 11)
+$jump(houseMenu)
+
+$tag(televisionChoice11)
+N: There is an advertisement for position estimation for robot arm.
+$setVar(countWatchingTV, 12)
+$jump(houseMenu)
+
+$tag(televisionChoice12)
+N: There is an advertisement for an easy to make e-textile platform "catsuit".
+$setVar(countWatchingTV, 13)
+$jump(houseMenu)
+
+$tag(televisionChoice13)
+N: There is an advertisement for a General-purpose Operating System for Augmented Interfaces.
+N: (Created by Thomas Juldo)
+$setVar(countWatchingTV, 14)
+$jump(houseMenu)
+
+$tag(televisionChoice14)
+N: There is an advertisement for a food computer.
+$setVar(countWatchingTV, 15)
+$jump(houseMenu)
+
+$tag(televisionChoice15)
+N: There is an advertisement for a sign language video game.
+N: (Created by Adrien Lefevre)
+$setVar(countWatchingTV, 16)
+$jump(houseMenu)
+
+$tag(televisionChoice16)
+N: There is an advertisement for a robotic vehicule that delivers food.
+$setVar(countWatchingTV, 17)
+$jump(houseMenu)
+
+$tag(televisionChoice17)
+N: There is an advertisement for a sensitive pen for children with writing disorder.
+$setVar(countWatchingTV, 18)
+$jump(houseMenu)
+
+$tag(televisionChoice18)
+N: There is an advertisement for Inflatable Bioplastics Structures.
+$setVar(countWatchingTV, 19)
+$jump(houseMenu)
+
+$tag(televisionChoice19)
+N: There is an advertisement for a hydrogen generator device.
+N: (Looks dangerous).
+$setVar(countWatchingTV, 20)
+$jump(houseMenu)
+
+$tag(televisionChoice20)
+N: There is an advertisement for...
+N: I don't have inspiration anymore...
+$setVar(countWatchingTV, 0)
+$jump(houseMenu)
+
+
+$tag(eatChoice)
+
+$hide("Aria")
+
+$hide("Grandmother")
+
+N: *You eat a piece*
+
+$show("Aria",  RIGHT)
+
+$setSprite("Aria", "Lina14")
+
+Aria: It is really very good
+
+$show("Grandmother", LEFT)
+
+$setSprite("Grandmother", "Grandmother02")
+
+Grandmother: ...
+
+$setSprite("Aria", "Lina09")
+
+Aria: Finish your plate or she'll get mad
+
+N: *You finish your plate*
+
+$jump(houseMenu)
+
+$tag(leaveChoice)
+
+Grandmother: Come back whenever you want it was a pleasure !
+
+$hide("Aria")
+
+$hide("Grandmother")
+
+$jump(endGame)
+
+$tag(storeChoice)
+
+$bg(Market)
+
+$hide("Aria")
+
+$setSprite("Seller", "Seller03")
+
+$show("Seller", LEFT)
+
+Seller: Hello ! Welcome, have you made your choice ?
+
+$tag(fruitsChoice)
+
+$show("Aria", RIGHT)
+
+$setSprite("Aria", "Lina13")
+
+Aria: I hesitate between apples and peaches, which do you prefer ?
+
+$hide("Seller")
+
+$menu("Aria", "fruitsChoice", 2, "peach", peachChoice , "apple", appleChoice)
+
+$tag(appleChoice)
+
+$setVar(chooseApple, true)
+
+$setSprite("Aria", "Lina10")
+
+Aria: Great idea! I would like a bag of apples please
+
+$jump(afterFruitChoice)
+
+$tag(peachChoice)
+
+$setVar(chooseApple, false)
+
+$setSprite("Aria", "Lina10")
+
+Aria: Great idea, I love peaches! I would like a bag of peaches please
+
+$jump(afterFruitChoice)
+
+$tag(afterFruitChoice)
+
+$setSprite("Aria", "Lina05")
+
+Aria: Do you want to eat one now?
+
+$menu("Aria", "eatMenu", 2, "yes", eatMenuYes, "no", eatMenuNo)
+
+$tag(eatMenuYes)
+
+$hide("Aria")
+
+$if(chooseApple, true, appleResponse, peachResponse)
+
+$tag(appleResponse)
+
+N: *you eat an apple*
+
+$jump(eatMenuNo)
+
+$tag(peachResponse)
+
+$hide("Aria")
+
+N: *you eat a peach*
+
+$tag(eatMenuNo)
+
+$hide("Aria")
+
+$setSprite("Seller", "Seller02")
+
+$show("Seller", LEFT)
+
+Seller: See you next time !
+
+$hide("Seller")
+
+$tag(endGame)
+
+$setSprite("Aria", "Lina07")
+
+$bg(Street)
+
+$show("Aria", CENTER)
+
+Aria: Well, it's time to part ways.
+
+$setSprite("Aria", "Lina14")
+
+Aria: Don't hesitate to start the game again to make other choices.
+
+$setSprite("Aria", "Lina03")
+
+Aria: Thank you for having accompanied me. See you next time !
+
+$menu("Aria", "goodbyeMenu", 1, "goodbye", goodbyeMenuGoodbye)
+
+$tag(goodbyeMenuGoodbye)
+
+END

@@ -1,0 +1,45 @@
+{
+  "principalHigh": "C4",
+  "rythm": {
+    "tempo": 74,
+    "timeSignatureNum": 4,
+    "timeSignatureDenom": 4
+  },
+  "notes": [
+    ["D4", "quarter"],
+    ["D4", "dotted_quarter"],
+    ["C4", "sixteenth"],
+    ["B3", "dotted_eighth"],
+
+    ["A3", "eighth"],
+    ["silence", "dotted_half"],
+
+    ["silence", "quarter"],
+    ["D4", "quarter"],
+    ["F4", "dotted_quarter"],
+    ["G4", "sixteenth"],
+    ["E4", "sixteenth"],
+
+    ["E4", "quarter"],
+    ["silence", "dotted_half"],
+
+    ["silence", "quarter"],
+    ["E4", "quarter"],
+    ["D4", "dotted_quarter"],
+    ["C4", "sixteenth"],
+    ["B3", "dotted_eighth"],
+
+    ["silence", "half"],
+    ["B3", "eighth"],
+    ["C4", "sixteenth"],
+    ["B3", "dotted_eighth"],
+
+    ["C4", "sixteenth"],
+    ["B3", "dotted_eighth"],
+    ["C4", "sixteenth"],
+    ["B3", "dotted_eighth"],
+    ["C4", "sixteenth"],
+    ["B3", "dotted_eighth"],
+    ["G3", "eighth"]
+  ]
+}

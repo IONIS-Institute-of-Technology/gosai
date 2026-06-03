@@ -1,0 +1,20 @@
+{
+  "slug": "second-self",
+  "name": "Second Self",
+  "version": "1.0.0",
+  "description": "Augmented-mirror experience pack. A single composited surface projects interactive overlays onto a portrait mirror: skeleton overlays (hands, body, face), a gesture-driven launcher menu, motion games (poke-it, bounce, dance), audio experiences (theremine, music training) and sign-language modules (sign game, sign training). Driven by webcam pose estimation mirrored onto the display.",
+  "author": "GOSAI",
+  "default": "main",
+  "builtin": true,
+  "requirements": { "display": true, "camera": true, "microphone": true, "speaker": false },
+  "experiences": [
+    {
+      "slug": "main",
+      "name": "Second Self",
+      "description": "Composited augmented-mirror experience: persistent skeleton overlays plus a gesture menu that launches every Second Self module.",
+      "entry": "dist/main.js",
+      "drivers": ["pose", "pose_to_mirror", "frequency_analysis", "slr"]
+    }
+  ],
+  "startup": ["main"]
+}

@@ -1,0 +1,80 @@
+{
+  "principalHigh": "C4",
+  "rythm": {
+    "tempo": 83,
+    "timeSignatureNum": 4,
+    "timeSignatureDenom": 4
+  },
+  "notes": [
+    ["C5", "dotted_quarter"],
+    ["B4", "eighth"],
+    ["A4", "eighth"],
+    ["G4", "eighth"],
+    ["E4", "eighth"],
+    ["C5", "eighth"],
+
+    ["B4", "dotted_quarter"],
+    ["A4", "eighth"],
+    ["G4", "eighth"],
+    ["E4", "eighth"],
+    ["C4", "eighth"],
+    ["B4", "eighth"],
+
+    ["A4", "dotted_quarter"],
+    ["G4", "eighth"],
+    ["E4", "eighth"],
+    ["B3", "eighth"],
+    ["C4", "eighth"],
+    ["B4", "eighth"],
+
+    ["A4", "half"],
+    ["Ab4", "half"],
+
+    ["D5", "dotted_quarter"],
+    ["C5", "eighth"],
+    ["B4", "eighth"],
+    ["A4", "eighth"],
+    ["F4", "eighth"],
+    ["C5", "eighth"],
+
+    ["B4", "dotted_quarter"],
+    ["A4", "eighth"],
+    ["G4", "eighth"],
+    ["F4", "eighth"],
+    ["D4", "eighth"],
+    ["B4", "eighth"],
+
+    ["A4", "dotted_quarter"],
+    ["G4", "eighth"],
+    ["F4", "eighth"],
+    ["C#4", "eighth"],
+    ["D4", "eighth"],
+    ["B4", "eighth"],
+
+    ["A4", "half"],
+    ["G4", "half"],
+
+    ["C5", "dotted_quarter"],
+    ["B4", "eighth"],
+    ["A4", "eighth"],
+    ["G4", "eighth"],
+    ["E4", "eighth"],
+    ["C5", "eighth"],
+
+    ["B4", "dotted_quarter"],
+    ["A4", "eighth"],
+    ["G4", "eighth"],
+    ["E4", "eighth"],
+    ["C4", "eighth"],
+    ["B4", "eighth"],
+
+    ["A4", "dotted_quarter"],
+    ["G4", "eighth"],
+    ["E4", "eighth"],
+    ["B3", "eighth"],
+    ["C4", "eighth"],
+    ["C5", "eighth"],
+
+    ["C5", "half"]
+  ]
+}

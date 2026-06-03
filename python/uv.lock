@@ -483,7 +483,7 @@ speech = [
 [package.metadata]
 requires-dist = [
     { name = "faster-whisper", marker = "extra == 'speech'", specifier = ">=1.1.0" },
-    { name = "mediapipe", specifier = ">=0.10.18" },
+    { name = "mediapipe", specifier = ">=0.10.33" },
     { name = "msgpack", specifier = ">=1.1.0" },
     { name = "numpy", specifier = ">=2.1.0" },
     { name = "onnxruntime", marker = "sys_platform == 'darwin'", specifier = ">=1.20.0" },

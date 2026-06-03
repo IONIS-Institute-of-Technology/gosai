@@ -1,0 +1,30 @@
+{
+  "principalHigh": "C3",
+  "rythm": {
+    "tempo": 90,
+    "timeSignatureNum": 4,
+    "timeSignatureDenom": 4
+  },
+  "notes": [
+    ["A3", "whole"],
+    ["B3", "whole"],
+    ["C4", "whole"],
+    ["D4", "whole"],
+    ["E4", "whole"],
+    ["B3", "whole"],
+    ["A3", "whole"],
+    ["C4", "whole"],
+    ["D4", "whole"],
+    ["E4", "whole"],
+    ["A4", "whole"],
+    ["B4", "whole"],
+    ["C3", "whole"],
+    ["D3", "whole"],
+    ["E3", "whole"],
+    ["A3", "whole"],
+    ["B3", "whole"],
+    ["C4", "whole"],
+    ["D4", "whole"],
+    ["E4", "whole"]
+  ]
+}
