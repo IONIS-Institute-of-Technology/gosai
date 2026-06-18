@@ -14,7 +14,7 @@ dependencies = [
     "mediapipe>=0.10.33",
     "pillow>=11.0.0",
     "onnxruntime>=1.20.0; sys_platform == 'darwin'",
-    "onnxruntime-gpu>=1.20.0; sys_platform == 'linux' or sys_platform == 'win32'",
+    "onnxruntime-gpu[cuda,cudnn]>=1.21.0; sys_platform == 'linux' or sys_platform == 'win32'",
     "sounddevice>=0.5.0",
     "soundfile>=0.13.0",
 ]
