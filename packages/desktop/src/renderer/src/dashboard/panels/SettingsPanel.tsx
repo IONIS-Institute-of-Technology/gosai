@@ -201,8 +201,9 @@ export function SettingsPanel(): React.ReactElement {
         ) : (
           <div className="space-y-4">
             <p className="text-xs text-neutral-400">
-              Resolution and frame rate apply the next time the camera driver starts, and
-              immediately when it is already running.
+              Default resolution and frame rate. Each app inherits these unless it overrides
+              them in its own camera settings. Changes apply the next time the camera driver
+              starts, and immediately when it is already running.
             </p>
             {formatsError ? (
               <p className="font-mono text-xs text-amber-400">{formatsError}</p>

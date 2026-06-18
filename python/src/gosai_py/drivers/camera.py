@@ -38,6 +38,25 @@ _PROBE_FPS: tuple[int, ...] = (5, 10, 15, 24, 25, 30, 60)
 # because the capture loop software-throttles to `_fps_target`.
 _SOFTWARE_FPS: tuple[int, ...] = (15, 24, 30, 60)
 
+# Many UVC/V4L2 webcams only expose resolutions above 640x480 under the MJPG
+# pixel format; the default (YUYV) path silently caps at 640x480, so OpenCV's
+# width/height requests are ignored and every higher mode reads back as 640x480.
+# Requesting MJPG first lets the higher modes through. This is a Linux-specific
+# quirk, so we only force it there to avoid disturbing macOS AVFoundation.
+_FORCE_MJPG = platform.system() == "Linux"
+
+
+def _request_mjpg(cap: Any, cv2: Any) -> None:
+    """Ask the device for the MJPG FourCC so high-res modes become selectable.
+
+    A no-op for cameras (or platforms) that ignore the hint. Must be set
+    *before* width/height because changing the FourCC resets the frame size.
+    """
+    if not _FORCE_MJPG:
+        return
+    with contextlib.suppress(Exception):
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+
 
 def _video_node_number(entry: str) -> int:
     """Sort key for `/sys/class/video4linux` entries (video10 after video2)."""
@@ -191,6 +210,7 @@ class CameraDriver(BaseDriver):
         try:
             seen: set[tuple[int, int]] = set()
             for target_w, target_h in _PROBE_RESOLUTIONS:
+                _request_mjpg(cap, cv2)
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, target_w)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, target_h)
                 actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -218,6 +238,7 @@ class CameraDriver(BaseDriver):
     def _probe_fps_for_resolution(
         cls, cap: Any, cv2: Any, width: int, height: int
     ) -> list[int]:
+        _request_mjpg(cap, cv2)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         reported_max = float(cap.get(cv2.CAP_PROP_FPS))
@@ -256,6 +277,7 @@ class CameraDriver(BaseDriver):
             self.log("error", f"cannot open camera device {self._device}")
             self._cap = None
             return
+        _request_mjpg(cap, cv2)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
         cap.set(cv2.CAP_PROP_FPS, self._fps_target)

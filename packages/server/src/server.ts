@@ -56,9 +56,11 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
     bus,
     // Per-app device assignments take priority; the camera falls back to the
     // global default so single-app setups keep working without per-app config.
+    // The global camera is layered underneath the per-app block so an app that
+    // only pins a device (no resolution/fps) still inherits sensible defaults.
     getDriverConfig: (binding, driver) => {
       const app = binding === SYSTEM_BINDING ? undefined : appSettings.get(binding);
-      if (driver === 'camera') return { ...(app?.camera ?? config.get().camera) };
+      if (driver === 'camera') return { ...config.get().camera, ...app?.camera };
       if (driver === 'microphone') return app?.microphone ? { ...app.microphone } : undefined;
       if (driver === 'speaker') return app?.speaker ? { ...app.speaker } : undefined;
       return undefined;

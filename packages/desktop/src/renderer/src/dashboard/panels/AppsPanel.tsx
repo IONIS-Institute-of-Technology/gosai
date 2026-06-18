@@ -1,9 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   AppDeviceSettings,
   AppDeviceSettingsPatch,
+  CameraFormat,
+  CameraFormatsResult,
+  CameraSettings,
   DeviceCatalog,
   DisplayMode,
+  GlobalConfig,
   InstalledApp,
   RunningExperience,
 } from '@gosai/shared';
@@ -20,6 +24,10 @@ import { EmptyState } from '../components/EmptyState.jsx';
 import { AppSettingsModal } from '../components/AppSettingsModal.js';
 
 const SERVER_BASE_URL = 'http://127.0.0.1:7777';
+
+function formatKey(width: number, height: number): string {
+  return `${width}x${height}`;
+}
 
 interface DisplayChoice {
   id: number;
@@ -539,6 +547,7 @@ function DeviceSettingsSection({
   const { client } = useServer();
   const appSlug = app.manifest.slug;
   const [settings, setSettings] = useState<AppDeviceSettings>({});
+  const [globalCamera, setGlobalCamera] = useState<CameraSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -564,6 +573,24 @@ function DeviceSettingsSection({
       cancelled = true;
     };
   }, [client, appSlug, onError]);
+
+  // The global camera supplies defaults (resolution/fps/device) the app
+  // inherits unless it overrides them below.
+  useEffect(() => {
+    if (!requirements.camera) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const cfg = (await client.request('config:get')) as GlobalConfig;
+        if (!cancelled) setGlobalCamera(cfg.camera);
+      } catch {
+        // Non-fatal: controls fall back to whatever the device reports.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [client, requirements.camera]);
 
   const save = async (patch: AppDeviceSettingsPatch): Promise<void> => {
     setSaving(true);
@@ -643,16 +670,13 @@ function DeviceSettingsSection({
           ) : null}
 
           {requirements.camera ? (
-            <DeviceSelect
-              label="Camera"
-              value={settings.camera?.device ?? null}
-              allowDefault
-              defaultLabel={scanning ? 'Scanning…' : 'Default'}
+            <CameraSettingsControls
+              camera={settings.camera}
+              defaults={globalCamera}
               options={devices?.cameras ?? []}
-              disabled={saving}
-              onChange={(device) =>
-                void save({ camera: { ...settings.camera, device: device ?? 0 } })
-              }
+              scanning={scanning}
+              saving={saving}
+              onSave={(patch) => void save({ camera: patch })}
             />
           ) : null}
 
@@ -682,6 +706,178 @@ function DeviceSettingsSection({
         </div>
       )}
     </div>
+  );
+}
+
+interface CameraSettingsControlsProps {
+  /** The app's stored camera overrides (may be partial or undefined). */
+  camera: CameraSettings | undefined;
+  /** Global camera config supplying inherited defaults. */
+  defaults: CameraSettings | null;
+  options: ReadonlyArray<{ index: number; label: string }>;
+  scanning: boolean;
+  saving: boolean;
+  onSave(patch: Partial<CameraSettings>): void;
+}
+
+/**
+ * Per-app camera picker: device, resolution and frame rate. Resolution/fps
+ * options are probed from the *selected* camera so each app only sees modes its
+ * assigned device actually supports. Unset fields fall back to the global
+ * default camera.
+ */
+function CameraSettingsControls({
+  camera,
+  defaults,
+  options,
+  scanning,
+  saving,
+  onSave,
+}: CameraSettingsControlsProps): React.ReactElement {
+  const { client } = useServer();
+  const [formats, setFormats] = useState<readonly CameraFormat[] | null>(null);
+  const [formatsError, setFormatsError] = useState<string | null>(null);
+  const [probing, setProbing] = useState(false);
+
+  const device = camera?.device ?? defaults?.device ?? 0;
+  const width = camera?.width ?? defaults?.width ?? null;
+  const height = camera?.height ?? defaults?.height ?? null;
+  const fps = camera?.fps ?? defaults?.fps ?? null;
+
+  const probeFormats = useCallback(
+    async (target: number) => {
+      setProbing(true);
+      setFormatsError(null);
+      try {
+        const result = (await client.request('driver:execute', {
+          driver: 'camera',
+          action: 'list_formats',
+          data: { device: target },
+        })) as CameraFormatsResult;
+        if (!result.ok || !result.formats?.length) {
+          setFormats(null);
+          setFormatsError(result.error ?? 'No supported camera modes detected');
+          return;
+        }
+        setFormats(result.formats);
+      } catch (err) {
+        if (!isNotConnectedError(err)) {
+          setFormats(null);
+          setFormatsError(err instanceof Error ? err.message : String(err));
+        }
+      } finally {
+        setProbing(false);
+      }
+    },
+    [client],
+  );
+
+  useEffect(() => {
+    void probeFormats(device);
+  }, [device, probeFormats]);
+
+  const resolutionOptions = useMemo(() => {
+    const list = formats ? [...formats] : [];
+    if (width != null && height != null && !list.some((f) => f.width === width && f.height === height)) {
+      list.unshift({ width, height, fps: fps != null ? [fps] : [] });
+    }
+    return list;
+  }, [formats, width, height, fps]);
+
+  const fpsOptions = useMemo(() => {
+    const match =
+      width != null && height != null
+        ? formats?.find((f) => f.width === width && f.height === height)
+        : undefined;
+    if (match) return match.fps;
+    return fps != null ? [fps] : [];
+  }, [formats, width, height, fps]);
+
+  const onResolutionChange = (value: string): void => {
+    const [w, h] = value.split('x').map((n) => Number.parseInt(n, 10));
+    if (!Number.isFinite(w) || !Number.isFinite(h)) return;
+    const format = formats?.find((f) => f.width === w && f.height === h);
+    const nextFps =
+      format && fps != null && format.fps.includes(fps) ? fps : (format?.fps[0] ?? fps ?? undefined);
+    onSave({ width: w, height: h, ...(nextFps != null ? { fps: nextFps } : {}) });
+  };
+
+  return (
+    <div className="space-y-2">
+      <DeviceSelect
+        label="Camera"
+        value={camera?.device ?? null}
+        allowDefault
+        defaultLabel={scanning ? 'Scanning…' : 'Default'}
+        options={options}
+        disabled={saving}
+        onChange={(next) => onSave({ device: next ?? 0 })}
+      />
+      <CameraModeSelect
+        label="Resolution"
+        value={width != null && height != null ? formatKey(width, height) : ''}
+        disabled={saving || probing || resolutionOptions.length === 0}
+        placeholder={probing ? 'Detecting…' : '—'}
+        options={resolutionOptions.map((f) => ({
+          value: formatKey(f.width, f.height),
+          label: `${f.width}×${f.height}`,
+        }))}
+        onChange={onResolutionChange}
+      />
+      <CameraModeSelect
+        label="Frame rate"
+        value={fps != null ? String(fps) : ''}
+        disabled={saving || probing || fpsOptions.length === 0}
+        placeholder={probing ? 'Detecting…' : '—'}
+        options={fpsOptions.map((f) => ({ value: String(f), label: `${f} fps` }))}
+        onChange={(value) => onSave({ fps: Number.parseFloat(value) })}
+      />
+      {formatsError ? (
+        <p className="font-mono text-[10px] text-amber-400">{formatsError}</p>
+      ) : null}
+    </div>
+  );
+}
+
+interface CameraModeSelectProps {
+  label: string;
+  value: string;
+  options: ReadonlyArray<{ value: string; label: string }>;
+  placeholder: string;
+  disabled?: boolean;
+  onChange(value: string): void;
+}
+
+function CameraModeSelect({
+  label,
+  value,
+  options,
+  placeholder,
+  disabled = false,
+  onChange,
+}: CameraModeSelectProps): React.ReactElement {
+  return (
+    <label className="flex items-center justify-between gap-3">
+      <span className="font-mono text-[10px] uppercase tracking-wider text-neutral-500">
+        {label}
+      </span>
+      <select
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        className="min-w-[180px] flex-1 rounded border border-neutral-700 bg-neutral-900 px-2 py-1 font-mono text-[11px] text-neutral-100 disabled:opacity-50"
+      >
+        {options.length === 0 ? <option value="">{placeholder}</option> : null}
+        {value !== '' && !options.some((o) => o.value === value) ? (
+          <option value={value}>{value}</option>
+        ) : null}
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 
