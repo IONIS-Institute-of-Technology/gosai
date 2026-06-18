@@ -20,6 +20,12 @@ import type {
 export interface RuntimeOptions {
   readonly appSlug: string;
   readonly experienceSlug: string;
+  /**
+   * App binding used for driver instances. Defaults to `appSlug`; calibration
+   * uses this to run under the target app's camera settings while keeping
+   * storage/events scoped to the calibration app.
+   */
+  readonly driverBinding?: string;
   /** HTTP base URL (e.g. http://127.0.0.1:7777) and WS URL are derived from this. */
   readonly serverBaseUrl: string;
   readonly wsUrl?: string;
@@ -43,7 +49,7 @@ export async function runExperience<TState>(
 
   await waitForConnection(client);
 
-  const drivers = new DriverClientImpl(client, options.appSlug);
+  const drivers = new DriverClientImpl(client, options.driverBinding ?? options.appSlug);
   const storage = new StorageClientImpl(options.appSlug, client, options.serverBaseUrl);
   const log = new AppLoggerImpl(`app:${options.appSlug}:${options.experienceSlug}`, client);
   const router = new ExperienceRouterImpl(options.appSlug, client);

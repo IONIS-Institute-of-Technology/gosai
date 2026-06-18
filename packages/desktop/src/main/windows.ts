@@ -38,6 +38,7 @@ export interface OpenAppHostOptions {
   readonly experienceSlug: string;
   readonly fullscreen?: boolean;
   readonly targetAppSlug?: string;
+  readonly driverBinding?: string;
 }
 
 export interface OpenControlWindowOptions {
@@ -45,6 +46,7 @@ export interface OpenControlWindowOptions {
   readonly experienceSlug: string;
   readonly projectorDisplayId?: number;
   readonly targetAppSlug?: string;
+  readonly driverBinding?: string;
   readonly width?: number;
   readonly height?: number;
   readonly title?: string;
@@ -207,6 +209,7 @@ export class WindowRegistry {
       display: String(display.id),
     });
     if (opts.targetAppSlug) query.set('target', opts.targetAppSlug);
+    if (opts.driverBinding) query.set('driverBinding', opts.driverBinding);
 
     if (isDev && process.env.ELECTRON_RENDERER_URL) {
       void win.loadURL(`${process.env.ELECTRON_RENDERER_URL}/app-host.html?${query.toString()}`);
@@ -303,6 +306,7 @@ export class WindowRegistry {
       role: 'control',
     });
     if (opts.targetAppSlug) query.set('target', opts.targetAppSlug);
+    if (opts.driverBinding) query.set('driverBinding', opts.driverBinding);
 
     if (isDev && process.env.ELECTRON_RENDERER_URL) {
       void win.loadURL(`${process.env.ELECTRON_RENDERER_URL}/app-host.html?${query.toString()}`);

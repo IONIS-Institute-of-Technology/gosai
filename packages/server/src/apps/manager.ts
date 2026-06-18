@@ -31,10 +31,18 @@ export interface AppManagerOptions {
   readonly builtinAppsDir?: string;
 }
 
+export interface StartExperienceOptions {
+  readonly driverBinding?: string;
+}
+
+interface RunningExperienceRecord extends RunningExperience {
+  readonly driverBinding: string;
+}
+
 export class AppManager {
   private readonly log: ChildLogger;
   private readonly catalogue = new Map<string, InstalledAppRecord>();
-  private readonly running = new Map<string, RunningExperience>();
+  private readonly running = new Map<string, RunningExperienceRecord>();
 
   constructor(private readonly options: AppManagerOptions) {
     this.log = options.logger.child('apps');
@@ -58,7 +66,7 @@ export class AppManager {
   }
 
   listRunningExperiences(): RunningExperience[] {
-    return Array.from(this.running.values());
+    return Array.from(this.running.values()).map(toPublicRunningExperience);
   }
 
   getApp(slug: string): InstalledApp | undefined {
@@ -92,9 +100,14 @@ export class AppManager {
     this.broadcastList();
   }
 
-  async startExperience(appSlug: string, experienceSlug: string): Promise<RunningExperience> {
+  async startExperience(
+    appSlug: string,
+    experienceSlug: string,
+    options: StartExperienceOptions = {},
+  ): Promise<RunningExperience> {
     const record = this.requireApp(appSlug);
     const exp = record.getExperience(experienceSlug);
+    const driverBinding = options.driverBinding?.trim() || appSlug;
 
     if (exp.exclusive) {
       const allowed = new Set([exp.slug, ...(exp.allowed ?? [])]);
@@ -102,40 +115,49 @@ export class AppManager {
     }
     if (exp.required && exp.required.length > 0) {
       for (const reqSlug of exp.required) {
-        if (!this.running.has(experienceKey(appSlug, reqSlug))) {
-          await this.startExperience(appSlug, reqSlug);
+        const reqExisting = this.running.get(experienceKey(appSlug, reqSlug));
+        if (!reqExisting || reqExisting.driverBinding !== driverBinding) {
+          await this.startExperience(appSlug, reqSlug, { driverBinding });
         }
       }
     }
 
     const key = experienceKey(appSlug, experienceSlug);
     const existing = this.running.get(key);
-    if (existing && existing.state === 'running') return existing;
+    if (existing && existing.state === 'running') {
+      if (existing.driverBinding === driverBinding) return toPublicRunningExperience(existing);
+      await this.stopExperience(appSlug, experienceSlug);
+    }
 
-    const entry: RunningExperience = {
+    const entry: RunningExperienceRecord = {
       appSlug,
       experienceSlug,
       state: 'starting',
       startedAt: Date.now(),
+      driverBinding,
     };
     this.running.set(key, entry);
-    this.broadcastExperienceState(entry);
+    this.broadcastExperienceState(toPublicRunningExperience(entry));
 
     try {
       for (const driverName of exp.drivers) {
-        await this.options.drivers.subscribe(appSlug, driverName, '*', key);
+        await this.options.drivers.subscribe(driverBinding, driverName, '*', key);
       }
-      const running: RunningExperience = { ...entry, state: 'running' };
+      const running: RunningExperienceRecord = { ...entry, state: 'running' };
       this.running.set(key, running);
-      this.broadcastExperienceState(running);
+      this.broadcastExperienceState(toPublicRunningExperience(running));
       record.updateState('running');
       this.broadcastList();
-      this.log.info('experience started', { app: appSlug, experience: experienceSlug });
-      return running;
+      this.log.info('experience started', {
+        app: appSlug,
+        experience: experienceSlug,
+        driverBinding,
+      });
+      return toPublicRunningExperience(running);
     } catch (err) {
-      const failed: RunningExperience = { ...entry, state: 'crashed' };
+      const failed: RunningExperienceRecord = { ...entry, state: 'crashed' };
       this.running.set(key, failed);
-      this.broadcastExperienceState(failed);
+      this.broadcastExperienceState(toPublicRunningExperience(failed));
       record.updateState('crashed');
       this.broadcastList();
       this.log.error('failed to start experience', {
@@ -151,21 +173,26 @@ export class AppManager {
     const key = experienceKey(appSlug, experienceSlug);
     const current = this.running.get(key);
     if (!current) return;
-    const stopping: RunningExperience = { ...current, state: 'stopping' };
+    const stopping: RunningExperienceRecord = { ...current, state: 'stopping' };
     this.running.set(key, stopping);
-    this.broadcastExperienceState(stopping);
+    this.broadcastExperienceState(toPublicRunningExperience(stopping));
 
     const record = this.catalogue.get(appSlug);
     const drivers = record?.getExperience(experienceSlug).drivers ?? [];
     for (const driverName of drivers) {
       try {
-        await this.options.drivers.unsubscribe(appSlug, driverName, '*', key);
+        await this.options.drivers.unsubscribe(current.driverBinding, driverName, '*', key);
       } catch (err) {
         this.log.warn('driver unsubscribe failed', { driver: driverName, err: String(err) });
       }
     }
     this.running.delete(key);
-    const idleEntry: RunningExperience = { ...current, state: 'idle' };
+    const idleEntry: RunningExperience = {
+      appSlug: current.appSlug,
+      experienceSlug: current.experienceSlug,
+      state: 'idle',
+      startedAt: current.startedAt,
+    };
     this.broadcastExperienceState(idleEntry);
     if (record && !this.hasRunningExperienceFor(appSlug)) {
       record.updateState('installed');
@@ -335,6 +362,16 @@ class InstalledAppRecord {
 
 function experienceKey(appSlug: string, experienceSlug: string): string {
   return `${appSlug}::${experienceSlug}`;
+}
+
+function toPublicRunningExperience(record: RunningExperienceRecord): RunningExperience {
+  return {
+    appSlug: record.appSlug,
+    experienceSlug: record.experienceSlug,
+    state: record.state,
+    startedAt: record.startedAt,
+    ...(record.pid !== undefined ? { pid: record.pid } : {}),
+  };
 }
 
 // Re-export for tests that need it.

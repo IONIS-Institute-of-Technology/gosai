@@ -18,7 +18,14 @@ export function registerIpc(ctx: IpcContext): void {
     IPC_CHANNELS.AppHostOpen,
     (
       _ev,
-      args: { displayId: number; appSlug: string; experienceSlug: string; fullscreen?: boolean },
+      args: {
+        displayId: number;
+        appSlug: string;
+        experienceSlug: string;
+        fullscreen?: boolean;
+        targetAppSlug?: string;
+        driverBinding?: string;
+      },
     ) => {
       const handle = ctx.windows.openAppHost(args);
       return {
@@ -52,6 +59,8 @@ export function registerIpc(ctx: IpcContext): void {
         appSlug: string;
         experienceSlug: string;
         projectorDisplayId?: number;
+        targetAppSlug?: string;
+        driverBinding?: string;
         width?: number;
         height?: number;
         title?: string;

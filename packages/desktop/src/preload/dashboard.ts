@@ -30,6 +30,7 @@ const api = {
       experienceSlug: string;
       fullscreen?: boolean;
       targetAppSlug?: string;
+      driverBinding?: string;
     }) =>
       ipcRenderer.invoke(IPC_CHANNELS.AppHostOpen, args) as Promise<{
         windowId: number;
@@ -56,6 +57,7 @@ const api = {
       experienceSlug: string;
       projectorDisplayId?: number;
       targetAppSlug?: string;
+      driverBinding?: string;
       width?: number;
       height?: number;
       title?: string;

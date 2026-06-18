@@ -68,7 +68,10 @@ export type ClientMessage =
   | MessageEnvelope<'app:uninstall', { slug: string }>
   | MessageEnvelope<'app:broadcast', { appSlug: string; topic: string; data?: unknown }>
   | MessageEnvelope<'apps:list', Record<string, never>>
-  | MessageEnvelope<'experience:start', { appSlug: string; experienceSlug: string }>
+  | MessageEnvelope<
+      'experience:start',
+      { appSlug: string; experienceSlug: string; driverBinding?: string }
+    >
   | MessageEnvelope<'experience:stop', { appSlug: string; experienceSlug: string }>
   | MessageEnvelope<'experiences:list', Record<string, never>>
   | MessageEnvelope<'drivers:list', Record<string, never>>

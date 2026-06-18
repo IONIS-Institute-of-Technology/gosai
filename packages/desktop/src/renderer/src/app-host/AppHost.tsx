@@ -14,6 +14,7 @@ export function AppHost(): JSX.Element {
     const params = new URLSearchParams(window.location.search);
     const appSlug = params.get('app');
     const experienceSlug = params.get('experience');
+    const driverBinding = params.get('driverBinding') || undefined;
 
     if (!appSlug || !experienceSlug) {
       setResult({ status: 'error', message: 'Missing app or experience parameter' });
@@ -67,6 +68,7 @@ export function AppHost(): JSX.Element {
         const started = await sdk.runExperience(expModule.default, {
           appSlug,
           experienceSlug,
+          ...(driverBinding ? { driverBinding } : {}),
           serverBaseUrl: SERVER_BASE_URL,
         });
         if (cancelled) {

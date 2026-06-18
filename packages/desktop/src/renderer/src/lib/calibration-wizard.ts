@@ -13,8 +13,9 @@ export async function runCalibrationWizard(client: ServerClient, targetApp: stri
 
   const appSlug = CALIBRATION_SLUG;
   const experienceSlug = 'calibrate';
+  const driverBinding = targetApp;
 
-  await client.request('experience:start', { appSlug, experienceSlug });
+  await client.request('experience:start', { appSlug, experienceSlug, driverBinding });
 
   const display = (await pickDisplayForApp(client, targetApp)).display;
   if (!display) throw new Error('No display available for calibration');
@@ -26,6 +27,7 @@ export async function runCalibrationWizard(client: ServerClient, targetApp: stri
     experienceSlug,
     projectorDisplayId: display.id,
     targetAppSlug: targetApp,
+    driverBinding,
     title: 'Calibration · Control',
     width: 960,
     height: 720,
@@ -36,6 +38,7 @@ export async function runCalibrationWizard(client: ServerClient, targetApp: stri
     appSlug,
     experienceSlug,
     targetAppSlug: targetApp,
+    driverBinding,
     fullscreen: true,
   });
 

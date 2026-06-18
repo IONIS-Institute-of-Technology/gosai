@@ -312,11 +312,15 @@ function registerHandlers(
     experiences: apps.listRunningExperiences(),
   }));
   gateway.registerHandler('experience:start', async (msg: ClientMessage) => {
-    const payload = (msg as { payload: { appSlug?: string; experienceSlug?: string } }).payload;
+    const payload = (
+      msg as { payload: { appSlug?: string; experienceSlug?: string; driverBinding?: string } }
+    ).payload;
     if (!payload?.appSlug || !payload.experienceSlug) {
       throw new Error('appSlug and experienceSlug are required');
     }
-    return await apps.startExperience(payload.appSlug, payload.experienceSlug);
+    return await apps.startExperience(payload.appSlug, payload.experienceSlug, {
+      driverBinding: payload.driverBinding,
+    });
   });
   gateway.registerHandler('experience:stop', async (msg: ClientMessage) => {
     const payload = (msg as { payload: { appSlug?: string; experienceSlug?: string } }).payload;
