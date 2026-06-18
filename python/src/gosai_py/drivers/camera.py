@@ -16,6 +16,7 @@ import contextlib
 import os
 import platform
 import re
+import threading
 import time
 from typing import Any, ClassVar
 
@@ -67,7 +68,7 @@ def _video_node_number(entry: str) -> int:
 class CameraDriver(BaseDriver):
     name: ClassVar[str] = "camera"
     description: ClassVar[str] = "Webcam capture (OpenCV) with optional RealSense depth."
-    events: ClassVar[tuple[str, ...]] = ("color", "depth", "frame_size", "fps")
+    events: ClassVar[tuple[str, ...]] = ("frame", "color", "depth", "frame_size", "fps")
     actions: ClassVar[tuple[str, ...]] = (
         "set_device",
         "set_resolution",
@@ -88,6 +89,9 @@ class CameraDriver(BaseDriver):
         self._last_emit = 0.0
         self._frame_count = 0
         self._fps_window_start = 0.0
+        self._latest_lock = threading.Lock()
+        self._latest_frame: Any = None
+        self._latest_meta: dict[str, Any] | None = None
 
     def apply_config(self, cfg: dict[str, Any]) -> None:
         """Apply persisted settings before the capture loop opens the device."""
@@ -182,7 +186,7 @@ class CameraDriver(BaseDriver):
         devices: list[dict[str, Any]] = []
         misses = 0
         for idx in range(max_index):
-            cap = cv2.VideoCapture(idx)
+            cap = _open_capture(cv2, idx)
             opened = bool(cap.isOpened())
             with contextlib.suppress(Exception):
                 cap.release()
@@ -203,7 +207,7 @@ class CameraDriver(BaseDriver):
         except ImportError as exc:
             return {"ok": False, "device": device, "error": f"opencv not available: {exc}"}
 
-        cap = cv2.VideoCapture(device)
+        cap = _open_capture(cv2, device)
         if not cap.isOpened():
             return {"ok": False, "device": device, "error": f"cannot open camera device {device}"}
 
@@ -250,7 +254,7 @@ class CameraDriver(BaseDriver):
             if actual <= 0:
                 continue
             if abs(actual - target) <= 1.5:
-                matched.append(int(round(actual)))
+                matched.append(round(actual))
 
         if matched:
             return sorted(set(matched))
@@ -272,11 +276,12 @@ class CameraDriver(BaseDriver):
         if self._cap is not None:
             with contextlib.suppress(Exception):
                 self._cap.release()
-        cap = cv2.VideoCapture(self._device)
+        cap = _open_capture(cv2, self._device)
         if not cap.isOpened():
             self.log("error", f"cannot open camera device {self._device}")
             self._cap = None
             return
+        _request_low_latency(cap, cv2)
         _request_mjpg(cap, cv2)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
@@ -298,16 +303,40 @@ class CameraDriver(BaseDriver):
         if not ok or frame is None:
             time.sleep(0.01)
             return
-        try:
-            encoded = frame_to_jpeg_base64(frame, quality=self._jpeg_quality)
-        except Exception as exc:
-            self.log("error", f"frame encode failed: {exc!r}")
-            return
         h, w = frame.shape[:2]
-        self.emit(
-            "color",
-            {"width": int(w), "height": int(h), "jpeg_base64": encoded, "ts": time.time()},
-        )
+        capture_ts = time.time()
+        perf_ts = time.perf_counter()
+        meta = {
+            "width": int(w),
+            "height": int(h),
+            "ts": capture_ts,
+            "capture_ts": capture_ts,
+            "capture_perf": perf_ts,
+        }
+        with self._latest_lock:
+            self._latest_frame = frame
+            self._latest_meta = meta
+
+        if self._context.has_subscribers("frame"):
+            self.emit("frame", {**meta, "_frame": frame})
+
+        if self._context.has_subscribers("color"):
+            try:
+                encode_start = time.perf_counter()
+                encoded = frame_to_jpeg_base64(frame, quality=self._jpeg_quality)
+                encode_ms = (time.perf_counter() - encode_start) * 1000.0
+            except Exception as exc:
+                self.log("error", f"frame encode failed: {exc!r}")
+                return
+            self.record("jpeg_encode_ms", encode_ms)
+            self.emit(
+                "color",
+                {
+                    **meta,
+                    "jpeg_base64": encoded,
+                    "encode_ms": encode_ms,
+                },
+            )
 
         # FPS tracking
         now = time.time()
@@ -358,8 +387,22 @@ class CameraDriver(BaseDriver):
                 self._cap.set(cv2.CAP_PROP_FPS, self._fps_target)
             return {"fps": self._fps_target}
         if action == "snapshot":
-            return self.get_event_data("color")
+            return self._snapshot()
         return super().execute(action, data)
+
+    def _snapshot(self) -> dict[str, Any] | None:
+        data = self.get_event_data("color")
+        if isinstance(data, dict) and isinstance(data.get("jpeg_base64"), str):
+            return data
+        with self._latest_lock:
+            frame = None if self._latest_frame is None else self._latest_frame.copy()
+            meta = dict(self._latest_meta) if self._latest_meta is not None else None
+        if frame is None or meta is None:
+            return None
+        encode_start = time.perf_counter()
+        encoded = frame_to_jpeg_base64(frame, quality=self._jpeg_quality)
+        encode_ms = (time.perf_counter() - encode_start) * 1000.0
+        return {**meta, "jpeg_base64": encoded, "encode_ms": encode_ms}
 
     def cleanup(self) -> None:
         if self._cap is not None:
@@ -367,3 +410,14 @@ class CameraDriver(BaseDriver):
                 self._cap.release()
             self._cap = None
         self.log("info", "camera released")
+
+
+def _open_capture(cv2: Any, device: int) -> Any:
+    if platform.system() == "Linux" and hasattr(cv2, "CAP_V4L2"):
+        return cv2.VideoCapture(device, cv2.CAP_V4L2)
+    return cv2.VideoCapture(device)
+
+
+def _request_low_latency(cap: Any, cv2: Any) -> None:
+    with contextlib.suppress(Exception):
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)

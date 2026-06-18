@@ -1,4 +1,4 @@
-import { app, BrowserWindow, screen, type Display } from 'electron';
+import { app, BrowserWindow, powerSaveBlocker, screen, type Display } from 'electron';
 import { join } from 'node:path';
 import { IPC_CHANNELS } from './channels.js';
 
@@ -59,6 +59,7 @@ export class WindowRegistry {
   private readonly appHosts = new Map<number, AppHostHandle>();
   private readonly controlWindows = new Map<number, ControlWindowHandle>();
   private readonly endingExperiences = new Set<string>();
+  private powerSaveBlockerId: number | null = null;
   private shuttingDown = false;
   private readonly serverBaseUrl: string;
 
@@ -224,8 +225,10 @@ export class WindowRegistry {
     };
 
     this.appHosts.set(handle.id, handle);
+    this.updatePowerSaveBlocker();
     win.on('closed', () => {
       if (!this.appHosts.delete(handle.id)) return;
+      this.updatePowerSaveBlocker();
       if (this.hasControlFor(opts.appSlug, opts.experienceSlug)) return;
       this.stopExperienceOnServer(opts.appSlug, opts.experienceSlug);
     });
@@ -237,6 +240,7 @@ export class WindowRegistry {
     const handle = this.appHosts.get(windowId);
     if (!handle) return false;
     this.appHosts.delete(windowId);
+    this.updatePowerSaveBlocker();
     if (!handle.window.isDestroyed()) handle.window.destroy();
     if (!this.hasControlFor(handle.appSlug, handle.experienceSlug)) {
       this.stopExperienceOnServer(handle.appSlug, handle.experienceSlug);
@@ -253,6 +257,7 @@ export class WindowRegistry {
       }
     }
     this.appHosts.clear();
+    this.updatePowerSaveBlocker();
   }
 
   openControlWindow(opts: OpenControlWindowOptions): ControlWindowHandle {
@@ -315,6 +320,7 @@ export class WindowRegistry {
     };
 
     this.controlWindows.set(handle.id, handle);
+    this.updatePowerSaveBlocker();
     win.on('close', () => {
       this.endExperienceInternal(opts.appSlug, opts.experienceSlug, handle.id);
     });
@@ -346,6 +352,7 @@ export class WindowRegistry {
       }
     }
     this.controlWindows.clear();
+    this.updatePowerSaveBlocker();
   }
 
   listAppHosts(): Array<{
@@ -392,6 +399,7 @@ export class WindowRegistry {
       if (id === exceptWindowId) continue;
       if (!h.window.isDestroyed()) toDestroy.push(h.window);
     }
+    this.updatePowerSaveBlocker();
 
     for (const w of toDestroy) {
       try {
@@ -426,6 +434,22 @@ export class WindowRegistry {
     const dash = this.dashboard;
     if (!dash || dash.isDestroyed()) return;
     dash.webContents.send(IPC_CHANNELS.ExperienceEnded, { appSlug, experienceSlug });
+  }
+
+  private updatePowerSaveBlocker(): void {
+    const hasActiveAppWindow = this.appHosts.size > 0 || this.controlWindows.size > 0;
+
+    if (hasActiveAppWindow) {
+      if (this.powerSaveBlockerId !== null && powerSaveBlocker.isStarted(this.powerSaveBlockerId)) {
+        return;
+      }
+      this.powerSaveBlockerId = powerSaveBlocker.start('prevent-display-sleep');
+      return;
+    }
+
+    if (this.powerSaveBlockerId === null) return;
+    powerSaveBlocker.stop(this.powerSaveBlockerId);
+    this.powerSaveBlockerId = null;
   }
 
   private findDisplay(id: number | undefined): Display {

@@ -70,6 +70,9 @@ class _BridgeContext(DriverContext):
     def get_event_data(self, driver: str, event: str) -> Any:
         return self._bridge._get_event_data(self._instance, driver, event)
 
+    def has_subscribers(self, event: str) -> bool:
+        return self._bridge._has_subscribers(self._instance, self._driver, event)
+
 
 class Bridge:
     """Owns drivers and shuttles JSON between Node and Python."""
@@ -144,7 +147,7 @@ class Bridge:
                     "instance": instance,
                     "driver": driver,
                     "event": event,
-                    "data": data,
+                    "data": _public_payload(data),
                     "ts": time.time(),
                 }
             )
@@ -186,7 +189,7 @@ class Bridge:
     def _respond(self, req_id: str, ok: bool, data: Any = None, error: str | None = None) -> None:
         msg: JsonDict = {"type": "result", "id": req_id, "ok": ok}
         if ok:
-            msg["data"] = data
+            msg["data"] = _public_payload(data)
         else:
             msg["error"] = error or "unknown error"
         self._write(msg)
@@ -341,6 +344,14 @@ class Bridge:
                 return
             if not callbacks:
                 self._internal_subscribers.pop(key, None)
+
+    def _has_subscribers(self, instance: str, driver: str, event: str) -> bool:
+        with self._lock:
+            if self._external_subscribers.get((instance, driver, event), 0) > 0:
+                return True
+            if self._external_subscribers.get((instance, driver, "*"), 0) > 0:
+                return True
+            return bool(self._internal_subscribers.get((instance, driver, event)))
 
     # ------------------------------------------------------------------
     # Request dispatch
@@ -498,6 +509,24 @@ def _json_default(value: Any) -> Any:
     if hasattr(value, "__iter__"):
         return list(value)
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def _public_payload(value: Any) -> Any:
+    """Return the JSON-facing view of a payload.
+
+    Drivers may include private in-process objects such as OpenCV frames under
+    keys prefixed with ``_``. Those objects are useful for Python subscribers but
+    must never be serialized onto the bridge protocol.
+    """
+    if isinstance(value, dict):
+        return {
+            str(k): _public_payload(v)
+            for k, v in value.items()
+            if not str(k).startswith("_")
+        }
+    if isinstance(value, tuple | list):
+        return [_public_payload(v) for v in value]
+    return value
 
 
 def main() -> int:

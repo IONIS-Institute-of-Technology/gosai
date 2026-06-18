@@ -1,6 +1,6 @@
 """Hand-pose driver.
 
-Subscribes to `camera.color` and runs MediaPipe Hands on each frame. Emits a
+Subscribes to `camera.frame` and runs MediaPipe Hands on each frame. Emits a
 `raw_data` event with normalized landmarks and handedness, matching the
 schema of the legacy driver.
 
@@ -40,7 +40,6 @@ from typing import Any, ClassVar
 
 from gosai_py.driver import DriverContext
 from gosai_py.processor import BaseProcessor
-from gosai_py.serialization import jpeg_base64_to_frame
 
 HAND_MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/"
@@ -92,7 +91,7 @@ class HandPoseDriver(BaseProcessor):
         "set_surface_size",
     )
     dependencies: ClassVar[tuple[str, ...]] = ("camera",)
-    subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("camera", "color"),)
+    subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("camera", "frame"),)
     loop_interval_s: ClassVar[float | None] = None
 
     def __init__(self, context: DriverContext) -> None:
@@ -114,6 +113,7 @@ class HandPoseDriver(BaseProcessor):
         # Surface (output reference) size that landmarks are normalised to
         # when the homography is active.
         self._surface_size: tuple[int, int] = (1920, 1080)
+        self._last_ts_ms = 0
 
     def pre_run(self) -> None:
         super().pre_run()
@@ -144,11 +144,13 @@ class HandPoseDriver(BaseProcessor):
             self._mp_image_cls = mp.Image
             self._mp_image_format = mp.ImageFormat.SRGB
             self.log("info", "MediaPipe HandLandmarker initialised")
+            self.start_latest_worker()
         except Exception as exc:
             self.log("error", f"hand_pose: failed to create detector: {exc!r}")
             self._detector = None
 
     def cleanup(self) -> None:
+        self.stop_latest_worker()
         super().cleanup()
         # Drop the detector without calling close(). MediaPipe's native
         # teardown can SIGSEGV when close races with in-flight inference or
@@ -214,24 +216,23 @@ class HandPoseDriver(BaseProcessor):
         return {"ok": True, "width": w, "height": h}
 
     def on_data(self, driver: str, event: str, data: Any) -> None:
+        self.queue_latest_data(driver, event, data)
+
+    def process_latest_data(self, driver: str, event: str, data: Any) -> None:
         if self.stop_requested() or not isinstance(data, dict):
             return
         with self._detector_lock:
             detector = self._detector
         if detector is None:
             return
-        encoded = data.get("jpeg_base64")
-        if not isinstance(encoded, str):
-            return
+        frame = data.get("_frame")
+        if frame is None:
+            raise RuntimeError("hand_pose requires camera.frame payload with _frame")
         try:
             import cv2  # type: ignore[import-not-found]
             import numpy as np  # type: ignore[import-not-found]
         except ImportError as exc:
             self.log("error", f"opencv/numpy required: {exc}")
-            return
-
-        frame = jpeg_base64_to_frame(encoded)
-        if frame is None:
             return
 
         # Preserve the *original* camera frame dimensions before any flip /
@@ -262,7 +263,13 @@ class HandPoseDriver(BaseProcessor):
             rgb = np.ascontiguousarray(rgb)
 
         mp_image = self._mp_image_cls(image_format=self._mp_image_format, data=rgb)
-        ts_ms = int(time.time() * 1000)
+        capture_ts = data.get("capture_ts")
+        capture_ts_f = float(capture_ts) if isinstance(capture_ts, int | float) else time.time()
+        frame_age_ms = (time.time() - capture_ts_f) * 1000.0
+        self.record("frame_age_ms", frame_age_ms)
+
+        ts_ms = max(self._last_ts_ms + 1, int(capture_ts_f * 1000))
+        self._last_ts_ms = ts_ms
         try:
             with self._detector_lock:
                 if self._detector is None or self.stop_requested():
@@ -311,7 +318,10 @@ class HandPoseDriver(BaseProcessor):
                 "hands_landmarks": hands_landmarks,
                 "hands_handedness": hands_handedness,
                 "ts": time.time(),
+                "capture_ts": capture_ts_f,
                 "inference_ms": elapsed_ms,
+                "frame_age_ms": frame_age_ms,
+                "latency_ms": (time.time() - capture_ts_f) * 1000.0,
             },
         )
 

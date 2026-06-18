@@ -53,7 +53,7 @@ const EXPECTED: Record<
     dependencies: [],
   },
   camera: {
-    events: ['color', 'depth', 'frame_size', 'fps'],
+    events: ['frame', 'color', 'depth', 'frame_size', 'fps'],
     actions: ['set_device', 'set_resolution', 'set_fps', 'snapshot', 'list_formats'],
     dependencies: [],
   },

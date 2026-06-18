@@ -54,6 +54,7 @@ YOLO_ONNX_URL = (
     "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n.onnx"
 )
 MODEL_INPUT_SIZE = 640
+ProviderSpec = str | tuple[str, dict[str, Any]]
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -120,7 +121,7 @@ def _build_ort_providers(
     *,
     mode: str,
     cuda_device_id: int,
-) -> list[str | tuple[str, dict[str, Any]]]:
+) -> list[ProviderSpec]:
     """Pick execution providers so NVIDIA CUDA wins on dual-GPU PCs.
 
     The default ``onnxruntime`` wheel is CPU-only.  Linux/Windows installs
@@ -139,49 +140,47 @@ def _build_ort_providers(
     trt = "TensorrtExecutionProvider"
 
     if mode == "cpu":
-        return [cpu] if cpu in available else available
+        if cpu not in available:
+            raise RuntimeError(f"CPUExecutionProvider unavailable; available providers: {available}")
+        return [cpu]
 
     if mode == "coreml":
-        out: list[str | tuple[str, dict[str, Any]]] = []
-        if coreml in available:
-            out.append(coreml)
-        if cpu in available:
-            out.append(cpu)
-        return out or available
+        if coreml not in available:
+            raise RuntimeError(f"CoreMLExecutionProvider unavailable; available providers: {available}")
+        return [coreml]
 
     if mode == "dml":
-        out = []
-        if dml in available:
-            out.append(dml)
-        if cpu in available:
-            out.append(cpu)
-        return out or available
+        if dml not in available:
+            raise RuntimeError(
+                f"DirectMLExecutionProvider unavailable; available providers: {available}"
+            )
+        return [dml]
 
     if mode == "cuda":
-        out = []
-        if cuda[0] in available:
-            out.append(cuda)
-        if cpu in available:
-            out.append(cpu)
-        return out or available
+        if cuda[0] not in available:
+            raise RuntimeError(
+                f"CUDAExecutionProvider unavailable; available providers: {available}"
+            )
+        return [cuda]
 
     # auto
     if sys.platform == "darwin":
-        out = []
-        if coreml in available:
-            out.append(coreml)
-        if cpu in available:
-            out.append(cpu)
-        return out or available
+        if coreml not in available:
+            raise RuntimeError(f"CoreMLExecutionProvider unavailable; available providers: {available}")
+        return [coreml]
 
-    out = []
-    if cuda[0] in available:
-        out.append(cuda)
+    if sys.platform.startswith(("linux", "win32")):
+        if cuda[0] not in available:
+            raise RuntimeError(
+                f"CUDAExecutionProvider unavailable; available providers: {available}"
+            )
+        return [cuda]
+
     if trt in available:
-        out.append(trt)
+        return [trt]
     if cpu in available:
-        out.append(cpu)
-    return out or available
+        return [cpu]
+    raise RuntimeError(f"no supported ONNX provider available; available providers: {available}")
 
 
 def _create_ort_session(
@@ -222,7 +221,6 @@ def _letterbox(img: Any, size: int) -> tuple[Any, float, tuple[int, int]]:
     Returns the padded image, the scale factor, and (pad_top, pad_left).
     """
     import cv2  # type: ignore[import-not-found]
-    import numpy as np  # type: ignore[import-not-found]
 
     h, w = img.shape[:2]
     scale = min(size / h, size / w)
@@ -313,8 +311,8 @@ class _OneEuro:
     lag).  Far superior to a fixed-alpha EMA for tracking.
     """
 
-    __slots__ = ("min_cutoff", "beta", "d_cutoff",
-                 "_x_filt", "_dx_filt", "_t_prev")
+    __slots__ = ("_dx_filt", "_t_prev", "_x_filt",
+                 "beta", "d_cutoff", "min_cutoff")
 
     def __init__(self, min_cutoff: float = 1.0, beta: float = 0.05,
                  d_cutoff: float = 1.0) -> None:
@@ -351,7 +349,7 @@ class _OneEuro:
 
 
 class _TrackedBall:
-    __slots__ = ("fx", "fy", "fr", "x", "y", "r", "age", "missed")
+    __slots__ = ("age", "fr", "fx", "fy", "missed", "r", "x", "y")
 
     def __init__(self, x: float, y: float, r: float, t: float,
                  min_cutoff: float, beta: float) -> None:
@@ -469,7 +467,7 @@ class BallDriver(BaseProcessor):
         "set_cuda_device",
     )
     dependencies: ClassVar[tuple[str, ...]] = ("camera",)
-    subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("camera", "color"),)
+    subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("camera", "frame"),)
     loop_interval_s: ClassVar[float | None] = None
 
     DEFAULT_OUTPUT_SIZE: ClassVar[tuple[int, int]] = (1920, 1080)
@@ -509,13 +507,6 @@ class BallDriver(BaseProcessor):
             return
 
         try:
-            import onnxruntime  # type: ignore[import-not-found]
-        except ImportError as exc:
-            self.log("error", f"onnxruntime not installed: {exc}")
-            self._session = None
-            return
-
-        try:
             self._session, _active = _create_ort_session(
                 onnx_path,
                 cuda_device_id=self._cuda_device_id,
@@ -524,9 +515,14 @@ class BallDriver(BaseProcessor):
             inp = self._session.get_inputs()[0]
             self._input_name = inp.name
             self._input_size = inp.shape[2] if isinstance(inp.shape[2], int) else MODEL_INPUT_SIZE
+            self.start_latest_worker()
         except Exception as exc:
             self.log("error", f"failed to create ONNX session: {exc!r}")
             self._session = None
+
+    def cleanup(self) -> None:
+        self.stop_latest_worker()
+        super().cleanup()
 
     def execute(self, action: str, data: Any) -> Any:
         if action == "set_homography":
@@ -563,13 +559,20 @@ class BallDriver(BaseProcessor):
     # ------------------------------------------------------------------
 
     def on_data(self, driver: str, event: str, data: Any) -> None:
+        self.queue_latest_data(driver, event, data)
+
+    def process_latest_data(self, driver: str, event: str, data: Any) -> None:
         if not isinstance(data, dict) or self._session is None:
             return
-        encoded = data.get("jpeg_base64")
-        if not isinstance(encoded, str):
-            return
+        frame = data.get("_frame")
+        if frame is None:
+            raise RuntimeError("ball requires camera.frame payload with _frame")
 
         start = time.perf_counter()
+        capture_ts = data.get("capture_ts")
+        capture_ts_f = float(capture_ts) if isinstance(capture_ts, int | float) else time.time()
+        frame_age_ms = (time.time() - capture_ts_f) * 1000.0
+        self.record("frame_age_ms", frame_age_ms)
 
         # Optional frame skipping (default 0 = every frame).  On skipped
         # frames we don't re-emit anything: the renderer keeps the last
@@ -583,12 +586,6 @@ class BallDriver(BaseProcessor):
             import cv2  # type: ignore[import-not-found]
         except ImportError as exc:
             self.log("error", f"opencv required: {exc}")
-            return
-
-        from gosai_py.serialization import jpeg_base64_to_frame
-
-        frame = jpeg_base64_to_frame(encoded)
-        if frame is None:
             return
 
         if self._homography is not None:
@@ -630,7 +627,17 @@ class BallDriver(BaseProcessor):
             self.emit("fps", {"fps": round(fps, 2)})
         self.record("loop_ms", (now - start) * 1000.0)
 
-        self.emit("balls", {"balls": balls, "count": len(balls), "ts": time.time()})
+        self.emit(
+            "balls",
+            {
+                "balls": balls,
+                "count": len(balls),
+                "ts": time.time(),
+                "capture_ts": capture_ts_f,
+                "frame_age_ms": frame_age_ms,
+                "latency_ms": (time.time() - capture_ts_f) * 1000.0,
+            },
+        )
 
     # ------------------------------------------------------------------
     # Setters

@@ -16,7 +16,7 @@ Optional overrides:
 
 | Variable                 | Effect                                   |
 | ------------------------ | ---------------------------------------- |
-| `GOSAI_ORT_DEVICE=cuda`  | Force NVIDIA CUDA (then CPU fallback)    |
+| `GOSAI_ORT_DEVICE=cuda`  | Force NVIDIA CUDA; fail if unavailable   |
 | `GOSAI_ORT_DEVICE=cpu`   | Force CPU only                           |
 | `GOSAI_CUDA_DEVICE_ID=0` | Which NVIDIA GPU (0 = first CUDA device) |
 

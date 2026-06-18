@@ -41,6 +41,9 @@ class DriverContext:
     def get_event_data(self, driver: str, event: str) -> Any:  # pragma: no cover
         raise NotImplementedError
 
+    def has_subscribers(self, event: str) -> bool:  # pragma: no cover
+        raise NotImplementedError
+
 
 class BaseDriver:
     """Base class for drivers.
@@ -92,6 +95,9 @@ class BaseDriver:
         """Handle an action invocation from an app or another driver."""
         self.log("warn", f"unhandled action {action!r}")
         return None
+
+    def apply_config(self, cfg: dict[str, Any]) -> None:
+        """Apply startup configuration supplied by the server."""
 
     # ------------------------------------------------------------------
     # API for subclasses to use inside their hooks.
