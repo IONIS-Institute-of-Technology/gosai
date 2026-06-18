@@ -191,12 +191,30 @@ def _create_ort_session(
 ) -> tuple[Any, list[str]]:
     import onnxruntime as ort  # type: ignore[import-not-found]
 
+    mode = _ort_device_mode()
     available = ort.get_available_providers()
     providers = _build_ort_providers(
         available,
-        mode=_ort_device_mode(),
+        mode=mode,
         cuda_device_id=cuda_device_id,
     )
+    wants_cuda = any(
+        (p[0] if isinstance(p, tuple) else p) == "CUDAExecutionProvider"
+        for p in providers
+    )
+    if wants_cuda and hasattr(ort, "preload_dlls"):
+        try:
+            # Allows `onnxruntime-gpu[cuda,cudnn]` / NVIDIA Python packages to
+            # provide CUDA 12 + cuDNN 9 without relying on system LD paths.
+            ort.preload_dlls(cuda=True, cudnn=True, msvc=False, directory=None)
+        except TypeError:
+            # Older ORT builds may not expose the newer keyword shape.
+            try:
+                ort.preload_dlls()
+            except Exception as exc:
+                log_fn("warn", f"ONNX CUDA preload failed: {exc!r}")
+        except Exception as exc:
+            log_fn("warn", f"ONNX CUDA preload failed: {exc!r}")
     opts = ort.SessionOptions()
     opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
     session = ort.InferenceSession(
@@ -205,6 +223,12 @@ def _create_ort_session(
         providers=providers,
     )
     active = session.get_providers()
+    if wants_cuda and "CUDAExecutionProvider" not in active:
+        raise RuntimeError(
+            "CUDAExecutionProvider was requested but ONNX Runtime activated "
+            f"{active}. Install CUDA 12.x + cuDNN 9.x runtime libraries, or "
+            "install onnxruntime-gpu[cuda,cudnn] and ensure they can be preloaded."
+        )
     log_fn(
         "info",
         f"ONNX session ready ({onnx_path.name}, active={active[0] if active else 'none'}, "
