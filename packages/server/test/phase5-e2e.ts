@@ -6,7 +6,7 @@
  * - Verifies marker rendering action returns base64 PNG.
  * - Verifies set_marker_layout + compute (without camera connected) returns
  *   the expected error.
- * - Verifies storage roundtrip for calibration data.
+ * - Verifies target-app storage roundtrip for calibration data.
  */
 
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
@@ -48,7 +48,9 @@ try {
     }>;
   };
   const calibration = appsRes.apps.find((a) => a.manifest.slug === 'calibration');
+  const interactivePool = appsRes.apps.find((a) => a.manifest.slug === 'interactive-pool');
   if (!calibration) throw new Error('calibration app not discovered');
+  if (!interactivePool) throw new Error('interactive-pool app not discovered');
   if (!calibration.manifest.builtin) throw new Error('calibration app should be flagged builtin');
   const expSlugs = calibration.manifest.experiences.map((e) => e.slug).sort();
   if (expSlugs.length !== 1 || expSlugs[0] !== 'calibrate') {
@@ -105,15 +107,15 @@ try {
   }
   console.log('[phase5] marker rendered (base64 len:', render.png_base64.length, ')');
 
-  // Storage roundtrip using the per-app key/value endpoints.
+  // Calibration storage roundtrip using the target app's key/value endpoints.
   const fakeMatrix = [1, 0, 0, 0, 1, 0, 0, 0, 1];
-  await fetch(`http://127.0.0.1:${PORT}/v1/apps/calibration/storage/homography`, {
+  await fetch(`http://127.0.0.1:${PORT}/v1/apps/interactive-pool/storage/calibration_homography`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(fakeMatrix),
   });
   const stored = await (
-    await fetch(`http://127.0.0.1:${PORT}/v1/apps/calibration/storage/homography`)
+    await fetch(`http://127.0.0.1:${PORT}/v1/apps/interactive-pool/storage/calibration_homography`)
   ).json();
   if (JSON.stringify(stored) !== JSON.stringify(fakeMatrix)) {
     throw new Error(`stored matrix mismatch: ${JSON.stringify(stored)}`);

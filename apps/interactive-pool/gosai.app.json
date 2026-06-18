@@ -6,6 +6,10 @@
   "author": "GOSAI",
   "default": "main",
   "requirements": { "display": true, "camera": true },
+  "calibration": {
+    "required": true,
+    "entry": "dist/calibration.js"
+  },
   "experiences": [
     {
       "slug": "main",

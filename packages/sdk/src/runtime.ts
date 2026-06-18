@@ -54,6 +54,7 @@ export async function runExperience<TState>(
     appSlug: options.appSlug,
     experienceSlug: options.experienceSlug,
     server: client,
+    serverBaseUrl: options.serverBaseUrl,
   };
   const ctx: ExperienceRuntimeContext = {
     app,

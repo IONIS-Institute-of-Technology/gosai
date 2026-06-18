@@ -60,6 +60,12 @@ A starter template is at `templates/basic/` in the GOSAI repo.
     "microphone": false, // exclusive
     "speaker": false, // shareable across apps
   },
+  "calibration": {
+    // optional, explicit per-app calibration capability
+    "required": true,
+    "entry": "dist/calibration.js",
+    "statusKey": "calibration_status",
+  },
   "settings": {
     // optional declarative settings — renders an editable form in the dashboard
     "storageKey": "config", // KV key the config object is saved under (default "config")
@@ -116,6 +122,25 @@ microphone / speaker / display per app, persisted to
 This is transparent to app code: `rt.drivers.on('camera', ...)` always resolves
 to _your_ app's bound camera. The SDK subscribes to a per-app event topic and
 tags requests with the binding for you.
+
+### Calibration
+
+Calibration is declared explicitly with the top-level `calibration` object. It is
+not inferred from `requirements`. When `required` is true, `entry` must point to
+a browser ESM module that exports a calibration definition:
+
+```ts
+import { createCameraProjectorSurfaceCalibration } from '@gosai/sdk';
+
+export default createCameraProjectorSurfaceCalibration({
+  name: 'My Surface Calibration',
+  surfaceSize: { width: 1920, height: 1080 },
+});
+```
+
+The built-in calibration runner imports that module and writes results into the
+target app's own storage. Apps can read the standard camera/projector profile
+with `loadCameraProjectorSurfaceCalibration(rt)`.
 
 ## Experience API
 

@@ -2,15 +2,16 @@
   "slug": "calibration",
   "name": "Calibration",
   "version": "0.1.0",
-  "description": "Camera-projector calibration wizard. Walks through ArUco marker detection, pool-corner picking, homography computation, background capture, and a live preview.",
+  "description": "Generic per-app calibration runner. Loads the target app's calibration module and runs it in control/projector windows.",
   "author": "GOSAI",
   "default": "calibrate",
   "requirements": { "display": true, "camera": true },
+  "calibration": { "required": false },
   "experiences": [
     {
       "slug": "calibrate",
-      "name": "Full Calibration",
-      "description": "End-to-end calibration wizard. Runs in both projector and control windows.",
+      "name": "Calibration Runner",
+      "description": "Runs a target app's calibration flow in both projector and control windows.",
       "entry": "dist/calibrate.js",
       "drivers": ["camera", "calibration"],
       "exclusive": true

@@ -12,6 +12,8 @@
 
 import {
   type AppEventsSubscription,
+  type CalibrationStepContext,
+  type CameraProjectorSurfaceCalibrationOptions,
   type DriverSubscription,
   type ExperienceRuntimeContext,
   computeCSSMatrix3d,
@@ -21,7 +23,6 @@ import {
 import {
   WIZARD_EVENTS,
   STORAGE_KEYS,
-  CALIBRATION_TARGET_KEY,
   type MarkerImage,
   type MarkerSlot,
   type MarkerTransform,
@@ -36,7 +37,6 @@ import {
   MAX_SCALE,
   applyTransformToLayout,
   makeMarkerLayout,
-  scopedKey,
   setBodyFullscreen,
 } from './shared.js';
 
@@ -52,8 +52,10 @@ export interface ProjectorState {
   step: WizardStep;
   layout: MarkerSlot[];
   transform: MarkerTransform;
-  /** Slug of the app being calibrated for; namespaces the profile keys. */
-  target: string | null;
+  /** Target app being calibrated. Calibration data is read from this app. */
+  targetAppSlug: string | null;
+  context: CalibrationStepContext | null;
+  options: CameraProjectorSurfaceCalibrationOptions;
   /** Last known camera frame size; used to scale the preview img to its
    * natural dimensions before applying the camera->display warp. */
   previewFrameSize: { w: number; h: number } | null;
@@ -114,7 +116,9 @@ export function initProjectorState(): ProjectorState {
     step: 'markers',
     layout: [],
     transform: { ...DEFAULT_MARKER_TRANSFORM },
-    target: null,
+    targetAppSlug: null,
+    context: null,
+    options: {},
     previewFrameSize: null,
     previewWarpApplied: false,
     eventSubs: [],
@@ -125,12 +129,16 @@ export function initProjectorState(): ProjectorState {
 }
 
 export async function startProjector(
-  rt: ExperienceRuntimeContext,
+  ctx: CalibrationStepContext,
   state: ProjectorState,
+  options: CameraProjectorSurfaceCalibrationOptions,
 ): Promise<void> {
+  const rt = ctx.rt;
   rt.log.info('projector role starting');
 
-  state.target = (await rt.storage.get<string>(CALIBRATION_TARGET_KEY).catch(() => null)) ?? null;
+  state.context = ctx;
+  state.options = options;
+  state.targetAppSlug = ctx.targetAppSlug;
 
   const width = window.innerWidth;
   const height = window.innerHeight;
@@ -303,10 +311,12 @@ async function applyPreviewWarp(
   if (state.step !== 'preview' || state.previewWarpApplied) return;
   if (!state.previewFrameSize) return;
 
-  // Pull the homography we just computed; fall back to the legacy stretched
-  // preview if it is missing (e.g. user re-entered preview before compute).
-  const homography = await rt.storage
-    .get<number[]>(scopedKey(STORAGE_KEYS.Homography, state.target))
+  if (!state.context) throw new Error('calibration context is unavailable');
+
+  // Pull the homography we just computed; fall back to the stretched preview if
+  // it is missing (e.g. user re-entered preview before compute).
+  const homography = await state.context.targetStorage
+    .get<number[]>(STORAGE_KEYS.Homography)
     .catch(() => null);
   if (!homography || !Array.isArray(homography) || homography.length !== 9) {
     rt.log.warn('preview warp: homography not found, falling back to letterbox');
@@ -326,7 +336,7 @@ async function applyPreviewWarp(
   ];
 
   // If the warped image lands entirely outside the projector window we have
-  // a stale or bogus homography -- keep the legacy letterbox preview rather
+  // a stale or bogus homography; keep the unwarped letterbox preview rather
   // than throwing a confusing all-black screen at the user.
   const intersects = corners.some((c) => c.x >= 0 && c.x <= dispW && c.y >= 0 && c.y <= dispH);
   if (!intersects) {
@@ -361,12 +371,13 @@ async function applyPreviewWarp(
 
   state.previewWarpApplied = true;
 
-  // Also load the surface quad in display space (the user-picked pool corners
+  // Also load the surface quad in display space (the user-picked surface corners
   // warped to projector pixels) and draw a thin guideline polygon so the user
   // can visually confirm the projection aligns with the physical surface.
-  const surfaceQuadDisplay = await rt.storage
-    .get<SurfaceQuadDisplay>(scopedKey(STORAGE_KEYS.SurfaceQuadDisplay, state.target))
-    .catch(() => null);
+  const surfaceQuadDisplay =
+    (await state.context.targetStorage
+      .get<SurfaceQuadDisplay>(STORAGE_KEYS.SurfaceQuadDisplay)
+      .catch(() => null)) ?? null;
   drawPreviewOverlay(state, dispW, dispH, surfaceQuadDisplay);
 }
 
@@ -410,7 +421,7 @@ function drawPreviewOverlay(
 
     // Corner labels (TL/TR/BR/BL) help the operator spot a flipped or
     // mis-clicked corner immediately.
-    const labels = ['TL', 'TR', 'BR', 'BL'];
+    const labels = state.options.cornerLabels ?? ['TL', 'TR', 'BR', 'BL'];
     surfaceQuadDisplay.points.forEach((p, i) => {
       const text = document.createElementNS(ns, 'text');
       text.setAttribute('x', String(p.x + 12));
@@ -447,18 +458,24 @@ function applyStep(state: ProjectorState, step: WizardStep, message?: string): v
       updateTransformStatus(state);
       break;
     case 'pool-corners':
-      state.status.textContent = message ?? 'pick pool corners on the control window';
+      state.status.textContent =
+        message ??
+        state.options.projectorMessages?.poolCorners ??
+        'pick surface corners on the control window';
       break;
     case 'compute':
-      state.status.textContent = message ?? 'computing homography…';
+      state.status.textContent =
+        message ?? state.options.projectorMessages?.compute ?? 'computing homography…';
       break;
     case 'preview':
       break;
     case 'done':
-      state.status.textContent = message ?? 'calibration complete';
+      state.status.textContent =
+        message ?? state.options.projectorMessages?.done ?? 'calibration complete';
       break;
     case 'abort':
-      state.status.textContent = message ?? 'calibration aborted';
+      state.status.textContent =
+        message ?? state.options.projectorMessages?.abort ?? 'calibration aborted';
       break;
   }
 }

@@ -198,4 +198,58 @@ describe('validateManifest', () => {
       }),
     ).toThrow(ManifestError);
   });
+
+  test('parses required calibration metadata', () => {
+    const m = validateManifest(PATH, {
+      slug: 'c',
+      name: 'C',
+      version: '0.1.0',
+      experiences: [{ slug: 'a', name: 'A', entry: './a.ts' }],
+      calibration: {
+        required: true,
+        entry: 'dist/calibration.js',
+        statusKey: 'calibration_status',
+      },
+    });
+    expect(m.calibration).toEqual({
+      required: true,
+      entry: 'dist/calibration.js',
+      statusKey: 'calibration_status',
+    });
+  });
+
+  test('parses calibration disabled without an entry', () => {
+    const m = validateManifest(PATH, {
+      slug: 'c',
+      name: 'C',
+      version: '0.1.0',
+      experiences: [{ slug: 'a', name: 'A', entry: './a.ts' }],
+      calibration: { required: false },
+    });
+    expect(m.calibration).toEqual({ required: false });
+  });
+
+  test('rejects required calibration without an entry', () => {
+    expect(() =>
+      validateManifest(PATH, {
+        slug: 'c',
+        name: 'C',
+        version: '0.1.0',
+        experiences: [{ slug: 'a', name: 'A', entry: './a.ts' }],
+        calibration: { required: true },
+      }),
+    ).toThrow(ManifestError);
+  });
+
+  test('rejects calibration without a boolean required flag', () => {
+    expect(() =>
+      validateManifest(PATH, {
+        slug: 'c',
+        name: 'C',
+        version: '0.1.0',
+        experiences: [{ slug: 'a', name: 'A', entry: './a.ts' }],
+        calibration: { entry: 'dist/calibration.js' },
+      }),
+    ).toThrow(ManifestError);
+  });
 });

@@ -2,33 +2,21 @@ import type { AppDeviceSettings, DisplayMode } from '@gosai/shared';
 import type { ServerClient } from './server-client.js';
 
 export const CALIBRATION_SLUG = 'calibration';
-const SERVER_BASE_URL = 'http://127.0.0.1:7777';
-/** Must match `CALIBRATION_TARGET_KEY` in the calibration app's shared.ts. */
-const CALIBRATION_TARGET_STORAGE_KEY = '__target';
 
 /**
- * Run the calibration wizard. When `targetApp` is provided the resulting
- * profile is namespaced to that app slug and the projector opens on that app's
- * assigned display; otherwise a legacy (global) profile is written.
+ * Run the calibration wizard for a specific app. The resulting profile is
+ * written directly into the target app's storage.
  */
-export async function runCalibrationWizard(
-  client: ServerClient,
-  targetApp?: string,
-): Promise<void> {
+export async function runCalibrationWizard(client: ServerClient, targetApp: string): Promise<void> {
   const api = window.gosai;
   if (!api) throw new Error('Electron API unavailable');
 
   const appSlug = CALIBRATION_SLUG;
   const experienceSlug = 'calibrate';
 
-  // Tell the wizard windows which app's profile to read/write before they boot.
-  await setCalibrationTarget(targetApp ?? null);
-
   await client.request('experience:start', { appSlug, experienceSlug });
 
-  const display = targetApp
-    ? (await pickDisplayForApp(client, targetApp)).display
-    : await pickDisplay(client);
+  const display = (await pickDisplayForApp(client, targetApp)).display;
   if (!display) throw new Error('No display available for calibration');
 
   // Open control before the projector so macOS does not tear down the
@@ -37,6 +25,7 @@ export async function runCalibrationWizard(
     appSlug,
     experienceSlug,
     projectorDisplayId: display.id,
+    targetAppSlug: targetApp,
     title: 'Calibration · Control',
     width: 960,
     height: 720,
@@ -46,6 +35,7 @@ export async function runCalibrationWizard(
     displayId: display.id,
     appSlug,
     experienceSlug,
+    targetAppSlug: targetApp,
     fullscreen: true,
   });
 
@@ -71,7 +61,6 @@ export async function runCalibrationWizard(
     } catch {
       // ignore
     }
-    await setCalibrationTarget(null);
   };
 
   const offStep = client.on(`app:${appSlug}:wizard:step`, async (payload) => {
@@ -101,24 +90,6 @@ export async function runCalibrationWizard(
       void finish();
     }
   });
-}
-
-/** Publish (or clear) the calibration target slug the wizard windows read. */
-async function setCalibrationTarget(target: string | null): Promise<void> {
-  const url = `${SERVER_BASE_URL}/v1/apps/${CALIBRATION_SLUG}/storage/${CALIBRATION_TARGET_STORAGE_KEY}`;
-  try {
-    if (target) {
-      await fetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(target),
-      });
-    } else {
-      await fetch(url, { method: 'DELETE' });
-    }
-  } catch {
-    // Best-effort: the wizard falls back to legacy unscoped keys.
-  }
 }
 
 export async function pickDisplay(

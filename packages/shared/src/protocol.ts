@@ -66,6 +66,7 @@ export type ClientMessage =
   | MessageEnvelope<'unsubscribe', { events: string[] }>
   | MessageEnvelope<'app:install', { source: string }>
   | MessageEnvelope<'app:uninstall', { slug: string }>
+  | MessageEnvelope<'app:broadcast', { appSlug: string; topic: string; data?: unknown }>
   | MessageEnvelope<'apps:list', Record<string, never>>
   | MessageEnvelope<'experience:start', { appSlug: string; experienceSlug: string }>
   | MessageEnvelope<'experience:stop', { appSlug: string; experienceSlug: string }>

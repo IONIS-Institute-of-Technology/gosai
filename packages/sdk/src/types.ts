@@ -4,6 +4,7 @@
 
 export type {
   AppManifest,
+  AppCalibrationSchema,
   AppRequirements,
   AppSettingsSchema,
   AppSettingsGroup,
@@ -33,6 +34,7 @@ export interface AppContext {
   readonly appSlug: string;
   readonly experienceSlug: string;
   readonly server: ServerConnection;
+  readonly serverBaseUrl: string;
 }
 
 export interface ServerConnection {

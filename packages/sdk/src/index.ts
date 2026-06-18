@@ -16,6 +16,34 @@ export type { CanvasOptions } from './renderer.js';
 
 export { ServerClient } from './connection.js';
 export type { ConnectionStatus } from './connection.js';
+export { createStorageClient } from './storage.js';
+
+export {
+  CALIBRATION_STATUS_KEY,
+  CAMERA_PROJECTOR_SURFACE_CALIBRATION_KIND,
+  CAMERA_PROJECTOR_SURFACE_STORAGE_KEYS,
+  createCameraProjectorSurfaceCalibration,
+  defineCalibration,
+  isCameraProjectorSurfaceCalibrationDefinition,
+  loadCameraProjectorSurfaceCalibration,
+} from './calibration.js';
+export type {
+  CalibrationDefinition,
+  CalibrationRole,
+  CalibrationStatus,
+  CalibrationStep,
+  CalibrationStepContext,
+  CameraProjectorSurfaceCalibrationDefinition,
+  CameraProjectorSurfaceCalibrationOptions,
+  CameraProjectorSurfaceCalibrationProfile,
+  CameraProjectorSurfaceProjectorMessages,
+  CameraProjectorSurfaceStep,
+  CameraProjectorSurfaceStepCopy,
+  CameraProjectorSurfaceStorageKeys,
+  LoadCameraProjectorSurfaceCalibrationOptions,
+  SizeXY,
+  SurfaceQuadDisplay,
+} from './calibration.js';
 
 export type {
   AppContext,
@@ -32,6 +60,7 @@ export type {
   ServerConnection,
   StorageClient,
   // re-exports from @gosai/shared
+  AppCalibrationSchema,
   AppManifest,
   ExperienceDescriptor,
   PythonConfig,

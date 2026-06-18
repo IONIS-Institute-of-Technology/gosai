@@ -4,7 +4,7 @@
  * Runs in the (non-fullscreen) control window. Owns the step machine and is
  * responsible for:
  *   - showing the live camera feed and detection overlay
- *   - collecting the four pool-corner clicks
+ *   - collecting the four surface-corner clicks
  *   - calling `calibration.compute` to compute the homography
  *   - persisting `homography` and `focus_quad` to app storage
  *
@@ -12,18 +12,19 @@
  *   - Space / Enter : advance to next step
  *   - Backspace     : revert to previous step
  *   - Escape        : abort
- *   - r             : (pool-corners) reset corner picks
+ *   - r             : reset corner picks
  */
 
-import type {
-  AppEventsSubscription,
-  DriverSubscription,
-  ExperienceRuntimeContext,
+import {
+  type AppEventsSubscription,
+  type CalibrationStepContext,
+  type CameraProjectorSurfaceCalibrationOptions,
+  type DriverSubscription,
+  type ExperienceRuntimeContext,
 } from '@gosai/sdk';
 import {
   WIZARD_EVENTS,
   STORAGE_KEYS,
-  CALIBRATION_TARGET_KEY,
   DEFAULT_SURFACE_SIZE,
   type CornersEvent,
   type FocusQuad,
@@ -38,7 +39,6 @@ import {
   ZOOM_STEP,
   MIN_SCALE,
   MAX_SCALE,
-  scopedKey,
   setBodyFullscreen,
 } from './shared.js';
 
@@ -62,11 +62,13 @@ interface DOM {
 export interface ControlState {
   dom: DOM;
   step: WizardStep;
-  /** Slug of the app being calibrated for; namespaces the profile keys. */
-  target: string | null;
+  /** Target app being calibrated. Calibration data is stored in this app. */
+  targetAppSlug: string | null;
+  context: CalibrationStepContext | null;
+  options: CameraProjectorSurfaceCalibrationOptions;
   camFrame: HTMLImageElement | null;
   camFrameSize: { w: number; h: number } | null;
-  /** Pool corners in normalised camera coords (0..1). */
+  /** Surface corners in normalised camera coords (0..1). */
   corners: Point2D[];
   /** Index of corner currently being dragged, or -1. */
   draggingIdx: number;
@@ -88,7 +90,7 @@ export interface ControlState {
 
 const STEP_TITLES: Record<WizardStep, string> = {
   markers: 'Step 1 · ArUco Markers',
-  'pool-corners': 'Step 2 · Pool Corners',
+  'pool-corners': 'Step 2 · Surface Corners',
   compute: 'Step 3 · Compute Homography',
   preview: 'Step 4 · Preview',
   done: 'Calibration Complete',
@@ -99,7 +101,7 @@ const STEP_HELP: Record<WizardStep, string> = {
   markers:
     'Aim the camera so all 9 markers are visible. Use [Arrow keys] to pan and [Scroll wheel] to zoom the pattern to fit the surface. Press [Space] / Next when ready.',
   'pool-corners':
-    'Click to place corners (top-left → clockwise). Drag an existing corner to adjust it. Press [r] to reset all, [Space] / Next when 4 corners are placed.',
+    'Click to place surface corners (top-left → clockwise). Drag an existing corner to adjust it. Press [r] to reset all, [Space] / Next when 4 corners are placed.',
   compute: 'Computing the camera→display homography. This should only take a moment.',
   preview:
     'Check that the calibration looks right. Press [Space] / Done to finish or [Backspace] to go back.',
@@ -190,7 +192,9 @@ export function initControlState(): ControlState {
       status,
     },
     step: 'markers',
-    target: null,
+    targetAppSlug: null,
+    context: null,
+    options: {},
     camFrame: null,
     camFrameSize: null,
     corners: [],
@@ -212,16 +216,20 @@ export function initControlState(): ControlState {
 }
 
 export async function startControl(
-  rt: ExperienceRuntimeContext,
+  ctx: CalibrationStepContext,
   state: ControlState,
+  options: CameraProjectorSurfaceCalibrationOptions,
 ): Promise<void> {
+  const rt = ctx.rt;
   rt.log.info('control role starting');
 
-  state.target = (await rt.storage.get<string>(CALIBRATION_TARGET_KEY).catch(() => null)) ?? null;
+  state.context = ctx;
+  state.options = options;
+  state.targetAppSlug = ctx.targetAppSlug;
 
   // Restore previous corner picks so the user does not lose work if the
   // wizard is re-opened.
-  const previous = await rt.storage.get<FocusQuad>(scopedKey(STORAGE_KEYS.FocusQuad, state.target));
+  const previous = await ctx.targetStorage.get<FocusQuad>(STORAGE_KEYS.FocusQuad);
   if (previous?.points && previous.points.length === 4) {
     state.corners = previous.points.slice();
   }
@@ -338,8 +346,8 @@ function button(text: string, color?: string): HTMLButtonElement {
 
 function setStep(rt: ExperienceRuntimeContext, state: ControlState, step: WizardStep): void {
   state.step = step;
-  state.dom.stepTitle.textContent = STEP_TITLES[step];
-  state.dom.stepHelp.textContent = STEP_HELP[step];
+  state.dom.stepTitle.textContent = stepTitle(state, step);
+  state.dom.stepHelp.textContent = stepHelp(state, step);
   state.dom.resetBtn.style.display = step === 'pool-corners' ? 'inline-block' : 'none';
   state.dom.nextBtn.disabled = !canAdvance(state);
   state.dom.backBtn.disabled = step === 'markers' || step === 'done' || step === 'compute';
@@ -469,7 +477,8 @@ function drawOverlay(state: ControlState): void {
       ctx.font = 'bold 10px ui-monospace, monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(CORNER_LABELS[i] ?? `${i + 1}`, x, y);
+      const labels = state.options.cornerLabels ?? CORNER_LABELS;
+      ctx.fillText(labels[i] ?? `${i + 1}`, x, y);
     }
   }
 }
@@ -645,6 +654,7 @@ async function advance(rt: ExperienceRuntimeContext, state: ControlState): Promi
     await persistCorners(rt, state);
   }
   if (next === 'done') {
+    await persistCalibrationStatus(state);
     setStep(rt, state, 'done');
     await rt.events.emit(WIZARD_EVENTS.Finished, { ok: true });
     return;
@@ -667,14 +677,16 @@ async function abort(rt: ExperienceRuntimeContext, state: ControlState): Promise
 
 async function persistCorners(rt: ExperienceRuntimeContext, state: ControlState): Promise<void> {
   if (state.corners.length !== 4) return;
+  if (!state.context) throw new Error('calibration context is unavailable');
   const quad: FocusQuad = {
     points: [state.corners[0]!, state.corners[1]!, state.corners[2]!, state.corners[3]!],
   };
-  await rt.storage.set(scopedKey(STORAGE_KEYS.FocusQuad, state.target), quad);
-  rt.log.info('focus quad saved', { points: 4, target: state.target ?? 'default' });
+  await state.context.targetStorage.set(STORAGE_KEYS.FocusQuad, quad);
+  rt.log.info('focus quad saved', { points: 4, target: state.targetAppSlug ?? 'unknown' });
 }
 
 async function runCompute(rt: ExperienceRuntimeContext, state: ControlState): Promise<void> {
+  if (!state.context) throw new Error('calibration context is unavailable');
   state.busy = true;
   updateStatus(state);
   try {
@@ -683,7 +695,7 @@ async function runCompute(rt: ExperienceRuntimeContext, state: ControlState): Pr
     // space). The surface reference resolution defaults to 1920x1080 -- it is
     // what apps render in. Falls back gracefully if the camera frame size has
     // not been observed yet.
-    const surfaceSize: SizeXY = DEFAULT_SURFACE_SIZE;
+    const surfaceSize: SizeXY = state.options.surfaceSize ?? DEFAULT_SURFACE_SIZE;
     const focusQuadParam =
       state.corners.length === 4 ? state.corners.map((p) => ({ x: p.x, y: p.y })) : undefined;
     const frameSizeParam = state.camFrameSize
@@ -719,29 +731,22 @@ async function runCompute(rt: ExperienceRuntimeContext, state: ControlState): Pr
       return;
     }
     if (Array.isArray(result.matrix)) {
-      const t = state.target;
-      await rt.storage.set(scopedKey(STORAGE_KEYS.Homography, t), result.matrix);
+      const storage = state.context.targetStorage;
+      await storage.set(STORAGE_KEYS.Homography, result.matrix);
       if (Array.isArray(result.inverse)) {
-        await rt.storage.set(scopedKey(STORAGE_KEYS.HomographyInverse, t), result.inverse);
+        await storage.set(STORAGE_KEYS.HomographyInverse, result.inverse);
       }
       // Surface-space matrices (camera -> apps' reference space).
       if (Array.isArray(result.surface_matrix)) {
-        await rt.storage.set(scopedKey(STORAGE_KEYS.HomographySurface, t), result.surface_matrix);
+        await storage.set(STORAGE_KEYS.HomographySurface, result.surface_matrix);
       } else {
         // Clear any stale surface matrix so apps fall back cleanly.
-        await rt.storage
-          .remove(scopedKey(STORAGE_KEYS.HomographySurface, t))
-          .catch(() => undefined);
+        await storage.remove(STORAGE_KEYS.HomographySurface).catch(() => undefined);
       }
       if (Array.isArray(result.surface_inverse)) {
-        await rt.storage.set(
-          scopedKey(STORAGE_KEYS.HomographySurfaceInverse, t),
-          result.surface_inverse,
-        );
+        await storage.set(STORAGE_KEYS.HomographySurfaceInverse, result.surface_inverse);
       } else {
-        await rt.storage
-          .remove(scopedKey(STORAGE_KEYS.HomographySurfaceInverse, t))
-          .catch(() => undefined);
+        await storage.remove(STORAGE_KEYS.HomographySurfaceInverse).catch(() => undefined);
       }
       // Where the physical surface lands in display space, needed for CSS
       // matrix3d keystone correction in consumer apps.
@@ -754,17 +759,15 @@ async function runCompute(rt: ExperienceRuntimeContext, state: ControlState): Pr
             result.surface_quad_display[3]!,
           ],
         };
-        await rt.storage.set(scopedKey(STORAGE_KEYS.SurfaceQuadDisplay, t), quadDisplay);
+        await storage.set(STORAGE_KEYS.SurfaceQuadDisplay, quadDisplay);
       } else {
-        await rt.storage
-          .remove(scopedKey(STORAGE_KEYS.SurfaceQuadDisplay, t))
-          .catch(() => undefined);
+        await storage.remove(STORAGE_KEYS.SurfaceQuadDisplay).catch(() => undefined);
       }
       if (result.surface_size) {
-        await rt.storage.set(scopedKey(STORAGE_KEYS.SurfaceSize, t), result.surface_size);
+        await storage.set(STORAGE_KEYS.SurfaceSize, result.surface_size);
       }
       if (result.frame_size) {
-        await rt.storage.set(scopedKey(STORAGE_KEYS.FrameSize, t), result.frame_size);
+        await storage.set(STORAGE_KEYS.FrameSize, result.frame_size);
       }
       const errMean = result.reprojection_error_mean ?? 0;
       const errMax = result.reprojection_error_max ?? 0;
@@ -787,4 +790,33 @@ async function runCompute(rt: ExperienceRuntimeContext, state: ControlState): Pr
   }
   state.busy = false;
   setStep(rt, state, 'preview');
+}
+
+async function persistCalibrationStatus(state: ControlState): Promise<void> {
+  if (!state.context) throw new Error('calibration context is unavailable');
+  await state.context.markComplete();
+}
+
+function stepTitle(state: ControlState, step: WizardStep): string {
+  const key = cameraProjectorStep(step);
+  return (key ? state.options.stepCopy?.[key]?.title : undefined) ?? STEP_TITLES[step];
+}
+
+function stepHelp(state: ControlState, step: WizardStep): string {
+  const key = cameraProjectorStep(step);
+  return (key ? state.options.stepCopy?.[key]?.help : undefined) ?? STEP_HELP[step];
+}
+
+function cameraProjectorStep(
+  step: WizardStep,
+): 'markers' | 'pool-corners' | 'compute' | 'preview' | null {
+  switch (step) {
+    case 'markers':
+    case 'pool-corners':
+    case 'compute':
+    case 'preview':
+      return step;
+    default:
+      return null;
+  }
 }

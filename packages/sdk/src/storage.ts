@@ -1,5 +1,13 @@
 import type { ServerConnection, StorageClient } from './types.js';
 
+export function createStorageClient(
+  appSlug: string,
+  server: ServerConnection,
+  baseUrl: string,
+): StorageClient {
+  return new StorageClientImpl(appSlug, server, baseUrl);
+}
+
 /**
  * App-scoped key/value store. Backed by REST endpoints on the server:
  * `GET/POST/DELETE /v1/apps/<slug>/storage/<key>`.

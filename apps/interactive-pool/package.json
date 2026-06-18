@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "bun build src/main.ts --target=browser --format=esm --outdir dist --external @gosai/sdk",
+    "build": "bun build src/main.ts src/calibration.ts --target=browser --format=esm --outdir dist --external @gosai/sdk",
     "dev": "bun run build --watch",
     "typecheck": "tsc --noEmit"
   },

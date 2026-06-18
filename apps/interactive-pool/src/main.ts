@@ -68,7 +68,7 @@ interface State {
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
 
-  /** Calibration snapshot loaded from the `calibration` app's storage. */
+  /** Calibration snapshot loaded from this app's storage. */
   calibration: CalibrationData | null;
 
   feed: PoolFeed;

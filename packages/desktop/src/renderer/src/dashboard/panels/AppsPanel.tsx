@@ -24,6 +24,7 @@ import { EmptyState } from '../components/EmptyState.jsx';
 import { AppSettingsModal } from '../components/AppSettingsModal.js';
 
 const SERVER_BASE_URL = 'http://127.0.0.1:7777';
+const DEFAULT_CALIBRATION_STATUS_KEY = 'calibration_status';
 
 function formatKey(width: number, height: number): string {
   return `${width}x${height}`;
@@ -225,14 +226,15 @@ function AppRow({
   const [expanded, setExpanded] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsSchema = app.manifest.settings;
+  const calibrationSchema = app.manifest.calibration;
   const requirements = app.manifest.requirements ?? {};
   const hasRequirements =
     !!requirements.display ||
     !!requirements.camera ||
     !!requirements.microphone ||
     !!requirements.speaker;
-  // Calibration maps a camera onto a display, so it only applies to apps needing both.
-  const needsCalibration = !!requirements.display && !!requirements.camera;
+  const needsCalibration = calibrationSchema?.required === true;
+  const calibrationStatusKey = calibrationSchema?.statusKey ?? DEFAULT_CALIBRATION_STATUS_KEY;
   const experiences = app.manifest.experiences;
   const defaultExp =
     experiences.find((e) => e.slug === app.manifest.default) ?? experiences[0] ?? null;
@@ -243,19 +245,19 @@ function AppRow({
 
   const probeCalibration = useCallback(async (): Promise<void> => {
     if (!needsCalibration) return;
-    const check = async (key: string): Promise<boolean> => {
-      try {
-        const res = await fetch(
-          `${SERVER_BASE_URL}/v1/apps/${CALIBRATION_SLUG}/storage/${encodeURIComponent(key)}`,
-        );
-        return res.status === 200;
-      } catch {
-        return false;
-      }
-    };
-    const ok = (await check(`homography__${app.manifest.slug}`)) || (await check('homography'));
+    let ok = false;
+    try {
+      const res = await fetch(
+        `${SERVER_BASE_URL}/v1/apps/${app.manifest.slug}/storage/${encodeURIComponent(
+          calibrationStatusKey,
+        )}`,
+      );
+      ok = res.status === 200;
+    } catch {
+      ok = false;
+    }
     setCalStatus(ok ? 'calibrated' : 'required');
-  }, [app.manifest.slug, needsCalibration]);
+  }, [app.manifest.slug, calibrationStatusKey, needsCalibration]);
 
   useEffect(() => {
     if (needsCalibration) void probeCalibration();
@@ -778,7 +780,11 @@ function CameraSettingsControls({
 
   const resolutionOptions = useMemo(() => {
     const list = formats ? [...formats] : [];
-    if (width != null && height != null && !list.some((f) => f.width === width && f.height === height)) {
+    if (
+      width != null &&
+      height != null &&
+      !list.some((f) => f.width === width && f.height === height)
+    ) {
       list.unshift({ width, height, fps: fps != null ? [fps] : [] });
     }
     return list;
@@ -798,7 +804,9 @@ function CameraSettingsControls({
     if (!Number.isFinite(w) || !Number.isFinite(h)) return;
     const format = formats?.find((f) => f.width === w && f.height === h);
     const nextFps =
-      format && fps != null && format.fps.includes(fps) ? fps : (format?.fps[0] ?? fps ?? undefined);
+      format && fps != null && format.fps.includes(fps)
+        ? fps
+        : (format?.fps[0] ?? fps ?? undefined);
     onSave({ width: w, height: h, ...(nextFps != null ? { fps: nextFps } : {}) });
   };
 
@@ -832,9 +840,7 @@ function CameraSettingsControls({
         options={fpsOptions.map((f) => ({ value: String(f), label: `${f} fps` }))}
         onChange={(value) => onSave({ fps: Number.parseFloat(value) })}
       />
-      {formatsError ? (
-        <p className="font-mono text-[10px] text-amber-400">{formatsError}</p>
-      ) : null}
+      {formatsError ? <p className="font-mono text-[10px] text-amber-400">{formatsError}</p> : null}
     </div>
   );
 }

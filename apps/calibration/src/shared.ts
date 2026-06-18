@@ -7,36 +7,38 @@
  *
  * Both windows load `dist/calibrate.js` and branch on the `role` URL param.
  *
- * Storage keys (per-app under `paths.apps/calibration/_data/storage/`):
- * - `homography`             : 3x3 row-major homography matrix (number[9])
+ * Storage keys are written to the target app's own storage:
+ * - `calibration_homography` : 3x3 row-major homography matrix (number[9])
  *                              mapping camera pixels -> display pixels.
  *                              Handles perspective (keystone) correction from
  *                              angled projectors/cameras.
- * - `homography_inverse`     : 3x3 row-major inverse homography
+ * - `calibration_homography_inverse` : 3x3 row-major inverse homography
  *                              (display -> camera).
- * - `homography_surface`     : 3x3 row-major homography mapping camera pixels
+ * - `calibration_homography_surface` : 3x3 row-major homography mapping camera pixels
  *                              -> SURFACE reference space (apps' canonical
  *                              coordinate space, default 1920x1080). This is
  *                              what tracking drivers (`ball`, `hand_pose`)
  *                              should consume.
- * - `homography_surface_inverse` : inverse of the above.
- * - `focus_quad`             : { points: [{x,y}, ...] } in NORMALISED camera
+ * - `calibration_homography_surface_inverse` : inverse of the above.
+ * - `calibration_focus_quad` : { points: [{x,y}, ...] } in NORMALISED camera
  *                              coords (0..1, top-left, top-right, bottom-right,
  *                              bottom-left). Defines the physical surface in
  *                              the camera view.
- * - `surface_quad_display`   : { points: [{x,y}, ...] } - the same 4 corners
+ * - `calibration_surface_quad_display` : { points: [{x,y}, ...] } - the same 4 corners
  *                              after applying the camera->display homography.
  *                              Used by apps to drive CSS `matrix3d` keystone
  *                              correction so the rendered canvas lands exactly
  *                              on the physical surface.
- * - `surface_size`           : { width, height } - the surface reference
+ * - `calibration_surface_size` : { width, height } - the surface reference
  *                              resolution (default 1920x1080).
- * - `frame_size`             : { width, height } - the camera frame size that
+ * - `calibration_frame_size` : { width, height } - the camera frame size that
  *                              was active when the homography was computed.
  *                              Required by drivers to denormalise inputs.
- * - `markers_layout`         : the marker placement used when the homography
- *                              was computed.
+ * - `calibration_markers_layout` : marker placement used when the homography
+ *                                  was computed.
  */
+
+import { CAMERA_PROJECTOR_SURFACE_STORAGE_KEYS } from '@gosai/sdk';
 
 export interface Point2D {
   x: number;
@@ -62,33 +64,7 @@ export interface MarkerImage {
   error?: string;
 }
 
-export const STORAGE_KEYS = {
-  Homography: 'homography',
-  HomographyInverse: 'homography_inverse',
-  HomographySurface: 'homography_surface',
-  HomographySurfaceInverse: 'homography_surface_inverse',
-  FocusQuad: 'focus_quad',
-  SurfaceQuadDisplay: 'surface_quad_display',
-  SurfaceSize: 'surface_size',
-  FrameSize: 'frame_size',
-  MarkersLayout: 'markers_layout',
-} as const;
-
-/**
- * Storage key holding the slug of the app currently being calibrated for. The
- * dashboard writes it before opening the wizard windows; both wizard windows
- * read it at startup so the profile they write/read is namespaced per app.
- */
-export const CALIBRATION_TARGET_KEY = '__target';
-
-/**
- * Namespace a calibration storage key by the target app slug so each app keeps
- * its own profile (e.g. `homography__interactive-pool`). When `target` is empty
- * the legacy unscoped key is returned, preserving single-app setups.
- */
-export function scopedKey(key: string, target?: string | null): string {
-  return target ? `${key}__${target}` : key;
-}
+export const STORAGE_KEYS = CAMERA_PROJECTOR_SURFACE_STORAGE_KEYS;
 
 /** Default surface (canvas / app reference) resolution. */
 export const DEFAULT_SURFACE_SIZE = { width: 1920, height: 1080 } as const;

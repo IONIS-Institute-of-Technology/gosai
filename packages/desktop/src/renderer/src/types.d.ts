@@ -31,6 +31,7 @@ interface DashboardApi {
       appSlug: string;
       experienceSlug: string;
       fullscreen?: boolean;
+      targetAppSlug?: string;
     }): Promise<{
       windowId: number;
       displayId: number;
@@ -50,6 +51,7 @@ interface DashboardApi {
       appSlug: string;
       experienceSlug: string;
       projectorDisplayId?: number;
+      targetAppSlug?: string;
       width?: number;
       height?: number;
       title?: string;

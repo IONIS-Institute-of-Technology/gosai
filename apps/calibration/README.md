@@ -1,53 +1,66 @@
 # Calibration
 
-Built-in GOSAI app that handles camera/projector calibration and shared
-spatial primitives used by other AR apps.
+Built-in GOSAI calibration runner. It does not own a calibration profile itself:
+the dashboard launches it for a target app, the runner imports that app's
+`calibration.entry` module, and successful calibration data is written to the
+target app's own storage.
 
-This app is shipped inside the GOSAI server (no install step) and exposes a
-single end-to-end wizard experience:
+| Experience  | Purpose                                      |
+| ----------- | -------------------------------------------- |
+| `calibrate` | Runs the target app's calibration definition |
 
-| Experience  | Purpose                                                  |
-| ----------- | -------------------------------------------------------- |
-| `calibrate` | Full wizard: markers → pool corners → compute → preview. |
+The runner opens two windows simultaneously:
 
-The wizard is launched from the **Calibrate** button in the Apps panel of the
-GOSAI dashboard. It opens two windows simultaneously:
+- A projector window on the target app's assigned display.
+- A control window on the dashboard display.
 
-- A **projector window** (fullscreen) that displays ArUco markers, the black
-  background frame during capture, and the live preview overlay.
-- A **control window** (non-fullscreen, on the dashboard's display) that
-  shows the camera feed, lets the user click the four pool corners, and
-  drives the step machine.
+## Target App Contract
 
-## Wizard steps
+Apps opt in from `gosai.app.json`:
 
-1. **markers** – ArUco grid projected. Aim the camera so all markers are
-   detected (count shown in the control window).
-2. **pool-corners** – Click the four pool / table corners on the camera image.
-3. **compute** – Server computes the camera→display homography.
-4. **preview** – Live verification overlay. Press _Done_ to finish.
+```jsonc
+"calibration": {
+  "required": true,
+  "entry": "dist/calibration.js",
+  "statusKey": "calibration_status"
+}
+```
 
-Keyboard shortcuts in the control window: **Space/Enter** to advance,
-**Backspace** to revert, **Esc** to abort, **r** to reset corners.
+The entry is a browser ESM module exporting a calibration definition. For the
+standard camera/projector surface flow, apps can use the SDK helper:
 
-## Storage keys
+```ts
+import { createCameraProjectorSurfaceCalibration } from '@gosai/sdk';
 
-All calibration outputs are persisted in this app's storage namespace so
-other apps and drivers can read them back through the GOSAI server.
+export default createCameraProjectorSurfaceCalibration({
+  name: 'Surface Calibration',
+  surfaceSize: { width: 1920, height: 1080 },
+});
+```
 
-| Key              | Type                     | Source step    |
-| ---------------- | ------------------------ | -------------- |
-| `homography`     | `number[9]` (row-major)  | `compute`      |
-| `markers_layout` | `MarkerSlot[]`           | `markers`      |
-| `focus_quad`     | `{ points: Point2D[4] }` | `pool-corners` |
+## Standard Storage Keys
 
-## Driver dependencies
+The camera/projector surface helper writes these keys to the target app:
 
-- `camera`: provides raw frames (`color`, `frame_size`, `fps` events).
-- `calibration`: detects ArUco markers and computes the homography.
+| Key                                      | Type                     |
+| ---------------------------------------- | ------------------------ |
+| `calibration_status`                     | completion status object |
+| `calibration_homography`                 | `number[9]` row-major    |
+| `calibration_homography_inverse`         | `number[9]` row-major    |
+| `calibration_homography_surface`         | `number[9]` row-major    |
+| `calibration_homography_surface_inverse` | `number[9]` row-major    |
+| `calibration_focus_quad`                 | `{ points: Point2D[4] }` |
+| `calibration_surface_quad_display`       | `{ points: Point2D[4] }` |
+| `calibration_surface_size`               | `{ width, height }`      |
+| `calibration_frame_size`                 | `{ width, height }`      |
 
-The `calibration` driver depends on `camera`, so launching the wizard
-automatically starts both.
+## Driver Dependencies
+
+- `camera`: provides raw frames.
+- `calibration`: detects ArUco markers and computes homographies.
+
+The `calibration` driver depends on `camera`, so launching the runner starts
+both drivers for the calibration app.
 
 ## Development
 
@@ -56,5 +69,5 @@ bun install
 bun run build
 ```
 
-The output is loaded by GOSAI directly from `apps/calibration/dist/` via the
-server's static asset route.
+The output is loaded by GOSAI from `apps/calibration/dist/` through the server's
+static asset route.

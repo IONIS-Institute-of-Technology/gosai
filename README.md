@@ -177,8 +177,12 @@ Each declared slot shows up in the dashboard's per-app **device assignments**
 panel, where you pick the concrete camera / microphone / speaker and the target
 display (with a fullscreen ⇄ windowed toggle). Assignments persist to
 `~/.gosai/apps/<slug>/_config/settings.json` and are applied when the app starts
-(camera/microphone changes also hot-apply to a running instance). Calibration is
-likewise stored per app, so each app maps its own camera onto its own display.
+(camera/microphone changes also hot-apply to a running instance).
+
+Calibration is also per app, but it is declared separately with a top-level
+`calibration` object. Apps that need it provide a browser ESM calibration entry;
+GOSAI's built-in calibration runner loads that entry and writes the resulting
+profile into the target app's own storage.
 
 ## Packaging
 

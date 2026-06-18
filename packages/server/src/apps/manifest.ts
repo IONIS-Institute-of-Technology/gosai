@@ -6,6 +6,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type {
+  AppCalibrationSchema,
   AppManifest,
   AppRequirements,
   AppSettingsField,
@@ -108,6 +109,7 @@ export function validateManifest(path: string, value: unknown): AppManifest {
   }
 
   const requirements = parseRequirements(path, v.requirements);
+  const calibration = parseCalibration(path, v.calibration);
   const settings = parseSettings(path, v.settings);
 
   let python: AppManifest['python'];
@@ -134,6 +136,7 @@ export function validateManifest(path: string, value: unknown): AppManifest {
     ...(python ? { python } : {}),
     ...(startup ? { startup } : {}),
     ...(requirements ? { requirements } : {}),
+    ...(calibration ? { calibration } : {}),
     ...(settings ? { settings } : {}),
     builtin,
   };
@@ -155,6 +158,31 @@ function parseRequirements(path: string, value: unknown): AppRequirements | unde
     ...(camera !== undefined ? { camera } : {}),
     ...(microphone !== undefined ? { microphone } : {}),
     ...(speaker !== undefined ? { speaker } : {}),
+  };
+}
+
+function parseCalibration(path: string, value: unknown): AppCalibrationSchema | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new ManifestError(path, '`calibration` must be an object');
+  }
+  const c = value as Record<string, unknown>;
+  const required = optionalBool(path, c, 'required');
+  if (required === undefined) {
+    throw new ManifestError(path, '`calibration.required` must be a boolean');
+  }
+  const entry = optionalString(path, c, 'entry');
+  if (required && !entry) {
+    throw new ManifestError(
+      path,
+      '`calibration.entry` is required when calibration.required is true',
+    );
+  }
+  const statusKey = optionalString(path, c, 'statusKey');
+  return {
+    required,
+    ...(entry !== undefined ? { entry } : {}),
+    ...(statusKey !== undefined ? { statusKey } : {}),
   };
 }
 
