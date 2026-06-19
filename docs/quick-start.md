@@ -15,9 +15,14 @@ bun run build:apps                 # builds built-in app entry bundles
 ```
 
 All Python driver dependencies (OpenCV, MediaPipe, ONNX Runtime, audio) are
-installed automatically by `python:sync`. On Linux and Windows, the ball
-driver uses `onnxruntime-gpu` (CUDA on the NVIDIA GPU). On macOS it uses
-CoreML. Set `GOSAI_CUDA_DEVICE_ID=0` if you have multiple NVIDIA GPUs.
+installed automatically by `python:sync`. In auto mode, ONNX drivers prefer
+CUDA on Linux/Windows and CoreML/Metal providers on macOS when available. The
+Drivers panel shows the active hardware/provider for each running driver.
+
+Camera mode selectors list modes that the Python runtime can actually open and
+decode, including MJPG/H264 modes needed by many 720p/30 webcams. Selecting a
+mode is exact: if the camera cannot deliver the chosen resolution/FPS, the
+camera driver errors instead of silently dropping to a lower resolution.
 
 For optional hardware-specific drivers, add extras:
 
@@ -87,6 +92,9 @@ git init && git add . && git commit -m "initial"
 | `GOSAI_BUILTIN_APPS`       | Override the built-in apps discovery root.        |
 | `GOSAI_PYTHON=0`           | Disable the Python bridge entirely.               |
 | `GOSAI_AUTOSTART_SERVER=1` | Force the desktop app to spawn the server itself. |
+| `GOSAI_ACCELERATOR=auto`   | Prefer CUDA on NVIDIA and CoreML/Metal on macOS.  |
+| `GOSAI_ACCELERATOR=cpu`    | Explicit CPU mode for inference drivers.          |
+| `GOSAI_CUDA_DEVICE_ID=0`   | Select the NVIDIA GPU for CUDA inference.         |
 
 ## Tests
 

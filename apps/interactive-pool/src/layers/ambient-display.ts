@@ -4,25 +4,20 @@
  * Background mode: 50 randomly-coloured dots drift across the screen with
  * random velocities, wrapping at edges. Always runs.
  *
- * Reactive mode: when the optional `sensor_server` driver is available and
- * emits movements, any distance reading below the threshold triggers a
- * firework burst. Bursts cap out at 6 concurrent ones and fade out via
- * particle drag + alpha decay. If the driver is not installed the layer
- * simply runs as a passive ambient drift.
+ * Firework bursts spawn periodically while the layer runs. Bursts cap out at
+ * 6 concurrent ones and fade out via particle drag + alpha decay.
  */
 
-import type { DriverSubscription } from '@gosai/sdk';
 import { REF_HEIGHT, REF_WIDTH, type FrameContext, type Layer } from '../shared/types.js';
 import { rand } from '../shared/math.js';
 import type { PoolFeed } from '../shared/feed.js';
 
 const DOT_COUNT = 50;
-const DIST_THRESHOLD = 50;
 const MAX_FIREWORKS = 6;
 const PARTICLE_COUNT = 100;
 const VEL_DRAG = 0.991;
 const ALPHA_DRAG = 0.99;
-const FIRE_REFRACTORY_MS = 3000;
+const FIRE_INTERVAL_MS = 3000;
 
 interface Dot {
   x: number;
@@ -49,20 +44,10 @@ interface Firework {
   particles: Particle[];
 }
 
-/**
- * Minimal subset of the SDK driver client we depend on. Decoupling lets
- * tests / future runtimes plug in their own subscription source.
- */
-export interface DriverSource {
-  on(driver: string, event: string, listener: (data: unknown) => void): DriverSubscription;
-}
-
-export function createAmbientDisplayLayer(_feed: PoolFeed, drivers: DriverSource): Layer {
+export function createAmbientDisplayLayer(_feed: PoolFeed): Layer {
   let dots: Dot[] = [];
   let fireworks: Firework[] = [];
   let lastFireAt = 0;
-  let belowThreshold = false;
-  let sub: DriverSubscription | null = null;
 
   function initDots(): void {
     dots = [];
@@ -101,40 +86,11 @@ export function createAmbientDisplayLayer(_feed: PoolFeed, drivers: DriverSource
     fireworks.push({ particles });
   }
 
-  function handleMovements(data: unknown): void {
-    if (typeof data !== 'object' || data === null) return;
-    // sensor_server `movements` legacy payload: an object whose values are
-    // distance readings. We treat any value below the threshold as a fire
-    // trigger.
-    const values = Object.values(data as Record<string, unknown>).filter(
-      (v): v is number => typeof v === 'number',
-    );
-    if (values.length === 0) return;
-    const anyBelow = values.some((v) => v < DIST_THRESHOLD);
-    if (anyBelow && !belowThreshold) {
-      // Edge-trigger: only spawn a firework on the descending edge.
-      belowThreshold = true;
-      const now = performance.now();
-      if (now - lastFireAt > FIRE_REFRACTORY_MS || fireworks.length === 0) {
-        maybeSpawnFirework(now);
-      }
-    } else if (!anyBelow) {
-      belowThreshold = false;
-    }
-  }
-
   return {
     start(): void {
       initDots();
       fireworks = [];
       lastFireAt = 0;
-      belowThreshold = false;
-      try {
-        sub = drivers.on('sensor_server', 'movements', handleMovements);
-      } catch {
-        // Driver not registered -- layer keeps running as passive drift.
-        sub = null;
-      }
     },
 
     render(frame: FrameContext): void {
@@ -153,6 +109,9 @@ export function createAmbientDisplayLayer(_feed: PoolFeed, drivers: DriverSource
         if (dot.y < 0) dot.y = REF_HEIGHT;
         ctx.fillStyle = `rgb(${Math.round(dot.r)},${Math.round(dot.g)},${Math.round(dot.b)})`;
         ctx.fillRect(dot.x - 3.5, dot.y - 3.5, 7, 7);
+      }
+      if (frame.timestamp - lastFireAt > FIRE_INTERVAL_MS) {
+        maybeSpawnFirework(frame.timestamp);
       }
 
       // Fireworks.
@@ -174,12 +133,6 @@ export function createAmbientDisplayLayer(_feed: PoolFeed, drivers: DriverSource
     },
 
     stop(): void {
-      try {
-        sub?.unsubscribe();
-      } catch {
-        // best-effort.
-      }
-      sub = null;
       dots = [];
       fireworks = [];
     },

@@ -23,6 +23,7 @@ import type {
   DeviceOption,
   DriverInfo,
   DriverInstanceInfo,
+  DriverRuntimeInfo,
   DriverState,
 } from '@gosai/shared';
 import { ServerEvents } from '@gosai/shared/events';
@@ -61,6 +62,7 @@ interface InstanceRuntime {
   readonly instance: string;
   readonly driver: string;
   state: DriverState;
+  runtime?: DriverRuntimeInfo;
 }
 
 interface SubscriberRecord {
@@ -92,7 +94,8 @@ export class DriverManager {
         this.handleDriverEvent(instance, driver, event, data, ts),
       onLog: (level, source, message) =>
         options.logger.log(`python:${source}`, normalizeLevel(level), message),
-      onDriverState: (instance, driver, state) => this.handleDriverState(instance, driver, state),
+      onDriverState: (instance, driver, state, runtime) =>
+        this.handleDriverState(instance, driver, state, runtime),
       onPerformance: (source, metric, value, ts) =>
         options.bus.emit(
           'server:performance',
@@ -178,7 +181,8 @@ export class DriverManager {
     this.requireDriver(driver);
     const instance = this.instanceFor(binding, driver);
     const key = this.instanceKey(instance, driver);
-    if (this.instances.get(key)?.state !== 'running') {
+    const state = this.instances.get(key)?.state;
+    if (state !== 'running' && state !== 'starting') {
       await this.startInstance(instance, driver, subscriber, binding);
     }
     this.recordSubscriber(key, subscriber, event, binding);
@@ -310,7 +314,6 @@ export class DriverManager {
         driver,
         ...(driverConfig ? { config: driverConfig } : {}),
       });
-      this.setInstanceState(instance, driver, 'running');
       this.recordSubscriber(key, requester, '*', binding);
       this.broadcastDriver(driver);
       this.broadcastList();
@@ -431,9 +434,14 @@ export class DriverManager {
     }
   }
 
-  private handleDriverState(instance: string, driver: string, state: string): void {
+  private handleDriverState(
+    instance: string,
+    driver: string,
+    state: string,
+    runtime?: DriverRuntimeInfo,
+  ): void {
     if (!this.catalogue.has(driver)) return;
-    this.setInstanceState(instance, driver, normalizeDriverState(state));
+    this.setInstanceState(instance, driver, normalizeDriverState(state), runtime);
     this.broadcastDriver(driver);
     this.broadcastList();
   }
@@ -481,7 +489,12 @@ export class DriverManager {
     };
   }
 
-  private setInstanceState(instance: string, driver: string, state: DriverState): void {
+  private setInstanceState(
+    instance: string,
+    driver: string,
+    state: DriverState,
+    runtime?: DriverRuntimeInfo,
+  ): void {
     const key = this.instanceKey(instance, driver);
     if (state === 'available' || state === 'stopped') {
       this.instances.delete(key);
@@ -491,8 +504,14 @@ export class DriverManager {
     const existing = this.instances.get(key);
     if (existing) {
       existing.state = state;
+      if (runtime !== undefined) existing.runtime = runtime;
     } else {
-      this.instances.set(key, { instance, driver, state });
+      this.instances.set(key, {
+        instance,
+        driver,
+        state,
+        ...(runtime !== undefined ? { runtime } : {}),
+      });
     }
   }
 
@@ -506,8 +525,10 @@ export class DriverManager {
       instance: rt.instance,
       state: rt.state,
       subscribers: this.flattenSubscribers(this.instanceKey(rt.instance, rt.driver)),
+      ...(rt.runtime ? { runtime: rt.runtime } : {}),
     }));
     const subscribers = Array.from(new Set(instanceInfos.flatMap((i) => i.subscribers)));
+    const primaryRuntime = runtimes.find((rt) => rt.runtime)?.runtime;
     return {
       name: entry.name,
       ...(entry.description ? { description: entry.description } : {}),
@@ -517,6 +538,7 @@ export class DriverManager {
       dependencies: entry.dependencies,
       subscribers,
       shared: this.isEffectivelyShared(entry.name),
+      ...(primaryRuntime ? { runtime: primaryRuntime } : {}),
       ...(instanceInfos.length > 0 ? { instances: instanceInfos } : {}),
     };
   }

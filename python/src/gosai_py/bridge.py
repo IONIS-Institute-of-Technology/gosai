@@ -61,6 +61,9 @@ class _BridgeContext(DriverContext):
     def record_performance(self, metric: str, value: float) -> None:
         self._bridge._emit_performance(self._driver, metric, value)
 
+    def set_state(self, state: str, runtime_info: dict[str, Any] | None = None) -> None:
+        self._bridge._emit_driver_state(self._instance, self._driver, state, runtime_info)
+
     def subscribe(self, driver: str, event: str, callback: Callable[[Any], None]) -> None:
         self._bridge._subscribe_internal(self._instance, driver, event, callback)
 
@@ -86,6 +89,7 @@ class Bridge:
         self._driver_classes: dict[str, type[BaseDriver]] = {}
         # Keyed by (instance, driver name).
         self._driver_instances: dict[tuple[str, str], BaseDriver] = {}
+        self._driver_runtime_info: dict[tuple[str, str], JsonDict] = {}
         # Keyed by (instance, driver, event).
         self._internal_subscribers: dict[
             tuple[str, str, str], list[Callable[[Any], None]]
@@ -181,10 +185,28 @@ class Bridge:
             }
         )
 
-    def _emit_driver_state(self, instance: str, driver: str, state: str) -> None:
-        self._write(
-            {"type": "driver-state", "instance": instance, "driver": driver, "state": state}
-        )
+    def _emit_driver_state(
+        self,
+        instance: str,
+        driver: str,
+        state: str,
+        runtime_info: JsonDict | None = None,
+    ) -> None:
+        key = (instance, driver)
+        if runtime_info is not None:
+            self._driver_runtime_info[key] = dict(runtime_info)
+        elif state in {"available", "stopped"}:
+            self._driver_runtime_info.pop(key, None)
+        payload: JsonDict = {
+            "type": "driver-state",
+            "instance": instance,
+            "driver": driver,
+            "state": state,
+        }
+        current_runtime = self._driver_runtime_info.get(key)
+        if current_runtime is not None:
+            payload["runtime"] = current_runtime
+        self._write(payload)
 
     def _respond(self, req_id: str, ok: bool, data: Any = None, error: str | None = None) -> None:
         msg: JsonDict = {"type": "result", "id": req_id, "ok": ok}
@@ -218,7 +240,6 @@ class Bridge:
         self._emit_driver_state(instance, name, "starting")
         try:
             obj._bridge_start()
-            self._emit_driver_state(instance, name, "running")
         except Exception:
             self._emit_driver_state(instance, name, "errored")
             raise
@@ -226,6 +247,7 @@ class Bridge:
     def _stop_driver(self, instance: str, name: str) -> None:
         with self._lock:
             obj = self._driver_instances.pop((instance, name), None)
+            self._driver_runtime_info.pop((instance, name), None)
         if obj is None:
             return
         self._emit_driver_state(instance, name, "stopping")

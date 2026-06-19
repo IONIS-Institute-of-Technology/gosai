@@ -26,6 +26,7 @@ from typing import Any, ClassVar
 
 from gosai_py.driver import DriverContext
 from gosai_py.processor import BaseProcessor
+from gosai_py.runtime import create_onnx_session
 
 MODELS_DIR = Path(__file__).resolve().parent / "slr_models"
 
@@ -87,9 +88,8 @@ class SLRDriver(BaseProcessor):
     def _load_model(self, actions: list[str]) -> bool:
         try:
             import numpy as np  # noqa: F401  (used in on_data)
-            import onnxruntime as ort
         except ImportError as exc:
-            self.log("error", f"slr: onnxruntime/numpy unavailable: {exc}")
+            self.log("error", f"slr: numpy unavailable: {exc}")
             return False
 
         model_path = MODELS_DIR / f"slr_{len(actions)}.onnx"
@@ -97,7 +97,11 @@ class SLRDriver(BaseProcessor):
             self.log("error", f"slr: no model for {len(actions)} actions ({model_path.name})")
             return False
         try:
-            session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
+            session, info = create_onnx_session(
+                model_path,
+                model_name=model_path.name,
+                log_fn=self.log,
+            )
         except Exception as exc:
             self.log("error", f"slr: failed to load {model_path.name}: {exc!r}")
             return False
@@ -109,6 +113,8 @@ class SLRDriver(BaseProcessor):
         self._include_face = feature_dim >= 158
         self._actions = list(actions)
         self._frames.clear()
+        self.set_runtime_info(info)
+        self.publish_state("running")
         self.log("info", f"slr: loaded {model_path.name} (features={feature_dim}, actions={len(actions)})")
         return True
 

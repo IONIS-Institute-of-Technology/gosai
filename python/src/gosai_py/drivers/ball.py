@@ -1,9 +1,9 @@
 """Ball detector using YOLOv8n via ONNX Runtime.
 
 Runs a YOLOv8n model exported to ONNX for low-latency inference (no
-PyTorch at runtime).  The camera frame is warped into display space via
-the calibration homography *before* inference so that detections are
-directly in the 1920x1080 reference coordinate system.
+PyTorch at runtime). Detections run in camera space, then the calibration
+homography is applied to final ball centers/radii so emitted coordinates
+live in the 1920x1080 reference coordinate system.
 
 Detection is class-agnostic: all 80 COCO classes fire with a very low
 confidence floor, and candidates are filtered purely by bounding-box
@@ -31,7 +31,7 @@ Actions:
 - ``set_cuda_device(id)``           — NVIDIA GPU index (default 0)
 
 Environment (optional):
-- ``GOSAI_ORT_DEVICE`` — ``cuda``, ``cpu``, ``coreml`` (macOS), ``dml`` (Windows)
+- ``GOSAI_ACCELERATOR`` — ``auto``, ``cuda``, ``cpu``, ``coreml`` (macOS), ``dml``
 - ``GOSAI_CUDA_DEVICE_ID`` — CUDA device index when using NVIDIA (default 0)
 """
 
@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import math
 import os
-import sys
 import time
 import urllib.request
 from collections import deque
@@ -48,13 +47,13 @@ from typing import Any, ClassVar
 
 from gosai_py.driver import DriverContext
 from gosai_py.processor import BaseProcessor
+from gosai_py.runtime import create_onnx_session, cuda_device_id
 
 YOLO_ONNX_FILENAME = "yolov8n.onnx"
 YOLO_ONNX_URL = (
     "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n.onnx"
 )
 MODEL_INPUT_SIZE = 640
-ProviderSpec = str | tuple[str, dict[str, Any]]
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -98,143 +97,6 @@ def _ensure_onnx(log_fn: Any) -> Path | None:
     if _download_file(YOLO_ONNX_URL, onnx_path, log_fn):
         return onnx_path
     return None
-
-
-def _cuda_device_id() -> int:
-    raw = os.environ.get("GOSAI_CUDA_DEVICE_ID", "0")
-    try:
-        return max(0, int(raw))
-    except ValueError:
-        return 0
-
-
-def _ort_device_mode() -> str:
-    """``cuda`` | ``cpu`` | ``coreml`` | ``dml`` | ``auto``."""
-    mode = os.environ.get("GOSAI_ORT_DEVICE", "auto").strip().lower()
-    if mode in ("cuda", "cpu", "coreml", "dml", "auto"):
-        return mode
-    return "auto"
-
-
-def _build_ort_providers(
-    available: list[str],
-    *,
-    mode: str,
-    cuda_device_id: int,
-) -> list[ProviderSpec]:
-    """Pick execution providers so NVIDIA CUDA wins on dual-GPU PCs.
-
-    The default ``onnxruntime`` wheel is CPU-only.  Linux/Windows installs
-    use ``onnxruntime-gpu`` (see ``pyproject.toml``) so
-    ``CUDAExecutionProvider`` is available for the discrete NVIDIA GPU.
-
-    We intentionally avoid OpenVINO / DirectML in ``auto`` mode: on
-    Intel + NVIDIA machines they often bind to the Intel iGPU and are
-    slower than CUDA on the NVIDIA card.
-    """
-    cuda_opts: dict[str, Any] = {"device_id": cuda_device_id}
-    cuda = ("CUDAExecutionProvider", cuda_opts)
-    cpu = "CPUExecutionProvider"
-    coreml = "CoreMLExecutionProvider"
-    dml = "DirectMLExecutionProvider"
-    trt = "TensorrtExecutionProvider"
-
-    if mode == "cpu":
-        if cpu not in available:
-            raise RuntimeError(f"CPUExecutionProvider unavailable; available providers: {available}")
-        return [cpu]
-
-    if mode == "coreml":
-        if coreml not in available:
-            raise RuntimeError(f"CoreMLExecutionProvider unavailable; available providers: {available}")
-        return [coreml]
-
-    if mode == "dml":
-        if dml not in available:
-            raise RuntimeError(
-                f"DirectMLExecutionProvider unavailable; available providers: {available}"
-            )
-        return [dml]
-
-    if mode == "cuda":
-        if cuda[0] not in available:
-            raise RuntimeError(
-                f"CUDAExecutionProvider unavailable; available providers: {available}"
-            )
-        return [cuda]
-
-    # auto
-    if sys.platform == "darwin":
-        if coreml not in available:
-            raise RuntimeError(f"CoreMLExecutionProvider unavailable; available providers: {available}")
-        return [coreml]
-
-    if sys.platform.startswith(("linux", "win32")):
-        if cuda[0] not in available:
-            raise RuntimeError(
-                f"CUDAExecutionProvider unavailable; available providers: {available}"
-            )
-        return [cuda]
-
-    if trt in available:
-        return [trt]
-    if cpu in available:
-        return [cpu]
-    raise RuntimeError(f"no supported ONNX provider available; available providers: {available}")
-
-
-def _create_ort_session(
-    onnx_path: Path,
-    *,
-    cuda_device_id: int,
-    log_fn: Any,
-) -> tuple[Any, list[str]]:
-    import onnxruntime as ort  # type: ignore[import-not-found]
-
-    mode = _ort_device_mode()
-    available = ort.get_available_providers()
-    providers = _build_ort_providers(
-        available,
-        mode=mode,
-        cuda_device_id=cuda_device_id,
-    )
-    wants_cuda = any(
-        (p[0] if isinstance(p, tuple) else p) == "CUDAExecutionProvider"
-        for p in providers
-    )
-    if wants_cuda and hasattr(ort, "preload_dlls"):
-        try:
-            # Allows `onnxruntime-gpu[cuda,cudnn]` / NVIDIA Python packages to
-            # provide CUDA 12 + cuDNN 9 without relying on system LD paths.
-            ort.preload_dlls(cuda=True, cudnn=True, msvc=False, directory=None)
-        except TypeError:
-            # Older ORT builds may not expose the newer keyword shape.
-            try:
-                ort.preload_dlls()
-            except Exception as exc:
-                log_fn("warn", f"ONNX CUDA preload failed: {exc!r}")
-        except Exception as exc:
-            log_fn("warn", f"ONNX CUDA preload failed: {exc!r}")
-    opts = ort.SessionOptions()
-    opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    session = ort.InferenceSession(
-        str(onnx_path),
-        sess_options=opts,
-        providers=providers,
-    )
-    active = session.get_providers()
-    if wants_cuda and "CUDAExecutionProvider" not in active:
-        raise RuntimeError(
-            "CUDAExecutionProvider was requested but ONNX Runtime activated "
-            f"{active}. Install CUDA 12.x + cuDNN 9.x runtime libraries, or "
-            "install onnxruntime-gpu[cuda,cudnn] and ensure they can be preloaded."
-        )
-    log_fn(
-        "info",
-        f"ONNX session ready ({onnx_path.name}, active={active[0] if active else 'none'}, "
-        f"available={available}, requested={[p[0] if isinstance(p, tuple) else p for p in providers]})",
-    )
-    return session, active
 
 
 # ── ONNX inference helpers ───────────────────────────────────────────────
@@ -322,6 +184,33 @@ def _postprocess(
         r = (w + h) / 4.0
         results.append((float(cx), float(cy), float(r)))
     return results
+
+
+def _warp_detections(
+    detections: list[tuple[float, float, float]],
+    homography: Any,
+) -> list[tuple[float, float, float]]:
+    if not detections:
+        return []
+    import cv2  # type: ignore[import-not-found]
+    import numpy as np  # type: ignore[import-not-found]
+
+    centers = np.asarray([[[x, y]] for x, y, _r in detections], dtype=np.float32)
+    warped = cv2.perspectiveTransform(centers, homography).reshape(-1, 2)
+
+    # Estimate radius scale locally by transforming one horizontal and one
+    # vertical radius endpoint, then averaging the distances in target space.
+    endpoints = np.asarray(
+        [[[x + r, y], [x, y + r]] for x, y, r in detections],
+        dtype=np.float32,
+    )
+    warped_endpoints = cv2.perspectiveTransform(endpoints, homography)
+    out: list[tuple[float, float, float]] = []
+    for idx, (x, y) in enumerate(warped):
+        r1 = float(np.linalg.norm(warped_endpoints[idx, 0] - warped[idx]))
+        r2 = float(np.linalg.norm(warped_endpoints[idx, 1] - warped[idx]))
+        out.append((float(x), float(y), (r1 + r2) * 0.5))
+    return out
 
 
 # ── One-Euro filter + ball tracker ───────────────────────────────────────
@@ -514,7 +403,7 @@ class BallDriver(BaseProcessor):
                                      match_radius=140.0)
         self._frame_idx = 0
         self._skip = 0  # 0 = process every frame; raise on slow hardware
-        self._cuda_device_id = _cuda_device_id()
+        self._cuda_device_id = cuda_device_id()
         self._onnx_path: Path | None = None
 
     def pre_run(self) -> None:
@@ -526,23 +415,19 @@ class BallDriver(BaseProcessor):
             self._onnx_path = _ensure_onnx(self.log)
         onnx_path = self._onnx_path
         if onnx_path is None:
-            self.log("error", "ball: ONNX model unavailable, driver inactive")
-            self._session = None
-            return
+            raise RuntimeError("ball: ONNX model unavailable")
 
-        try:
-            self._session, _active = _create_ort_session(
-                onnx_path,
-                cuda_device_id=self._cuda_device_id,
-                log_fn=self.log,
-            )
-            inp = self._session.get_inputs()[0]
-            self._input_name = inp.name
-            self._input_size = inp.shape[2] if isinstance(inp.shape[2], int) else MODEL_INPUT_SIZE
-            self.start_latest_worker()
-        except Exception as exc:
-            self.log("error", f"failed to create ONNX session: {exc!r}")
-            self._session = None
+        self._session, info = create_onnx_session(
+            onnx_path,
+            model_name=onnx_path.name,
+            cuda_id=self._cuda_device_id,
+            log_fn=self.log,
+        )
+        self.set_runtime_info(info)
+        inp = self._session.get_inputs()[0]
+        self._input_name = inp.name
+        self._input_size = inp.shape[2] if isinstance(inp.shape[2], int) else MODEL_INPUT_SIZE
+        self.start_latest_worker()
 
     def cleanup(self) -> None:
         self.stop_latest_worker()
@@ -575,6 +460,7 @@ class BallDriver(BaseProcessor):
             self._cuda_device_id = max(0, int(data))
             self._session = None
             self._load_session()
+            self.publish_state("running")
             return {"cuda_device_id": self._cuda_device_id}
         return super().execute(action, data)
 
@@ -606,18 +492,6 @@ class BallDriver(BaseProcessor):
         if self._skip > 0 and self._frame_idx % (self._skip + 1) != 0:
             return
 
-        try:
-            import cv2  # type: ignore[import-not-found]
-        except ImportError as exc:
-            self.log("error", f"opencv required: {exc}")
-            return
-
-        if self._homography is not None:
-            frame = cv2.warpPerspective(
-                frame, self._homography, self._output_size,
-                flags=cv2.INTER_LINEAR,
-            )
-
         tensor, scale, pad = _preprocess(frame, self._input_size)
         outputs = self._session.run(None, {self._input_name: tensor})
 
@@ -626,6 +500,8 @@ class BallDriver(BaseProcessor):
             self._confidence, self._iou_thresh,
             self._min_ball_px, self._max_ball_px, self._max_aspect,
         )
+        if self._homography is not None:
+            detections = _warp_detections(detections, self._homography)
 
         now = time.perf_counter()
         stable = self._tracker.update(detections, now)

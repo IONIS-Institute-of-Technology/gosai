@@ -1,10 +1,10 @@
 # Interactive Pool
 
 Augmented-reality pool table experience for GOSAI v2. A camera tracks the
-balls, hands, and cue on the table; a projector overlays interactive visuals
+balls and hands on the table; a projector overlays interactive visuals
 in real-time. A single composited experience drives the entire app:
 
-- Always-on overlays: ball circles, cue line, hand skeletons.
+- Always-on overlays: ball circles and hand skeletons.
 - Gesture-driven menu (pinch with two index fingers, spread to open).
 - Five launchable layers: rabbits game, affine function plotter, triangle
   geometry, "univers" (galaxy + per-ball solar systems), and ambient display.
@@ -12,17 +12,13 @@ in real-time. A single composited experience drives the entire app:
 
 ## Drivers used
 
-| Driver          | Why                                     |
-| --------------- | --------------------------------------- |
-| `ball`          | Detected ball positions and FPS         |
-| `cue`           | Cue stick line endpoints                |
-| `hand_pose`     | MediaPipe-style 21-point hand landmarks |
-| `sensor_server` | Optional, only used by ambient display  |
+| Driver      | Why                                     |
+| ----------- | --------------------------------------- |
+| `ball`      | Detected ball positions and FPS         |
+| `hand_pose` | MediaPipe-style 21-point hand landmarks |
 
 Drivers declared in `gosai.app.json` are auto-started by the server when the
-experience starts. `sensor_server` is intentionally not declared so that the
-app runs without it; the ambient layer subscribes lazily and degrades to a
-passive starfield if the driver isn't available.
+experience starts.
 
 ## Build
 

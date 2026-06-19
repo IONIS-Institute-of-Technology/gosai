@@ -40,6 +40,7 @@ from typing import Any, ClassVar
 
 from gosai_py.driver import DriverContext
 from gosai_py.processor import BaseProcessor
+from gosai_py.runtime import mediapipe_base_options
 
 HAND_MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/"
@@ -100,6 +101,7 @@ class HandPoseDriver(BaseProcessor):
         self._detector: Any = None
         self._mp_image_cls: Any = None
         self._mp_image_format: Any = None
+        self._mp_uses_rgba = False
         self._flip = False
         self._window = 1.0
         self._last_inference_ms = 0.0
@@ -122,16 +124,18 @@ class HandPoseDriver(BaseProcessor):
             from mediapipe.tasks import python as mp_python  # type: ignore[import-not-found]
             from mediapipe.tasks.python import vision as mp_vision  # type: ignore[import-not-found]
         except ImportError as exc:
-            self.log("error", f"mediapipe not available: {exc}")
-            return
+            raise RuntimeError(f"mediapipe not available: {exc}") from exc
 
         model_path = _ensure_hand_model(self.log)
         if model_path is None:
-            self.log("error", "hand_pose: model unavailable, driver inactive")
-            return
+            raise RuntimeError("hand_pose: model unavailable")
 
         try:
-            base_options = mp_python.BaseOptions(model_asset_path=str(model_path))
+            base_options, info = mediapipe_base_options(
+                mp_python.BaseOptions,
+                model_path=model_path,
+                model_name=HAND_MODEL_FILENAME,
+            )
             options = mp_vision.HandLandmarkerOptions(
                 base_options=base_options,
                 num_hands=2,
@@ -142,12 +146,15 @@ class HandPoseDriver(BaseProcessor):
             )
             self._detector = mp_vision.HandLandmarker.create_from_options(options)
             self._mp_image_cls = mp.Image
-            self._mp_image_format = mp.ImageFormat.SRGB
+            self._mp_uses_rgba = info.get("provider") == "GPUDelegate"
+            self._mp_image_format = mp.ImageFormat.SRGBA if self._mp_uses_rgba else mp.ImageFormat.SRGB
+            self.set_runtime_info(info)
             self.log("info", "MediaPipe HandLandmarker initialised")
             self.start_latest_worker()
         except Exception as exc:
             self.log("error", f"hand_pose: failed to create detector: {exc!r}")
             self._detector = None
+            raise
 
     def cleanup(self) -> None:
         self.stop_latest_worker()
@@ -244,25 +251,29 @@ class HandPoseDriver(BaseProcessor):
             self._frame_size = (cam_w, cam_h)
 
         start = time.perf_counter()
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = cv2.cvtColor(
+            frame,
+            cv2.COLOR_BGR2RGBA if self._mp_uses_rgba else cv2.COLOR_BGR2RGB,
+        )
         if self._flip:
-            rgb = cv2.flip(rgb, 1)
+            img = cv2.flip(img, 1)
 
         # Window crop centred horizontally (legacy behaviour).
         if self._window < 1.0:
-            w = rgb.shape[1]
+            w = img.shape[1]
             half = self._window / 2.0
             x0 = int((0.5 - half) * w)
             x1 = int((0.5 + half) * w)
-            rgb = rgb[:, x0:x1]
+            img = img[:, x0:x1]
 
-        # MediaPipe Tasks needs a contiguous SRGB-format Image. The Tasks
+        # MediaPipe Tasks needs a contiguous image. The macOS GPU delegate
+        # requires SRGBA; CPU accepts SRGB.
         # `detect_for_video` API expects monotonically increasing timestamps
         # in milliseconds.
-        if not rgb.flags["C_CONTIGUOUS"]:
-            rgb = np.ascontiguousarray(rgb)
+        if not img.flags["C_CONTIGUOUS"]:
+            img = np.ascontiguousarray(img)
 
-        mp_image = self._mp_image_cls(image_format=self._mp_image_format, data=rgb)
+        mp_image = self._mp_image_cls(image_format=self._mp_image_format, data=img)
         capture_ts = data.get("capture_ts")
         capture_ts_f = float(capture_ts) if isinstance(capture_ts, int | float) else time.time()
         frame_age_ms = (time.time() - capture_ts_f) * 1000.0

@@ -12,12 +12,12 @@ export async function applyCameraSettings(
   if (!drivers.isInstanceRunning(binding, 'camera')) return;
 
   try {
-    await drivers.execute(binding, 'camera', 'set_device', settings.device);
-    await drivers.execute(binding, 'camera', 'set_resolution', {
+    await drivers.execute(binding, 'camera', 'set_mode', {
+      device: settings.device,
       width: settings.width,
       height: settings.height,
+      fps: settings.fps,
     });
-    await drivers.execute(binding, 'camera', 'set_fps', settings.fps);
   } catch (err) {
     log.warn('failed to apply camera settings to running driver', {
       binding,

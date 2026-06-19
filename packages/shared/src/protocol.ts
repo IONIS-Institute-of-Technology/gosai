@@ -11,6 +11,7 @@ import type {
   AppDeviceSettingsPatch,
   DeviceCatalog,
   DriverInfo,
+  DriverRuntimeInfo,
   GlobalConfig,
   InstalledApp,
   LogEntry,
@@ -129,7 +130,13 @@ export type BridgeResponse =
   | { type: 'result'; id: string; ok: false; error: string }
   | { type: 'event'; instance: string; driver: string; event: string; data: unknown; ts: number }
   | { type: 'log'; level: string; source: string; message: string; ts: number }
-  | { type: 'driver-state'; instance: string; driver: string; state: string }
+  | {
+      type: 'driver-state';
+      instance: string;
+      driver: string;
+      state: string;
+      runtime?: DriverRuntimeInfo;
+    }
   | { type: 'performance'; source: string; metric: string; value: number; ts: number }
   | { type: 'ready'; version: string };
 

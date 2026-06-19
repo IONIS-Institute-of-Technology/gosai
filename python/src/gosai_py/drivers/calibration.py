@@ -27,7 +27,7 @@ Events:
 Actions:
 - `set_marker_layout`: list of `{ id, x, y, size }` in display pixels.
 - `set_camera_event`: change which `(driver, event)` carries the camera frame
-  (defaults to ("camera", "color")).
+  (defaults to ("camera", "frame")).
 - `compute`: aggregate the most recent detections and compute homography.
   Accepts an optional dict ``{ focus_quad, surface_size, frame_size }`` to
   also compute the camera->surface homography.
@@ -48,6 +48,7 @@ from collections.abc import Callable
 from typing import Any, ClassVar
 
 from gosai_py.driver import BaseDriver, DriverContext
+from gosai_py.serialization import frame_to_jpeg_base64
 
 
 class CalibrationDriver(BaseDriver):
@@ -70,13 +71,14 @@ class CalibrationDriver(BaseDriver):
     def __init__(self, context: DriverContext) -> None:
         super().__init__(context)
         self._camera_driver = "camera"
-        self._camera_event = "color"
+        self._camera_event = "frame"
         self._marker_layout: list[dict[str, float]] = []
         # 4 corners per detected marker, in TL,TR,BR,BL order matching the
         # marker's own coordinate system (same convention as cv2.aruco).
         self._last_detections: dict[int, list[tuple[float, float]]] = {}
         self._sub_callback: Callable[[Any], None] | None = None
         self._latest_frame_b64: str | None = None
+        self._latest_frame: Any = None
         self._latest_frame_meta: dict[str, Any] | None = None
         # Last computed matrices, kept so reproject_point can run without
         # re-deriving them. ``None`` until compute succeeds.
@@ -112,23 +114,29 @@ class CalibrationDriver(BaseDriver):
     def _on_frame(self, data: Any) -> None:
         if not isinstance(data, dict):
             return
+        frame = data.get("_frame")
         encoded = data.get("jpeg_base64")
-        if not isinstance(encoded, str):
+        if frame is None and not isinstance(encoded, str):
             return
-        # Cache the latest frame so `get_latest_frame`
-        # can return it without re-asking the camera driver synchronously.
-        self._latest_frame_b64 = encoded
+        # Cache the latest frame so `get_latest_frame` can return it without
+        # re-asking the camera driver synchronously. Raw frames avoid Python-side
+        # JPEG encode/decode during detection.
+        self._latest_frame = frame.copy() if hasattr(frame, "copy") else frame
+        self._latest_frame_b64 = encoded if isinstance(encoded, str) else None
         self._latest_frame_meta = {
             "width": data.get("width"),
             "height": data.get("height"),
             "ts": data.get("ts"),
         }
         try:
-            self._detect(encoded)
+            if frame is not None:
+                self._detect(frame)
+            else:
+                self._detect_encoded(encoded)
         except Exception as exc:
             self.log("error", f"detection failed: {exc!r}")
 
-    def _detect(self, jpeg_base64: str) -> None:
+    def _detect_encoded(self, jpeg_base64: str) -> None:
         try:
             import cv2  # type: ignore[import-not-found]
             import numpy as np  # type: ignore[import-not-found]
@@ -139,7 +147,14 @@ class CalibrationDriver(BaseDriver):
         img_bytes = base64.b64decode(jpeg_base64)
         arr = np.frombuffer(img_bytes, dtype=np.uint8)
         frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        if frame is None:
+        if frame is not None:
+            self._detect(frame)
+
+    def _detect(self, frame: Any) -> None:
+        try:
+            import cv2  # type: ignore[import-not-found]
+        except ImportError as exc:
+            self.log("error", f"opencv required: {exc}")
             return
 
         if hasattr(cv2.aruco, "DICT_4X4_50"):
@@ -224,8 +239,10 @@ class CalibrationDriver(BaseDriver):
         return super().execute(action, data)
 
     def _get_latest_frame(self) -> dict[str, Any]:
-        if self._latest_frame_b64 is None:
+        if self._latest_frame_b64 is None and self._latest_frame is None:
             return {"ok": False, "error": "no camera frame received yet"}
+        if self._latest_frame_b64 is None:
+            self._latest_frame_b64 = frame_to_jpeg_base64(self._latest_frame, quality=75)
         payload: dict[str, Any] = {
             "ok": True,
             "jpeg_base64": self._latest_frame_b64,

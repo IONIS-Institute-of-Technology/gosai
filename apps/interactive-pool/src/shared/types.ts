@@ -2,10 +2,10 @@
  * Shared types used across all interactive-pool layers.
  *
  * The "reference resolution" for all layer rendering is 1920x1080 (matching the
- * legacy projector setup). The ball driver emits coordinates already warped
- * into that space via the calibration homography, so layers can treat ball
- * coordinates as absolute reference-space pixels. The compositor scales the
- * reference space to the actual canvas size each frame.
+ * legacy projector setup). The ball driver emits coordinates in that space
+ * after applying the calibration homography to detections, so layers can treat
+ * ball coordinates as absolute reference-space pixels. The compositor scales
+ * the reference space to the actual canvas size each frame.
  */
 
 export const REF_WIDTH = 1920;
@@ -19,13 +19,6 @@ export interface Ball {
   /** Smoothed velocity in px/s (reference space). 0 when unknown. */
   vx: number;
   vy: number;
-}
-
-/** Cue stick endpoints when detected. */
-export interface CueData {
-  detected: boolean;
-  a: { x: number; y: number };
-  b: { x: number; y: number };
 }
 
 /**
@@ -90,14 +83,6 @@ export interface BallsSnapshot {
   balls: Ball[];
   /** Ball-driver FPS, if available. */
   fps: number;
-  /** Last update timestamp. */
-  lastUpdate: number;
-}
-
-/** Snapshot of latest cue data shared between layers. */
-export interface CueSnapshot {
-  /** Detection state and endpoints. */
-  cue: CueData;
   /** Last update timestamp. */
   lastUpdate: number;
 }

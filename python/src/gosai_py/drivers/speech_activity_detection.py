@@ -17,6 +17,7 @@ from typing import Any, ClassVar
 
 from gosai_py.driver import DriverContext
 from gosai_py.processor import BaseProcessor
+from gosai_py.runtime import accelerator_mode, runtime_info
 
 
 class SpeechActivityDriver(BaseProcessor):
@@ -33,6 +34,7 @@ class SpeechActivityDriver(BaseProcessor):
     def __init__(self, context: DriverContext) -> None:
         super().__init__(context)
         self._model: Any = None
+        self._device = "cpu"
         self._warned_samplerate = False
 
     def pre_run(self) -> None:
@@ -77,19 +79,49 @@ class SpeechActivityDriver(BaseProcessor):
         try:
             import torch  # type: ignore[import-not-found]
         except ImportError as exc:
-            self.log("error", f"torch required for VAD: {exc}")
-            return
+            raise RuntimeError(f"torch required for VAD: {exc}") from exc
+        self._device, reason = self._select_device(torch)
         try:
             model, _ = torch.hub.load(
                 repo_or_dir="snakers4/silero-vad",
                 model="silero_vad",
                 trust_repo=True,
             )
+            if hasattr(model, "to"):
+                model = model.to(self._device)
         except Exception as exc:
             self.log("error", f"failed to load Silero VAD: {exc!r}")
-            return
+            raise
         self._model = model
-        self.log("info", "Silero VAD loaded")
+        self.set_runtime_info(
+            runtime_info(
+                backend="torch",
+                provider="Silero VAD",
+                device=self._device,
+                model="silero_vad",
+                accelerated=self._device in {"cuda", "mps"},
+                reason=reason,
+            )
+        )
+        self.log("info", f"Silero VAD loaded on {self._device}")
+
+    def _select_device(self, torch: Any) -> tuple[str, str | None]:
+        mode = accelerator_mode()
+        if mode == "cpu":
+            return "cpu", "CPU explicitly requested"
+        if mode == "cuda":
+            if torch.cuda.is_available():
+                return "cuda", None
+            raise RuntimeError("CUDA requested for VAD but torch.cuda is unavailable")
+        if mode in {"auto", "coreml"}:
+            if torch.cuda.is_available():
+                return "cuda", None
+            mps = getattr(getattr(torch, "backends", None), "mps", None)
+            if mps is not None and mps.is_available():
+                return "mps", None
+        if mode == "coreml":
+            return "cpu", "Torch MPS backend unavailable for VAD"
+        return "cpu", "no supported Torch accelerator available"
 
     def _predict(self, audio: Any) -> dict[str, Any]:
         if self._model is None:
@@ -104,7 +136,7 @@ class SpeechActivityDriver(BaseProcessor):
         arr = np.asarray(audio, dtype=np.float32)
         if arr.ndim > 1:
             arr = arr[:, 0]
-        tensor = torch.from_numpy(arr)
+        tensor = torch.from_numpy(arr).to(self._device)
         score = float(self._model(tensor, self.SAMPLE_RATE).item())
         payload = {"confidence": score, "is_speech": score > 0.5, "ts": time.time()}
         self.emit("activity", payload)

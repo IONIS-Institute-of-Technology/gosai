@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { DriverInfo } from '@gosai/shared';
+import type { DriverInfo, DriverRuntimeInfo } from '@gosai/shared';
 import { useServer } from '../../lib/server-context.js';
 import { isNotConnectedError } from '../../lib/server-client.js';
 import { Panel } from '../components/Panel.js';
@@ -45,6 +45,7 @@ export function DriversPanel(): React.ReactElement {
               <tr className="border-b border-neutral-800 text-left font-mono text-[11px] uppercase tracking-wider text-neutral-500">
                 <th className="py-2 pr-4">Name</th>
                 <th className="py-2 pr-4">State</th>
+                <th className="py-2 pr-4">Hardware</th>
                 <th className="py-2 pr-4">Events</th>
                 <th className="py-2 pr-4">Dependencies</th>
                 <th className="py-2">Subscribers</th>
@@ -57,6 +58,9 @@ export function DriversPanel(): React.ReactElement {
                   <td className="py-2 pr-4">
                     <StatePill state={d.state} />
                   </td>
+                  <td className="py-2 pr-4 text-neutral-400">
+                    <HardwareLabel runtime={d.runtime} />
+                  </td>
                   <td className="py-2 pr-4 text-neutral-400">{d.events.join(', ') || '—'}</td>
                   <td className="py-2 pr-4 text-neutral-500">{d.dependencies.join(', ') || '—'}</td>
                   <td className="py-2 text-neutral-500">{d.subscribers.length}</td>
@@ -67,6 +71,22 @@ export function DriversPanel(): React.ReactElement {
         )}
       </Panel>
     </div>
+  );
+}
+
+function HardwareLabel({ runtime }: { runtime?: DriverRuntimeInfo }): React.ReactElement {
+  if (!runtime) return <span className="text-neutral-600">—</span>;
+  const device = runtime.device ?? (runtime.accelerated ? 'accelerated' : 'cpu');
+  const provider = runtime.provider ? ` via ${runtime.provider}` : '';
+  const model = runtime.model ? ` (${runtime.model})` : '';
+  const title = [runtime.backend, runtime.reason].filter(Boolean).join(' · ');
+  const cls = runtime.accelerated ? 'text-green-300' : 'text-yellow-300';
+  return (
+    <span className={cls} title={title || undefined}>
+      {device}
+      {provider}
+      {model}
+    </span>
   );
 }
 

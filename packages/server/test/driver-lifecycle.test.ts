@@ -31,6 +31,7 @@ class StubBridge {
   running = false;
   events: RecordedRequest[] = [];
   manifest: readonly DriverManifestEntry[];
+  onState?: (instance: string, driver: string, state: string) => void;
 
   constructor(manifest: DriverManifestEntry[]) {
     this.manifest = manifest;
@@ -65,6 +66,9 @@ class StubBridge {
     if (req.type === 'list-drivers') {
       return { drivers: this.manifest } as T;
     }
+    if (req.type === 'start-driver' && req.instance && req.driver) {
+      this.onState?.(req.instance, req.driver, 'running');
+    }
     return undefined as T;
   }
 }
@@ -84,6 +88,13 @@ function makeManager(): { manager: DriverManager; bridge: StubBridge; bus: Event
   const manager = new DriverManager({ pythonDir: '/dev/null', logger, bus });
   // Reach in and swap the bridge for the stub.
   (manager as unknown as { bridge: PythonBridge }).bridge = bridge as unknown as PythonBridge;
+  bridge.onState = (instance, driver, state) => {
+    (
+      manager as unknown as {
+        handleDriverState: (instance: string, driver: string, state: string) => void;
+      }
+    ).handleDriverState(instance, driver, state);
+  };
   return { manager, bridge, bus };
 }
 
@@ -245,5 +256,36 @@ describe('driver lifecycle', () => {
 
     expect(a).toHaveLength(1);
     expect(b).toHaveLength(0);
+  });
+
+  test('driver runtime metadata is exposed on driver info', async () => {
+    const { manager } = makeManager();
+    await manager.start();
+
+    (
+      manager as unknown as {
+        handleDriverState: (
+          instance: string,
+          driver: string,
+          state: string,
+          runtime?: {
+            backend: string;
+            provider: string;
+            device: string;
+            accelerated: boolean;
+          },
+        ) => void;
+      }
+    ).handleDriverState('appA', 'camera', 'running', {
+      backend: 'onnxruntime',
+      provider: 'CUDAExecutionProvider',
+      device: 'cuda',
+      accelerated: true,
+    });
+
+    const info = manager.getDriver('camera');
+    expect(info?.runtime?.device).toBe('cuda');
+    expect(info?.runtime?.provider).toBe('CUDAExecutionProvider');
+    expect(info?.instances?.[0]?.runtime?.accelerated).toBe(true);
   });
 });

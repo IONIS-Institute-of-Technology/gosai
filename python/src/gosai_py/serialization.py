@@ -8,7 +8,7 @@ numpy arrays (frames, audio buffers) should be encoded for transport.
 - `to_msgpack(value)`: pack a structure into a MessagePack bytes object.
 - `from_msgpack(bytes_value)`: unpack the inverse.
 
-Frame encoding requires `opencv-python`.
+Frame encoding requires OpenCV.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ def frame_to_jpeg_base64(frame: Any, quality: int = 75) -> str:
     try:
         import cv2  # type: ignore[import-not-found]
     except ImportError as exc:  # pragma: no cover - optional dep
-        raise RuntimeError("opencv-python is required for frame encoding") from exc
+        raise RuntimeError("OpenCV is required for frame encoding") from exc
     ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
     if not ok:
         raise RuntimeError("cv2.imencode failed")
@@ -50,7 +50,7 @@ def frame_to_png_base64(frame: Any) -> str:
     try:
         import cv2  # type: ignore[import-not-found]
     except ImportError as exc:  # pragma: no cover - optional dep
-        raise RuntimeError("opencv-python is required for frame encoding") from exc
+        raise RuntimeError("OpenCV is required for frame encoding") from exc
     ok, buf = cv2.imencode(".png", frame)
     if not ok:
         raise RuntimeError("cv2.imencode failed")
@@ -67,7 +67,7 @@ def jpeg_base64_to_frame(encoded: str) -> Any:
         import cv2  # type: ignore[import-not-found]
         import numpy as np  # type: ignore[import-not-found]
     except ImportError as exc:  # pragma: no cover - optional dep
-        raise RuntimeError("opencv-python is required for frame decoding") from exc
+        raise RuntimeError("OpenCV is required for frame decoding") from exc
     raw = base64.b64decode(encoded)
     arr = np.frombuffer(raw, dtype=np.uint8)
     return cv2.imdecode(arr, cv2.IMREAD_COLOR)

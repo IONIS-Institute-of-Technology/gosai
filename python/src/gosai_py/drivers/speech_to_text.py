@@ -19,6 +19,7 @@ import time
 from typing import Any, ClassVar
 
 from gosai_py.driver import BaseDriver, DriverContext
+from gosai_py.runtime import accelerator_mode, runtime_info
 
 
 class SpeechToTextDriver(BaseDriver):
@@ -36,6 +37,7 @@ class SpeechToTextDriver(BaseDriver):
         self._model: Any = None
         self._model_size = self.DEFAULT_MODEL_SIZE
         self._device = "cpu"
+        self._compute_type = "int8"
 
     def pre_run(self) -> None:
         self._load_model()
@@ -62,23 +64,49 @@ class SpeechToTextDriver(BaseDriver):
         try:
             from faster_whisper import WhisperModel  # type: ignore[import-not-found]
         except ImportError as exc:
-            self.log("error", f"faster-whisper required: {exc}")
-            return
+            raise RuntimeError(f"faster-whisper required: {exc}") from exc
         try:
             import torch  # type: ignore[import-not-found]
-            self._device = "cuda" if torch.cuda.is_available() else "cpu"
-        except ImportError:
-            self._device = "cpu"
+            self._device, reason = self._select_device(torch)
+        except ImportError as exc:
+            if accelerator_mode() == "cuda":
+                raise RuntimeError("torch is required to verify CUDA for faster-whisper") from exc
+            self._device, reason = "cpu", f"torch unavailable for accelerator detection: {exc}"
+        self._compute_type = "float16" if self._device == "cuda" else "int8"
         try:
             self._model = WhisperModel(
                 self._model_size,
                 device=self._device,
-                compute_type="int8",
+                compute_type=self._compute_type,
             )
         except Exception as exc:
             self.log("error", f"failed to load whisper model {self._model_size}: {exc!r}")
-            return
+            raise
+        self.set_runtime_info(
+            runtime_info(
+                backend="faster-whisper",
+                provider="CTranslate2",
+                device=self._device,
+                model=self._model_size,
+                accelerated=self._device == "cuda",
+                reason=reason,
+            )
+        )
         self.log("info", f"whisper model loaded: {self._model_size} on {self._device}")
+
+    def _select_device(self, torch: Any) -> tuple[str, str | None]:
+        mode = accelerator_mode()
+        if mode == "cpu":
+            return "cpu", "CPU explicitly requested"
+        if mode == "cuda":
+            if torch.cuda.is_available():
+                return "cuda", None
+            raise RuntimeError("CUDA requested for faster-whisper but torch.cuda is unavailable")
+        if mode == "auto" and torch.cuda.is_available():
+            return "cuda", None
+        if mode == "coreml":
+            return "cpu", "faster-whisper/CTranslate2 has no CoreML backend in this runtime"
+        return "cpu", "no supported faster-whisper accelerator available"
 
     def _transcribe(self, audio: Any) -> dict[str, Any]:
         if self._model is None:

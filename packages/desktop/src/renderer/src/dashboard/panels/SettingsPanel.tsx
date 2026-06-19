@@ -17,6 +17,18 @@ function formatKey(width: number, height: number): string {
   return `${width}x${height}`;
 }
 
+function formatLabel(format: CameraFormat): string {
+  const codecs = format.codecs?.length ? ` · ${format.codecs.join('/')}` : '';
+  return `${format.width}×${format.height}${codecs}`;
+}
+
+function choosePreferredFps(format: CameraFormat, current?: number): number | undefined {
+  if (current != null && format.fps.includes(current)) return current;
+  if (format.fps.includes(30)) return 30;
+  const atMost30 = [...format.fps].filter((fps) => fps <= 30).sort((a, b) => b - a)[0];
+  return atMost30 ?? [...format.fps].sort((a, b) => b - a)[0];
+}
+
 export function SettingsPanel(): React.ReactElement {
   const { client, status } = useServer();
   const [config, setConfig] = useState<GlobalConfig | null>(null);
@@ -118,20 +130,8 @@ export function SettingsPanel(): React.ReactElement {
   }, [selectedFormat, config]);
 
   const resolutionOptions = useMemo(() => {
-    if (!config) return formats ?? [];
-    const list = formats ? [...formats] : [];
-    const hasCurrent = list.some(
-      (f) => f.width === config.camera.width && f.height === config.camera.height,
-    );
-    if (!hasCurrent) {
-      list.unshift({
-        width: config.camera.width,
-        height: config.camera.height,
-        fps: [config.camera.fps],
-      });
-    }
-    return list;
-  }, [config, formats]);
+    return formats ? [...formats] : [];
+  }, [formats]);
 
   const updateCamera = (patch: Partial<GlobalConfig['camera']>): void => {
     if (!config) return;
@@ -142,10 +142,8 @@ export function SettingsPanel(): React.ReactElement {
     const [w, h] = value.split('x').map((n) => Number.parseInt(n, 10));
     if (!Number.isFinite(w) || !Number.isFinite(h)) return;
     const format = formats?.find((f) => f.width === w && f.height === h);
-    const fps =
-      format && format.fps.includes(config?.camera.fps ?? 0)
-        ? (config?.camera.fps ?? format.fps[0])
-        : format?.fps[0];
+    if (!format) return;
+    const fps = choosePreferredFps(format, config?.camera.fps);
     updateCamera({ width: w, height: h, ...(fps !== undefined ? { fps } : {}) });
   };
 
@@ -208,6 +206,12 @@ export function SettingsPanel(): React.ReactElement {
             {formatsError ? (
               <p className="font-mono text-xs text-amber-400">{formatsError}</p>
             ) : null}
+            {formats && !selectedFormat ? (
+              <p className="font-mono text-xs text-amber-400">
+                Current camera mode is not available on this device. Select one of the verified
+                modes below.
+              </p>
+            ) : null}
             {probingFormats && !formats ? (
               <p className="font-mono text-xs text-neutral-500">Detecting supported modes…</p>
             ) : null}
@@ -217,24 +221,25 @@ export function SettingsPanel(): React.ReactElement {
                   Resolution
                 </span>
                 <select
-                  value={formatKey(config.camera.width, config.camera.height)}
+                  value={selectedFormat ? formatKey(config.camera.width, config.camera.height) : ''}
                   onChange={(e) => onResolutionChange(e.target.value)}
                   disabled={saving || probingFormats || resolutionOptions.length === 0}
                   className="w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-2 font-mono text-xs text-neutral-100 disabled:opacity-50"
                 >
                   {resolutionOptions.length === 0 ? (
-                    <option value={formatKey(config.camera.width, config.camera.height)}>
-                      {config.camera.width}×{config.camera.height}
-                    </option>
+                    <option value="">No verified modes</option>
                   ) : (
-                    resolutionOptions.map((f) => (
-                      <option
-                        key={formatKey(f.width, f.height)}
-                        value={formatKey(f.width, f.height)}
-                      >
-                        {f.width}×{f.height}
-                      </option>
-                    ))
+                    <>
+                      {!selectedFormat ? <option value="">Select verified mode</option> : null}
+                      {resolutionOptions.map((f) => (
+                        <option
+                          key={formatKey(f.width, f.height)}
+                          value={formatKey(f.width, f.height)}
+                        >
+                          {formatLabel(f)}
+                        </option>
+                      ))}
+                    </>
                   )}
                 </select>
               </label>
@@ -243,11 +248,15 @@ export function SettingsPanel(): React.ReactElement {
                   Frame rate
                 </span>
                 <select
-                  value={String(config.camera.fps)}
+                  value={fpsOptions.includes(config.camera.fps) ? String(config.camera.fps) : ''}
                   onChange={(e) => updateCamera({ fps: Number.parseFloat(e.target.value) })}
                   disabled={saving || probingFormats || fpsOptions.length === 0}
                   className="w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-2 font-mono text-xs text-neutral-100 disabled:opacity-50"
                 >
+                  {fpsOptions.length === 0 ? <option value="">No verified FPS</option> : null}
+                  {fpsOptions.length > 0 && !fpsOptions.includes(config.camera.fps) ? (
+                    <option value="">Select verified FPS</option>
+                  ) : null}
                   {fpsOptions.map((fps) => (
                     <option key={fps} value={String(fps)}>
                       {fps} fps

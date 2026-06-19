@@ -23,6 +23,18 @@ export type DriverState =
   | 'errored';
 export type AppState = 'installed' | 'starting' | 'running' | 'stopping' | 'crashed';
 
+export interface DriverRuntimeInfo {
+  readonly backend: string;
+  readonly provider?: string;
+  readonly device?: string;
+  readonly device_id?: number;
+  readonly model?: string;
+  readonly accelerated: boolean;
+  readonly available_providers?: readonly string[];
+  readonly requested_providers?: readonly string[];
+  readonly reason?: string;
+}
+
 export interface DriverInfo {
   readonly name: string;
   readonly description?: string;
@@ -37,6 +49,8 @@ export interface DriverInfo {
    * shared across apps (e.g. speaker output, device-less utilities).
    */
   readonly shared: boolean;
+  /** Runtime/backend information for the primary active instance, when known. */
+  readonly runtime?: DriverRuntimeInfo;
   /** Running instances of this driver, keyed by binding/device. */
   readonly instances?: readonly DriverInstanceInfo[];
 }
@@ -47,6 +61,7 @@ export interface DriverInstanceInfo {
   readonly instance: string;
   readonly state: DriverState;
   readonly subscribers: readonly string[];
+  readonly runtime?: DriverRuntimeInfo;
 }
 
 export interface ExperienceDescriptor {
@@ -202,6 +217,7 @@ export interface CameraFormat {
   readonly width: number;
   readonly height: number;
   readonly fps: readonly number[];
+  readonly codecs?: readonly string[];
 }
 
 export interface CameraFormatsResult {

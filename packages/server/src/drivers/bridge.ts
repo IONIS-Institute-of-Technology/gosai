@@ -11,6 +11,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Subprocess } from 'bun';
+import type { DriverRuntimeInfo } from '@gosai/shared';
 import type { BridgeRequest, BridgeResponse } from '@gosai/shared/protocol';
 
 /** Discriminated-union-friendly Omit<BridgeRequest, 'id'>. */
@@ -34,7 +35,12 @@ export interface BridgeOptions {
     ts: number,
   ) => void;
   readonly onLog: (level: string, source: string, message: string) => void;
-  readonly onDriverState: (instance: string, driver: string, state: string) => void;
+  readonly onDriverState: (
+    instance: string,
+    driver: string,
+    state: string,
+    runtime?: DriverRuntimeInfo,
+  ) => void;
   readonly onPerformance: (source: string, metric: string, value: number, ts: number) => void;
   readonly onExit?: (code: number | null, signal: number | null) => void;
 }
@@ -304,7 +310,7 @@ export class PythonBridge {
         this.options.onLog(msg.level, msg.source, msg.message);
         return;
       case 'driver-state':
-        this.options.onDriverState(msg.instance, msg.driver, msg.state);
+        this.options.onDriverState(msg.instance, msg.driver, msg.state, msg.runtime);
         return;
       case 'performance':
         this.options.onPerformance(msg.source, msg.metric, msg.value, msg.ts);

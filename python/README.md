@@ -9,18 +9,39 @@ Python runtime for GOSAI: the driver bridge process and the Python SDK
 uv sync
 ```
 
-**Ball detection GPU (Linux / Windows):** installs `onnxruntime-gpu` automatically so
-YOLO runs on the NVIDIA GPU via CUDA. On macOS, `onnxruntime` uses CoreML instead.
+Inference drivers are accelerator-first. Linux/Windows ONNX drivers prefer CUDA
+when `onnxruntime-gpu` exposes `CUDAExecutionProvider`; macOS prefers CoreML/Metal
+providers when available. CPU mode is explicit so fallback is visible rather than
+silent.
 
 Optional overrides:
 
-| Variable                 | Effect                                   |
-| ------------------------ | ---------------------------------------- |
-| `GOSAI_ORT_DEVICE=cuda`  | Force NVIDIA CUDA; fail if unavailable   |
-| `GOSAI_ORT_DEVICE=cpu`   | Force CPU only                           |
-| `GOSAI_CUDA_DEVICE_ID=0` | Which NVIDIA GPU (0 = first CUDA device) |
+| Variable                     | Effect                                          |
+| ---------------------------- | ----------------------------------------------- |
+| `GOSAI_ACCELERATOR=auto`     | Prefer CUDA on NVIDIA, CoreML/Metal on macOS    |
+| `GOSAI_ACCELERATOR=cuda`     | Force NVIDIA CUDA; fail if unavailable          |
+| `GOSAI_ACCELERATOR=coreml`   | Force CoreML/Metal-capable providers            |
+| `GOSAI_ACCELERATOR=cpu`      | Force CPU only                                  |
+| `GOSAI_ALLOW_CPU_FALLBACK=1` | Permit CPU when the requested accelerator fails |
+| `GOSAI_CUDA_DEVICE_ID=0`     | Which NVIDIA GPU (0 = first CUDA device)        |
+| `GOSAI_MEDIAPIPE_GPU=0`      | Disable MediaPipe's macOS GPU delegate          |
 
-After start, check logs for `active=CUDAExecutionProvider` (or `CoreMLExecutionProvider` on Mac).
+The dashboard Drivers panel shows the active hardware/provider per running
+driver when the runtime exposes it.
+
+On macOS, MediaPipe hand/pose drivers use the GPU delegate in auto/CoreML mode
+and feed SRGBA frames internally because the Metal delegate does not accept
+3-channel SRGB input.
+
+## Camera Modes
+
+The camera driver probes exact modes by asking OpenCV to open and decode frames
+for each candidate resolution/FPS through native, MJPG, and H264-style capture
+paths where supported. The dashboard only lists modes that pass this check.
+
+When a selected mode is applied, the driver verifies the decoded frame size and
+reported FPS. If the camera falls back to a lower resolution, startup/action
+fails visibly instead of continuing with the wrong stream.
 
 For optional hardware-specific drivers, add extras as needed:
 

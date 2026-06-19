@@ -1,7 +1,7 @@
 """Body-pose driver.
 
 Wraps the MediaPipe **Tasks** ``HolisticLandmarker`` to provide face mesh, body
-pose, hand landmarks, and body world coordinates. Subscribes to `camera.color`
+pose, hand landmarks, and body world coordinates. Subscribes to `camera.frame`
 and emits `raw_data`.
 
 MediaPipe removed the legacy ``mp.solutions`` API in 0.10.31; this driver uses
@@ -20,7 +20,7 @@ from typing import Any, ClassVar
 
 from gosai_py.driver import DriverContext
 from gosai_py.processor import BaseProcessor
-from gosai_py.serialization import jpeg_base64_to_frame
+from gosai_py.runtime import mediapipe_base_options
 
 MODEL_FILENAME = "holistic_landmarker.task"
 MODEL_URL = (
@@ -67,13 +67,15 @@ class PoseDriver(BaseProcessor):
     events: ClassVar[tuple[str, ...]] = ("raw_data",)
     actions: ClassVar[tuple[str, ...]] = ("set_flip", "set_window")
     dependencies: ClassVar[tuple[str, ...]] = ("camera",)
-    subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("camera", "color"),)
+    subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("camera", "frame"),)
     loop_interval_s: ClassVar[float | None] = None
 
     def __init__(self, context: DriverContext) -> None:
         super().__init__(context)
         self._landmarker: Any = None
         self._mp: Any = None
+        self._mp_image_format: Any = None
+        self._mp_uses_rgba = False
         self._flip = False
         self._window = 1.0
         self._last_ts_ms = 0
@@ -84,22 +86,36 @@ class PoseDriver(BaseProcessor):
             import mediapipe as mp  # type: ignore[import-not-found]
             from mediapipe.tasks.python import vision  # type: ignore[import-not-found]
         except ImportError as exc:
-            self.log("error", f"mediapipe not available: {exc}")
-            return
+            raise RuntimeError(f"mediapipe not available: {exc}") from exc
 
         model_path = _ensure_model(self.log)
         if model_path is None:
-            return
+            raise RuntimeError("pose: model unavailable")
 
-        options = vision.HolisticLandmarkerOptions(
-            base_options=mp.tasks.BaseOptions(model_asset_path=str(model_path)),
-            running_mode=vision.RunningMode.VIDEO,
-        )
-        self._landmarker = vision.HolisticLandmarker.create_from_options(options)
-        self._mp = mp
-        self.log("info", "MediaPipe Holistic Landmarker initialized")
+        try:
+            base_options, info = mediapipe_base_options(
+                mp.tasks.BaseOptions,
+                model_path=model_path,
+                model_name=MODEL_FILENAME,
+            )
+            options = vision.HolisticLandmarkerOptions(
+                base_options=base_options,
+                running_mode=vision.RunningMode.VIDEO,
+            )
+            self._landmarker = vision.HolisticLandmarker.create_from_options(options)
+            self._mp = mp
+            self._mp_uses_rgba = info.get("provider") == "GPUDelegate"
+            self._mp_image_format = mp.ImageFormat.SRGBA if self._mp_uses_rgba else mp.ImageFormat.SRGB
+            self.set_runtime_info(info)
+            self.log("info", "MediaPipe Holistic Landmarker initialized")
+            self.start_latest_worker()
+        except Exception as exc:
+            self.log("error", f"pose: failed to create landmarker: {exc!r}")
+            self._landmarker = None
+            raise
 
     def cleanup(self) -> None:
+        self.stop_latest_worker()
         super().cleanup()
         if self._landmarker is not None:
             try:
@@ -118,10 +134,15 @@ class PoseDriver(BaseProcessor):
         return super().execute(action, data)
 
     def on_data(self, driver: str, event: str, data: Any) -> None:
+        self.queue_latest_data(driver, event, data)
+
+    def process_latest_data(self, driver: str, event: str, data: Any) -> None:
         if self._landmarker is None or not isinstance(data, dict):
             return
-        encoded = data.get("jpeg_base64")
-        if not isinstance(encoded, str):
+        frame = data.get("_frame")
+        if frame is None:
+            raise RuntimeError("pose requires camera.frame payload with _frame")
+        if self._mp is None:
             return
         try:
             import cv2  # type: ignore[import-not-found]
@@ -130,9 +151,6 @@ class PoseDriver(BaseProcessor):
             self.log("error", f"opencv/numpy required: {exc}")
             return
 
-        frame = jpeg_base64_to_frame(encoded)
-        if frame is None:
-            return
         if self._flip:
             frame = cv2.flip(frame, 1)
 
@@ -146,8 +164,13 @@ class PoseDriver(BaseProcessor):
             x0 = 0
             cropped = frame
 
-        rgb = np.ascontiguousarray(cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB))
-        mp_image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb)
+        img = np.ascontiguousarray(
+            cv2.cvtColor(
+                cropped,
+                cv2.COLOR_BGR2RGBA if self._mp_uses_rgba else cv2.COLOR_BGR2RGB,
+            )
+        )
+        mp_image = self._mp.Image(image_format=self._mp_image_format, data=img)
 
         # VIDEO mode requires strictly increasing timestamps (ms).
         ts_ms = max(self._last_ts_ms + 1, int(time.perf_counter() * 1000))

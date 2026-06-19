@@ -4,22 +4,19 @@
  * Acts as the orchestrator/compositor for every layer in the app:
  *
  *   - Subscribes once to every driver the layers consume (`ball`,
- *     `hand_pose`, `cue`) and mirrors the latest payloads into a shared
- *     {@link PoolFeed}. The cue driver is optional; failed subscriptions
- *     are silently absorbed by the SDK so missing drivers simply leave the
- *     corresponding feed snapshot inert.
- *   - Maintains the always-on visual layers (balls, cue, hand skeleton,
- *     menu) and at most one menu-launchable layer (rabbits, affine,
+ *     `hand_pose`) and mirrors the latest payloads into a shared
+ *     {@link PoolFeed}.
+ *   - Maintains the always-on visual layers (balls, hand skeleton, menu)
+ *     and at most one menu-launchable layer (rabbits, affine,
  *     triangles, univers, ambient).
  *   - Drives the per-frame render loop in z-order:
  *
  *       1. Solid black background
  *       2. Active menu-launchable layer (if any)
  *       3. Ball circles
- *       4. Cue line
- *       5. Hand skeletons
- *       6. Gesture menu (always last so it sits on top)
- *       7. Title + FPS read-out
+ *       4. Hand skeletons
+ *       5. Gesture menu (always last so it sits on top)
+ *       6. Title + FPS read-out
  *
  *   - Exposes a {@link MenuController} to the menu layer so it can toggle
  *     menu-launchable layers without knowing about their implementations.
@@ -53,7 +50,6 @@ import { createPoolFeed, type PoolFeed } from './shared/feed.js';
 import type { MenuController, MenuItem } from './shared/controller.js';
 
 import { createBallsLayer } from './layers/balls.js';
-import { createCueLayer } from './layers/cue.js';
 import { createShowHandsLayer } from './layers/show-hands.js';
 import { createMenuLayer } from './layers/menu.js';
 import { createRabbitsLayer } from './layers/rabbits-game.js';
@@ -76,7 +72,6 @@ interface State {
 
   /** Always-on layers (drawn in this order on top of the active layer). */
   ballsLayer: Layer;
-  cueLayer: Layer;
   handsLayer: Layer;
   menuLayer: Layer;
   /** Headless: relays ball data to external server when configured. */
@@ -112,7 +107,7 @@ export default defineExperience<State>({
   slug: 'main',
   name: 'Interactive Pool',
   description:
-    'Composited interactive-pool experience (balls + cue + hands + menu + launchable layers + live relay).',
+    'Composited interactive-pool experience (balls + hands + menu + launchable layers + live relay).',
 
   init(): State {
     const { container, canvas, ctx } = createCompositorCanvas();
@@ -126,7 +121,6 @@ export default defineExperience<State>({
       feed,
       subs: [],
       ballsLayer: createBallsLayer(feed),
-      cueLayer: createCueLayer(feed),
       handsLayer: createShowHandsLayer(feed),
       // The menu layer needs a MenuController; we install it after the
       // state object exists so the controller can close over `state`.
@@ -205,14 +199,13 @@ export default defineExperience<State>({
     state.launchable.set('affine', createAffineLayer(state.feed));
     state.launchable.set('triangles', createTrianglesLayer(state.feed));
     state.launchable.set('univers', createUniversLayer(state.feed));
-    state.launchable.set('ambient_display', createAmbientDisplayLayer(state.feed, rt.drivers));
+    state.launchable.set('ambient_display', createAmbientDisplayLayer(state.feed));
 
     // Driver subscriptions feed `state.feed` in place.
     wireDrivers(state, rt);
 
     // Always-on layers: start each.
     state.ballsLayer.start?.();
-    state.cueLayer.start?.();
     state.handsLayer.start?.();
     state.menuLayer.start?.();
     await state.liveLayer.start?.();
@@ -250,7 +243,6 @@ export default defineExperience<State>({
 
     // 3-5. Overlays in order.
     safeRender(state.ballsLayer, frameCtx);
-    safeRender(state.cueLayer, frameCtx);
     safeRender(state.handsLayer, frameCtx);
 
     // 6. Menu (always on top).
@@ -286,7 +278,6 @@ export default defineExperience<State>({
     }
     state.menuLayer.stop?.();
     state.handsLayer.stop?.();
-    state.cueLayer.stop?.();
     state.ballsLayer.stop?.();
     state.liveLayer.stop?.();
     clearKeystoneTransform(state.canvas);
@@ -312,10 +303,8 @@ function applyKeystone(state: State, quad: readonly Point2D[] | null): void {
 // ---------------------------------------------------------------------------
 
 function wireDrivers(state: State, rt: ExperienceRuntimeContext): void {
-  // Balls: the gosai-2 ball driver emits `{ balls: [{x, y}, ...], count, ts }`
-  // and `{ fps: number }`. The legacy driver emitted `[[x, y], ...]` and a
-  // bare number for fps; we tolerate both shapes for forward/backward
-  // compatibility.
+  // Balls: the Python ball driver emits `{ balls: [{x, y, r, vx, vy}, ...], count, ts }`
+  // and `{ fps: number }`.
   state.subs.push(
     rt.drivers.on('ball', 'balls', (data) => {
       const incoming = parseBalls(data);
@@ -344,30 +333,12 @@ function wireDrivers(state: State, rt: ExperienceRuntimeContext): void {
       state.feed.hands.lastUpdate = performance.now();
     }),
   );
-
-  // Cue (optional -- driver may not be installed; the SDK absorbs the
-  // failure and our subscription simply never fires).
-  state.subs.push(
-    rt.drivers.on('cue', 'cue', (data) => {
-      const cue = parseCue(data);
-      if (!cue) return;
-      state.feed.cue.cue = cue;
-      state.feed.cue.lastUpdate = performance.now();
-    }),
-  );
-}
-
-interface CueParsed {
-  detected: boolean;
-  a: { x: number; y: number };
-  b: { x: number; y: number };
 }
 
 type ParsedBall = { x: number; y: number; r: number; vx: number; vy: number };
 
 function parseBalls(data: unknown): ParsedBall[] | null {
   if (data === null || data === undefined) return null;
-  // Modern gosai-2 shape: { balls: [{x, y, r, vx?, vy?}, ...], count, ts }
   if (typeof data === 'object' && !Array.isArray(data)) {
     const wrapped = data as { balls?: unknown };
     if (Array.isArray(wrapped.balls)) {
@@ -376,21 +347,10 @@ function parseBalls(data: unknown): ParsedBall[] | null {
         .filter((b): b is ParsedBall => b !== null);
     }
   }
-  // Legacy shape: [[x, y], [x, y], ...]
-  if (Array.isArray(data)) {
-    return data.map((entry) => coerceBall(entry)).filter((b): b is ParsedBall => b !== null);
-  }
   return null;
 }
 
 function coerceBall(entry: unknown): ParsedBall | null {
-  if (Array.isArray(entry) && entry.length >= 2) {
-    const x = Number(entry[0]);
-    const y = Number(entry[1]);
-    if (Number.isFinite(x) && Number.isFinite(y)) {
-      return { x, y, r: 80, vx: 0, vy: 0 };
-    }
-  }
   if (entry !== null && typeof entry === 'object') {
     const obj = entry as {
       x?: unknown;
@@ -423,44 +383,6 @@ function parseFps(data: unknown): number | null {
     const obj = data as { fps?: unknown };
     const v = Number(obj.fps);
     if (Number.isFinite(v)) return v;
-  }
-  return null;
-}
-
-function parseCue(data: unknown): CueParsed | null {
-  // Legacy: [detected, [x1, y1], [x2, y2]]
-  if (Array.isArray(data) && data.length >= 3) {
-    const detected = Boolean(data[0]);
-    const pa = data[1];
-    const pb = data[2];
-    if (Array.isArray(pa) && Array.isArray(pb) && pa.length >= 2 && pb.length >= 2) {
-      return {
-        detected,
-        a: { x: Number(pa[0]), y: Number(pa[1]) },
-        b: { x: Number(pb[0]), y: Number(pb[1]) },
-      };
-    }
-  }
-  // Object shape (future-proofing): { detected, a:{x,y}, b:{x,y} }
-  if (typeof data === 'object' && data !== null) {
-    const obj = data as {
-      detected?: unknown;
-      a?: { x?: number; y?: number };
-      b?: { x?: number; y?: number };
-    };
-    if (obj.a && obj.b) {
-      const ax = Number(obj.a.x);
-      const ay = Number(obj.a.y);
-      const bx = Number(obj.b.x);
-      const by = Number(obj.b.y);
-      if ([ax, ay, bx, by].every(Number.isFinite)) {
-        return {
-          detected: Boolean(obj.detected ?? true),
-          a: { x: ax, y: ay },
-          b: { x: bx, y: by },
-        };
-      }
-    }
   }
   return null;
 }

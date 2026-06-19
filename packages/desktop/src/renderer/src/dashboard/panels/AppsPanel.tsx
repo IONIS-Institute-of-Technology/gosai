@@ -30,6 +30,18 @@ function formatKey(width: number, height: number): string {
   return `${width}x${height}`;
 }
 
+function formatCameraMode(format: CameraFormat): string {
+  const codecs = format.codecs?.length ? ` · ${format.codecs.join('/')}` : '';
+  return `${format.width}×${format.height}${codecs}`;
+}
+
+function choosePreferredFps(format: CameraFormat, current?: number | null): number | undefined {
+  if (current != null && format.fps.includes(current)) return current;
+  if (format.fps.includes(30)) return 30;
+  const atMost30 = [...format.fps].filter((f) => f <= 30).sort((a, b) => b - a)[0];
+  return atMost30 ?? [...format.fps].sort((a, b) => b - a)[0];
+}
+
 interface DisplayChoice {
   id: number;
   label: string;
@@ -779,16 +791,8 @@ function CameraSettingsControls({
   }, [device, probeFormats]);
 
   const resolutionOptions = useMemo(() => {
-    const list = formats ? [...formats] : [];
-    if (
-      width != null &&
-      height != null &&
-      !list.some((f) => f.width === width && f.height === height)
-    ) {
-      list.unshift({ width, height, fps: fps != null ? [fps] : [] });
-    }
-    return list;
-  }, [formats, width, height, fps]);
+    return formats ? [...formats] : [];
+  }, [formats]);
 
   const fpsOptions = useMemo(() => {
     const match =
@@ -803,12 +807,15 @@ function CameraSettingsControls({
     const [w, h] = value.split('x').map((n) => Number.parseInt(n, 10));
     if (!Number.isFinite(w) || !Number.isFinite(h)) return;
     const format = formats?.find((f) => f.width === w && f.height === h);
-    const nextFps =
-      format && fps != null && format.fps.includes(fps)
-        ? fps
-        : (format?.fps[0] ?? fps ?? undefined);
+    if (!format) return;
+    const nextFps = choosePreferredFps(format, fps);
     onSave({ width: w, height: h, ...(nextFps != null ? { fps: nextFps } : {}) });
   };
+
+  const selectedFormat =
+    width != null && height != null
+      ? formats?.find((f) => f.width === width && f.height === height)
+      : undefined;
 
   return (
     <div className="space-y-2">
@@ -823,23 +830,28 @@ function CameraSettingsControls({
       />
       <CameraModeSelect
         label="Resolution"
-        value={width != null && height != null ? formatKey(width, height) : ''}
+        value={selectedFormat && width != null && height != null ? formatKey(width, height) : ''}
         disabled={saving || probing || resolutionOptions.length === 0}
         placeholder={probing ? 'Detecting…' : '—'}
         options={resolutionOptions.map((f) => ({
           value: formatKey(f.width, f.height),
-          label: `${f.width}×${f.height}`,
+          label: formatCameraMode(f),
         }))}
         onChange={onResolutionChange}
       />
       <CameraModeSelect
         label="Frame rate"
-        value={fps != null ? String(fps) : ''}
+        value={fps != null && fpsOptions.includes(fps) ? String(fps) : ''}
         disabled={saving || probing || fpsOptions.length === 0}
         placeholder={probing ? 'Detecting…' : '—'}
         options={fpsOptions.map((f) => ({ value: String(f), label: `${f} fps` }))}
         onChange={(value) => onSave({ fps: Number.parseFloat(value) })}
       />
+      {formats && width != null && height != null && !selectedFormat ? (
+        <p className="font-mono text-[10px] text-amber-400">
+          Current camera mode is not verified for this device.
+        </p>
+      ) : null}
       {formatsError ? <p className="font-mono text-[10px] text-amber-400">{formatsError}</p> : null}
     </div>
   );
@@ -873,10 +885,7 @@ function CameraModeSelect({
         onChange={(e) => onChange(e.target.value)}
         className="min-w-[180px] flex-1 rounded border border-neutral-700 bg-neutral-900 px-2 py-1 font-mono text-[11px] text-neutral-100 disabled:opacity-50"
       >
-        {options.length === 0 ? <option value="">{placeholder}</option> : null}
-        {value !== '' && !options.some((o) => o.value === value) ? (
-          <option value={value}>{value}</option>
-        ) : null}
+        {options.length === 0 || value === '' ? <option value="">{placeholder}</option> : null}
         {options.map((o) => (
           <option key={o.value} value={o.value}>
             {o.label}

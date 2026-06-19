@@ -32,6 +32,13 @@ class DriverContext:
     def record_performance(self, metric: str, value: float) -> None:  # pragma: no cover
         raise NotImplementedError
 
+    def set_state(
+        self,
+        state: str,
+        runtime_info: dict[str, Any] | None = None,
+    ) -> None:  # pragma: no cover
+        raise NotImplementedError
+
     def subscribe(self, driver: str, event: str, callback: Callable[[Any], None]) -> None:  # pragma: no cover
         raise NotImplementedError
 
@@ -77,6 +84,7 @@ class BaseDriver:
         self._thread: threading.Thread | None = None
         self._last_event_data: dict[str, Any] = {}
         self._event_lock = threading.Lock()
+        self._runtime_info: dict[str, Any] | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle hooks (override in subclasses).
@@ -116,6 +124,15 @@ class BaseDriver:
     def record(self, metric: str, value: float) -> None:
         self._context.record_performance(metric, value)
 
+    def set_runtime_info(self, info: dict[str, Any] | None) -> None:
+        self._runtime_info = dict(info) if info is not None else None
+
+    def runtime_info(self) -> dict[str, Any] | None:
+        return dict(self._runtime_info) if self._runtime_info is not None else None
+
+    def publish_state(self, state: str) -> None:
+        self._context.set_state(state, self.runtime_info())
+
     def get_event_data(self, event: str) -> Any:
         with self._event_lock:
             return self._last_event_data.get(event)
@@ -147,7 +164,10 @@ class BaseDriver:
             self.pre_run()
         except Exception as exc:
             self.log("error", f"pre_run failed: {exc!r}\n{traceback.format_exc()}")
+            self.publish_state("errored")
             return
+
+        self.publish_state("running")
 
         interval = self.loop_interval_s
         if interval is None:

@@ -16,6 +16,7 @@ export type {
   InstalledApp,
   RunningExperience,
   DriverInfo,
+  DriverRuntimeInfo,
   DriverState,
   LogEntry,
   LogLevel,
