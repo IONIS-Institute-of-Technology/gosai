@@ -24,84 +24,24 @@ from typing import Any, ClassVar
 from gosai_py.driver import BaseDriver, DriverContext
 from gosai_py.serialization import frame_to_jpeg_base64
 
-# Common modes to probe; actual hardware may only support a subset.
-_PROBE_RESOLUTIONS: tuple[tuple[int, int], ...] = (
+# Resolutions offered to the UI. The probe keeps only the ones the device
+# actually delivers, so listing extras is harmless.
+_STANDARD_RESOLUTIONS: tuple[tuple[int, int], ...] = (
     (640, 480),
-    (800, 600),
-    (1024, 768),
     (1280, 720),
-    (1280, 960),
     (1920, 1080),
     (2560, 1440),
     (3840, 2160),
 )
-_PROBE_FPS: tuple[int, ...] = (24, 25, 30, 60)
-# When the driver cannot read discrete FPS modes, these targets are still valid
-# because the capture loop software-throttles to `_fps_target`.
-_SOFTWARE_FPS: tuple[int, ...] = (24, 30, 60)
-_FPS_TOLERANCE = 1.5
-_FRAME_READ_ATTEMPTS = 5
+# FPS choices offered per resolution. The capture loop software-throttles to the
+# selected value, so we offer the common targets instead of trusting the
+# camera's frequently-bogus reported FPS.
+_STANDARD_FPS: tuple[int, ...] = (24, 30, 60)
+# Frames to read after a mode change so the stream can settle (the first frames
+# can be stale at the old size, or briefly undecodable mid-renegotiation).
+_READ_SETTLE_ATTEMPTS = 5
 _FORMAT_CACHE_TTL_S = 10.0
 _FORMAT_CACHE: dict[int, tuple[float, dict[str, Any]]] = {}
-
-
-def _codec_candidates() -> tuple[str | None, ...]:
-    system = platform.system()
-    if system == "Linux":
-        return ("MJPG", "H264", "YUYV", None)
-    if system == "Windows":
-        return ("MJPG", "H264", None)
-    return (None,)
-
-
-def _set_codec(cap: Any, cv2: Any, codec: str | None) -> None:
-    """Request a camera pixel format/codec before setting size/FPS."""
-    if codec is None:
-        return
-    with contextlib.suppress(Exception):
-        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*codec))
-
-
-def _codec_label(codec: str | None) -> str:
-    return codec or "native"
-
-
-def _reported_codec(cap: Any, cv2: Any, requested: str | None) -> str:
-    with contextlib.suppress(Exception):
-        raw = int(cap.get(cv2.CAP_PROP_FOURCC))
-        if raw > 0:
-            chars = "".join(chr((raw >> (8 * i)) & 0xFF) for i in range(4))
-            if chars.strip("\x00 "):
-                return chars
-    return _codec_label(requested)
-
-
-def _fps_supported(reported: float, target: float) -> bool:
-    return reported <= 1 or reported + _FPS_TOLERANCE >= target
-
-
-def _fps_options(reported: float) -> list[int]:
-    if reported > 1:
-        return sorted({fps for fps in _SOFTWARE_FPS if fps <= int(reported + _FPS_TOLERANCE)})
-    return list(_SOFTWARE_FPS)
-
-
-def _format_probe_results(formats: dict[tuple[int, int], dict[str, Any]]) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    for entry in formats.values():
-        fps_values = sorted(entry["fps"])
-        if not fps_values:
-            continue
-        result.append(
-            {
-                "width": entry["width"],
-                "height": entry["height"],
-                "fps": fps_values,
-                "codecs": sorted(entry["codecs"]),
-            }
-        )
-    result.sort(key=lambda f: (f["width"] * f["height"], max(f["fps"], default=0)), reverse=True)
-    return result
 
 
 def _require_video_capture(cv2: Any) -> None:
@@ -266,13 +206,13 @@ class CameraDriver(BaseDriver):
 
     @classmethod
     def probe_formats(cls, device: int = 0) -> dict[str, Any]:
-        """Enumerate exact resolution/FPS combinations this runtime can read.
+        """List the resolutions the device can actually deliver.
 
-        The selector should only show modes that OpenCV can actually negotiate
-        and decode. Many UVC cameras expose 720p+ only through MJPG/H264, so the
-        probe tries those codecs explicitly and verifies a decoded frame shape
-        instead of trusting capability lists. Results are cached briefly because
-        the dashboard may ask from both global and per-app selectors.
+        Opens the device once, prefers MJPG (what unlocks 720p+ on UVC webcams),
+        then asks for each standard resolution and records whatever size the
+        camera returns. One capture, one pass -- no per-OS branching and no codec
+        matrix. Results are cached briefly because the dashboard may ask from both
+        the global and per-app selectors.
         """
         now = time.monotonic()
         cached = _FORMAT_CACHE.get(device)
@@ -288,58 +228,33 @@ class CameraDriver(BaseDriver):
         except RuntimeError as exc:
             return {"ok": False, "device": device, "error": str(exc)}
 
-        formats: dict[tuple[int, int], dict[str, Any]] = {}
-        errors: list[str] = []
-        for codec in _codec_candidates():
-            cap = _open_capture(cv2, device)
+        sizes: set[tuple[int, int]] = set()
+        cap = _open_capture(cv2, device)
+        try:
             if not cap.isOpened():
-                errors.append(f"{_codec_label(codec)}: cannot open device")
-                continue
-            try:
-                _request_low_latency(cap, cv2)
-                _set_codec(cap, cv2, codec)
-                for target_w, target_h in _PROBE_RESOLUTIONS:
-                    ok, info = _configure_existing_capture(
-                        cap,
-                        cv2,
-                        width=target_w,
-                        height=target_h,
-                        fps=30.0,
-                        codec=codec,
-                        require_fps=False,
-                    )
-                    if not ok:
-                        continue
-                    key = (info["width"], info["height"])
-                    entry = formats.setdefault(
-                        key,
-                        {"width": info["width"], "height": info["height"], "fps": set(), "codecs": set()},
-                    )
-                    for fps in _fps_options(float(info["fps"])):
-                        entry["fps"].add(fps)
-                    entry["codecs"].add(info["codec"])
-            finally:
-                with contextlib.suppress(Exception):
-                    cap.release()
+                result = {"ok": False, "device": device, "error": "cannot open device"}
+                _FORMAT_CACHE[device] = (now, result)
+                return dict(result)
+            _request_low_latency(cap, cv2)
+            _prefer_mjpg(cap, cv2)
+            for width, height in _STANDARD_RESOLUTIONS:
+                actual = _negotiate_mode(cap, cv2, width, height, max(_STANDARD_FPS))
+                if actual is not None:
+                    sizes.add(actual)
+        finally:
+            with contextlib.suppress(Exception):
+                cap.release()
 
-        if not formats:
-            error = "no exact camera modes detected"
-            if errors:
-                error = f"{error}: {'; '.join(errors)}"
-            result_error = {"ok": False, "device": device, "error": error}
-            _FORMAT_CACHE[device] = (now, result_error)
-            return dict(result_error)
+        if not sizes:
+            result = {"ok": False, "device": device, "error": "no readable camera modes"}
+            _FORMAT_CACHE[device] = (now, result)
+            return dict(result)
 
-        result = _format_probe_results(formats)
-        if not result:
-            result_error = {
-                "ok": False,
-                "device": device,
-                "error": "no camera modes at 24 fps or higher detected",
-            }
-            _FORMAT_CACHE[device] = (now, result_error)
-            return dict(result_error)
-        payload = {"ok": True, "device": device, "formats": result}
+        formats = [
+            {"width": w, "height": h, "fps": list(_STANDARD_FPS)}
+            for w, h in sorted(sizes, key=lambda s: s[0] * s[1], reverse=True)
+        ]
+        payload = {"ok": True, "device": device, "formats": formats}
         _FORMAT_CACHE[device] = (now, payload)
         return dict(payload)
 
@@ -353,44 +268,36 @@ class CameraDriver(BaseDriver):
 
     def _open(self, cv2: Any) -> None:
         _FORMAT_CACHE.pop(self._device, None)
-        errors: list[str] = []
-        selected_cap: Any = None
-        selected_info: dict[str, Any] | None = None
-        for codec in _codec_candidates():
-            cap = _open_capture(cv2, self._device)
-            if not cap.isOpened():
-                errors.append(f"{_codec_label(codec)}: cannot open device")
-                continue
-            _request_low_latency(cap, cv2)
-            ok, info = _configure_existing_capture(
-                cap,
-                cv2,
-                width=self._width,
-                height=self._height,
-                fps=self._fps_target,
-                codec=codec,
-            )
-            if ok:
-                selected_cap = cap
-                selected_info = info
-                break
-            errors.append(f"{_codec_label(codec)}: rejected")
+
+        cap = _open_capture(cv2, self._device)
+        if not cap.isOpened():
+            raise RuntimeError(f"cannot open camera device={self._device}")
+        _request_low_latency(cap, cv2)
+        _prefer_mjpg(cap, cv2)
+        # The camera reports the size it actually delivers; we keep that rather
+        # than rejecting near-misses, so starting a camera never hard-fails on a
+        # resolution the hardware silently rounds.
+        actual = _negotiate_mode(cap, cv2, self._width, self._height, self._fps_target)
+        if actual is None:
             with contextlib.suppress(Exception):
                 cap.release()
-
-        if selected_cap is None or selected_info is None:
-            msg = (
-                f"cannot open exact camera mode device={self._device} "
-                f"{self._width}x{self._height}@{self._fps_target:g}fps"
+            raise RuntimeError(
+                f"camera device={self._device} returned no frames "
+                f"at {self._width}x{self._height}"
             )
-            if errors:
-                msg = f"{msg} ({'; '.join(errors)})"
-            raise RuntimeError(msg)
+        actual_w, actual_h = actual
+        if (actual_w, actual_h) != (self._width, self._height):
+            self.log(
+                "warn",
+                f"camera device={self._device} delivered {actual_w}x{actual_h} "
+                f"(requested {self._width}x{self._height})",
+            )
+        self._width, self._height = actual_w, actual_h
+        self._capture_codec = _current_fourcc(cap, cv2)
 
         self._stop_capture_worker()
         old_cap = self._cap
-        self._cap = selected_cap
-        self._capture_codec = str(selected_info["codec"])
+        self._cap = cap
         with contextlib.suppress(Exception):
             if old_cap is not None:
                 old_cap.release()
@@ -405,7 +312,7 @@ class CameraDriver(BaseDriver):
                 "backend": "opencv",
                 "provider": self._capture_codec,
                 "device": f"camera:{self._device}",
-                "model": f"{self._width}x{self._height}@{self._fps_target:g}",
+                "model": f"{actual_w}x{actual_h}@{self._fps_target:g}",
                 "accelerated": False,
                 "reason": "camera capture codec",
             }
@@ -414,14 +321,14 @@ class CameraDriver(BaseDriver):
         self.log(
             "info",
             "camera open: "
-            f"device={self._device} {selected_info['width']}x{selected_info['height']} "
+            f"device={self._device} {actual_w}x{actual_h} "
             f"target_fps={self._fps_target:g} codec={self._capture_codec}",
         )
         self.emit(
             "frame_size",
             {
-                "width": selected_info["width"],
-                "height": selected_info["height"],
+                "width": actual_w,
+                "height": actual_h,
                 "fps": self._fps_target,
                 "codec": self._capture_codec,
             },
@@ -452,7 +359,7 @@ class CameraDriver(BaseDriver):
             if cap is None:
                 self._capture_stop.wait(0.05)
                 continue
-            ok, frame = cap.read()
+            ok, frame = _safe_read(cap)
             if not ok or frame is None:
                 self._capture_stop.wait(0.005)
                 continue
@@ -640,55 +547,65 @@ def _request_low_latency(cap: Any, cv2: Any) -> None:
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
 
-def _configure_existing_capture(
-    cap: Any,
-    cv2: Any,
-    *,
-    width: int,
-    height: int,
-    fps: float,
-    codec: str | None,
-    require_fps: bool = True,
-) -> tuple[bool, dict[str, Any]]:
-    """Configure and verify an already-open capture object.
+def _safe_read(cap: Any) -> tuple[bool, Any]:
+    """Read one frame, treating OpenCV decode errors as a soft miss.
 
-    A mode is accepted only when a decoded frame comes back at the requested
-    resolution and the camera does not report a lower FPS than requested.
+    While a V4L2 stream renegotiates after a resolution/codec change, OpenCV can
+    raise ``cv2.error`` (e.g. "total number of matrix elements is not divisible
+    ... in function 'reshape'"). That is transient and must never abort probing
+    or opening a camera -- it just means this frame is not decodable yet.
     """
-    _set_codec(cap, cv2, codec)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(width))
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(height))
+    try:
+        ok, frame = cap.read()
+    except Exception:
+        return False, None
+    return bool(ok), frame
+
+
+def _prefer_mjpg(cap: Any, cv2: Any) -> None:
+    """Request MJPG. It's what exposes 720p+ on UVC webcams and is ignored
+    harmlessly where unsupported (e.g. macOS AVFoundation, YUYV-only cameras)."""
+    with contextlib.suppress(Exception):
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+
+
+def _current_fourcc(cap: Any, cv2: Any) -> str:
+    """Best-effort label of the pixel format the capture actually settled on."""
+    with contextlib.suppress(Exception):
+        raw = int(cap.get(cv2.CAP_PROP_FOURCC))
+        if raw > 0:
+            chars = "".join(chr((raw >> (8 * i)) & 0xFF) for i in range(4)).strip("\x00 ")
+            if chars:
+                return chars
+    return "native"
+
+
+def _negotiate_mode(
+    cap: Any, cv2: Any, width: int, height: int, fps: float,
+) -> tuple[int, int] | None:
+    """Request a mode and return the frame size the camera actually delivers.
+
+    Returns ``None`` only when no frame can be decoded at all. The read loop lets
+    the stream settle after a mode change: it stops early once the requested size
+    arrives, otherwise it returns the last decoded size (which may be the camera's
+    nearest supported mode). Decode errors raised mid-renegotiation are treated as
+    a not-yet-ready frame, not a failure.
+    """
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(width))
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(height))
     cap.set(cv2.CAP_PROP_FPS, float(fps))
 
     frame = None
-    for _ in range(_FRAME_READ_ATTEMPTS):
-        ok, candidate = cap.read()
-        if ok and candidate is not None:
-            frame = candidate
-            break
-        time.sleep(0.01)
+    for _ in range(_READ_SETTLE_ATTEMPTS):
+        ok, candidate = _safe_read(cap)
+        if not ok or candidate is None:
+            time.sleep(0.01)
+            continue
+        frame = candidate
+        h, w = frame.shape[:2]
+        if (int(w), int(h)) == (int(width), int(height)):
+            return int(w), int(h)
     if frame is None:
-        return False, {}
-
-    actual_h, actual_w = frame.shape[:2]
-    reported_fps = float(cap.get(cv2.CAP_PROP_FPS))
-    if int(actual_w) != int(width) or int(actual_h) != int(height):
-        return False, {
-            "width": int(actual_w),
-            "height": int(actual_h),
-            "fps": reported_fps,
-            "codec": _reported_codec(cap, cv2, codec),
-        }
-    if require_fps and not _fps_supported(reported_fps, float(fps)):
-        return False, {
-            "width": int(actual_w),
-            "height": int(actual_h),
-            "fps": reported_fps,
-            "codec": _reported_codec(cap, cv2, codec),
-        }
-    return True, {
-        "width": int(actual_w),
-        "height": int(actual_h),
-        "fps": reported_fps if reported_fps > 1 else float(fps),
-        "codec": _reported_codec(cap, cv2, codec),
-    }
+        return None
+    h, w = frame.shape[:2]
+    return int(w), int(h)
