@@ -5,13 +5,14 @@ PyTorch at runtime). Detections run in camera space, then the calibration
 homography is applied to final ball centers/radii so emitted coordinates
 live in the 1920x1080 reference coordinate system.
 
-Detection is class-agnostic: all 80 COCO classes fire with a very low
-confidence floor, and candidates are filtered purely by bounding-box
-geometry (small + roughly square = ball).  Positions are smoothed with
-a One-Euro filter (Casiez et al., CHI 2012) — strong smoothing when a
-ball is stationary (kills jitter), weak smoothing when it moves fast
-(kills lag).  Track association uses velocity prediction so a fast
-ball stays attached to its track instead of spawning a phantom.
+Detection is class-agnostic: all 80 COCO classes can fire, then candidates
+are filtered by confidence, shape, local edge support, and the calibrated
+table bounds.  Positions are smoothed with a One-Euro filter (Casiez et al.,
+CHI 2012) — strong smoothing when a ball is stationary (kills jitter), weak
+smoothing when it moves fast (kills lag).  Track association uses velocity
+prediction so a fast ball stays attached to its track instead of spawning a
+phantom. New tracks require consecutive hits before rendering, while confirmed
+tracks survive short detector misses using predicted positions.
 
 On first launch the driver downloads ``yolov8n.onnx`` (~12 MB) into
 ``~/.gosai/models/``.
@@ -43,7 +44,7 @@ import time
 import urllib.request
 from collections import deque
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, NamedTuple
 
 from gosai_py.driver import DriverContext
 from gosai_py.processor import BaseProcessor
@@ -54,6 +55,13 @@ YOLO_ONNX_URL = (
     "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n.onnx"
 )
 MODEL_INPUT_SIZE = 640
+
+
+class _Detection(NamedTuple):
+    x: float
+    y: float
+    r: float
+    score: float
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -142,7 +150,7 @@ def _postprocess(
     min_px: float,
     max_px: float,
     max_aspect: float,
-) -> list[tuple[float, float, float]]:
+) -> list[_Detection]:
     """Extract ball candidates from raw ONNX output [1, 84, N]."""
     import cv2  # type: ignore[import-not-found]
     import numpy as np  # type: ignore[import-not-found]
@@ -172,7 +180,7 @@ def _postprocess(
         boxes_xywh.tolist(), max_scores.tolist(), conf_thresh, iou_thresh,
     )
 
-    results: list[tuple[float, float, float]] = []
+    results: list[_Detection] = []
     for i in np.array(indices).flatten():
         cx, cy, w, h = boxes_cxcywh[i]
         side = max(w, h)
@@ -182,35 +190,100 @@ def _postprocess(
         if aspect > max_aspect:
             continue
         r = (w + h) / 4.0
-        results.append((float(cx), float(cy), float(r)))
+        results.append(_Detection(float(cx), float(cy), float(r), float(max_scores[i])))
     return results
 
 
+def _edge_support_score(frame: Any, det: _Detection) -> float:
+    """Return how much candidate edge energy sits near the expected ball rim."""
+    import cv2  # type: ignore[import-not-found]
+    import numpy as np  # type: ignore[import-not-found]
+
+    radius = max(2.0, det.r)
+    pad = max(6, round(radius * 1.6))
+    h, w = frame.shape[:2]
+    x1 = max(0, round(det.x - pad))
+    y1 = max(0, round(det.y - pad))
+    x2 = min(w, round(det.x + pad))
+    y2 = min(h, round(det.y + pad))
+    if x2 - x1 < 6 or y2 - y1 < 6:
+        return 1.0
+
+    crop = frame[y1:y2, x1:x2]
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+    med = float(np.median(gray))
+    lower = int(max(0, 0.66 * med))
+    upper = int(min(255, max(lower + 20, 1.33 * med)))
+    edges = cv2.Canny(gray, lower, upper)
+
+    cy = det.y - y1
+    cx = det.x - x1
+    yy, xx = np.ogrid[: edges.shape[0], : edges.shape[1]]
+    dist = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+    ring = np.abs(dist - radius) <= max(2.0, radius * 0.25)
+    if not np.any(ring):
+        return 1.0
+    return float(np.count_nonzero((edges > 0) & ring) / max(1.0, 2.0 * math.pi * radius))
+
+
+def _filter_visual_candidates(frame: Any, detections: list[_Detection]) -> list[_Detection]:
+    """Reject weak, non-circular flashes while keeping confident YOLO candidates."""
+    if not detections:
+        return []
+
+    filtered: list[_Detection] = []
+    for det in detections:
+        if det.score >= 0.16:
+            filtered.append(det)
+            continue
+        if _edge_support_score(frame, det) >= 0.08:
+            filtered.append(det)
+    return filtered
+
+
 def _warp_detections(
-    detections: list[tuple[float, float, float]],
+    detections: list[_Detection],
     homography: Any,
-) -> list[tuple[float, float, float]]:
+) -> list[_Detection]:
     if not detections:
         return []
     import cv2  # type: ignore[import-not-found]
     import numpy as np  # type: ignore[import-not-found]
 
-    centers = np.asarray([[[x, y]] for x, y, _r in detections], dtype=np.float32)
+    centers = np.asarray([[[d.x, d.y]] for d in detections], dtype=np.float32)
     warped = cv2.perspectiveTransform(centers, homography).reshape(-1, 2)
 
     # Estimate radius scale locally by transforming one horizontal and one
     # vertical radius endpoint, then averaging the distances in target space.
     endpoints = np.asarray(
-        [[[x + r, y], [x, y + r]] for x, y, r in detections],
+        [[[d.x + d.r, d.y], [d.x, d.y + d.r]] for d in detections],
         dtype=np.float32,
     )
     warped_endpoints = cv2.perspectiveTransform(endpoints, homography)
-    out: list[tuple[float, float, float]] = []
+    out: list[_Detection] = []
     for idx, (x, y) in enumerate(warped):
         r1 = float(np.linalg.norm(warped_endpoints[idx, 0] - warped[idx]))
         r2 = float(np.linalg.norm(warped_endpoints[idx, 1] - warped[idx]))
-        out.append((float(x), float(y), (r1 + r2) * 0.5))
+        out.append(_Detection(float(x), float(y), (r1 + r2) * 0.5, detections[idx].score))
     return out
+
+
+def _filter_output_bounds(
+    detections: list[_Detection],
+    output_size: tuple[int, int],
+) -> list[_Detection]:
+    """Keep only plausible balls inside the calibrated table/surface plane."""
+    width, height = output_size
+    max_radius = max(16.0, min(width, height) * 0.10)
+    filtered: list[_Detection] = []
+    for det in detections:
+        padding = max(8.0, det.r * 0.5)
+        if det.r <= 0 or det.r > max_radius:
+            continue
+        if -padding <= det.x <= width + padding and -padding <= det.y <= height + padding:
+            filtered.append(det)
+    return filtered
 
 
 # ── One-Euro filter + ball tracker ───────────────────────────────────────
@@ -262,30 +335,52 @@ class _OneEuro:
 
 
 class _TrackedBall:
-    __slots__ = ("age", "fr", "fx", "fy", "missed", "r", "x", "y")
+    __slots__ = ("age", "fr", "fx", "fy", "last_seen_t", "missed", "r", "score", "x", "y")
 
-    def __init__(self, x: float, y: float, r: float, t: float,
+    def __init__(self, det: _Detection, t: float,
                  min_cutoff: float, beta: float) -> None:
         self.fx = _OneEuro(min_cutoff=min_cutoff, beta=beta)
         self.fy = _OneEuro(min_cutoff=min_cutoff, beta=beta)
         # Radius changes slowly -- smooth harder.
         self.fr = _OneEuro(min_cutoff=min_cutoff * 0.5, beta=beta * 0.5)
-        self.x = self.fx(x, t)
-        self.y = self.fy(y, t)
-        self.r = self.fr(r, t)
+        self.x = self.fx(det.x, t)
+        self.y = self.fy(det.y, t)
+        self.r = self.fr(det.r, t)
+        self.score = det.score
+        self.last_seen_t = t
         self.age = 1
         self.missed = 0
 
-    def update(self, x: float, y: float, r: float, t: float) -> None:
-        self.x = self.fx(x, t)
-        self.y = self.fy(y, t)
-        self.r = self.fr(r, t)
+    def update(self, det: _Detection, t: float) -> None:
+        self.x = self.fx(det.x, t)
+        self.y = self.fy(det.y, t)
+        self.r = self.fr(det.r, t)
+        self.score = self.score * 0.7 + det.score * 0.3
+        self.last_seen_t = t
         self.age += 1
         self.missed = 0
 
     def predict(self, dt: float) -> tuple[float, float]:
         """Linear extrapolation using smoothed velocity."""
         return self.x + self.fx.velocity * dt, self.y + self.fy.velocity * dt
+
+    def render_position(self, t: float) -> tuple[float, float]:
+        if self.missed <= 0:
+            return self.x, self.y
+        return self.predict(max(0.0, t - self.last_seen_t))
+
+    def render_velocity(self) -> tuple[float, float]:
+        # Decay extrapolation while YOLO is missing the ball to avoid long overshoots.
+        decay = 0.65 ** max(0, self.missed)
+        return self.fx.velocity * decay, self.fy.velocity * decay
+
+    def set_filter_params(self, min_cutoff: float, beta: float) -> None:
+        self.fx.min_cutoff = min_cutoff
+        self.fx.beta = beta
+        self.fy.min_cutoff = min_cutoff
+        self.fy.beta = beta
+        self.fr.min_cutoff = min_cutoff * 0.5
+        self.fr.beta = beta * 0.5
 
 
 class _BallTracker:
@@ -296,69 +391,90 @@ class _BallTracker:
     fast-moving ball stays attached to its existing track instead of
     spawning a phantom duplicate.
 
-    Stale tracks are kept alive for ``max_miss`` frames so a single
-    YOLO miss doesn't kill the smoothing state, but they are **not
-    rendered** during those frames -- this is what eliminates the
-    visible trail of phantom outlines.
+    New tracks must be confirmed by consecutive detections before they
+    are rendered, which absorbs one-frame glare/sun-ray false positives.
+    Confirmed tracks are rendered through short misses using predicted
+    positions, which keeps real moving balls from visibly flickering when
+    YOLO drops a frame.
     """
 
     def __init__(self, min_cutoff: float = 1.0, beta: float = 0.05,
-                 max_miss: int = 1, match_radius: float = 140.0,
-                 min_age: int = 1) -> None:
+                 max_miss: int = 5, render_miss: int = 3,
+                 match_radius: float = 110.0, min_match_radius: float = 45.0,
+                 min_age: int = 2) -> None:
         self.min_cutoff = min_cutoff
         self.beta = beta
         self.max_miss = max_miss
+        self.render_miss = render_miss
         self.match_radius = match_radius
+        self.min_match_radius = min_match_radius
         self.min_age = min_age
         self.tracks: list[_TrackedBall] = []
         self._t_prev: float | None = None
 
-    def update(self, detections: list[tuple[float, float, float]],
+    def update(self, detections: list[_Detection],
                t: float) -> list[_TrackedBall]:
-        dt = (t - self._t_prev) if self._t_prev is not None else 0.0
         self._t_prev = t
 
         used_det: set[int] = set()
         used_trk: set[int] = set()
 
         # Velocity-aware matching: compare detections to predicted positions.
-        pairs: list[tuple[float, int, int]] = []
+        pairs: list[tuple[float, float, int, int]] = []
         for ti, trk in enumerate(self.tracks):
+            dt = max(0.0, t - trk.last_seen_t)
             px, py = trk.predict(dt) if dt > 0 else (trk.x, trk.y)
-            for di, (dx, dy, _dr) in enumerate(detections):
-                dist = math.hypot(dx - px, dy - py)
-                if dist < self.match_radius:
-                    pairs.append((dist, ti, di))
+            speed = math.hypot(trk.fx.velocity, trk.fy.velocity)
+            radius_gate = trk.r * 2.4 + speed * dt * 1.1
+            gate = min(self.match_radius, max(self.min_match_radius, radius_gate))
+            if trk.age < self.min_age:
+                gate *= 0.75
+            for di, det in enumerate(detections):
+                dist = math.hypot(det.x - px, det.y - py)
+                if dist < gate:
+                    # Prefer close matches, with a tiny confidence tie-breaker.
+                    cost = (dist / gate) - det.score * 0.02
+                    pairs.append((cost, dist, ti, di))
         pairs.sort()
-        for _dist, ti, di in pairs:
+        for _cost, _dist, ti, di in pairs:
             if ti in used_trk or di in used_det:
                 continue
-            dx, dy, dr = detections[di]
-            self.tracks[ti].update(dx, dy, dr, t)
+            self.tracks[ti].update(detections[di], t)
             used_trk.add(ti)
             used_det.add(di)
-
-        for di, (dx, dy, dr) in enumerate(detections):
-            if di not in used_det:
-                self.tracks.append(
-                    _TrackedBall(dx, dy, dr, t, self.min_cutoff, self.beta),
-                )
 
         for ti, trk in enumerate(self.tracks):
             if ti not in used_trk:
                 trk.missed += 1
-        self.tracks = [t for t in self.tracks if t.missed <= self.max_miss]
+
+        for di, det in enumerate(detections):
+            if di not in used_det:
+                self.tracks.append(_TrackedBall(det, t, self.min_cutoff, self.beta))
+
+        self.tracks = [trk for trk in self.tracks if self._keep_track(trk)]
 
         return self._renderable()
 
     def current(self) -> list[_TrackedBall]:
         return self._renderable()
 
+    def set_filter_params(self, min_cutoff: float, beta: float) -> None:
+        self.min_cutoff = min_cutoff
+        self.beta = beta
+        for trk in self.tracks:
+            trk.set_filter_params(min_cutoff, beta)
+
+    def _keep_track(self, trk: _TrackedBall) -> bool:
+        if trk.missed > self.max_miss:
+            return False
+        # Unconfirmed tracks must be consecutive hits; a flickering false
+        # positive never becomes visible by reappearing every few frames.
+        return trk.age >= self.min_age or trk.missed == 0
+
     def _renderable(self) -> list[_TrackedBall]:
-        # Only emit tracks updated this frame: no phantom outlines.
         return [
             t for t in self.tracks
-            if t.age >= self.min_age and t.missed == 0
+            if t.age >= self.min_age and t.missed <= self.render_miss
         ]
 
 
@@ -392,15 +508,15 @@ class BallDriver(BaseProcessor):
         self._input_size: int = MODEL_INPUT_SIZE
         self._homography: Any = None
         self._output_size = self.DEFAULT_OUTPUT_SIZE
-        self._confidence = 0.05
+        self._confidence = 0.10
         self._iou_thresh = 0.5
         self._min_ball_px = 10.0
         self._max_ball_px = 100.0
-        self._max_aspect = 1.8
+        self._max_aspect = 1.6
         self._frame_times: deque[float] = deque(maxlen=50)
         self._tracker = _BallTracker(min_cutoff=1.0, beta=0.05,
-                                     max_miss=1, min_age=1,
-                                     match_radius=140.0)
+                                     max_miss=5, render_miss=3, min_age=2,
+                                     match_radius=110.0, min_match_radius=45.0)
         self._frame_idx = 0
         self._skip = 0  # 0 = process every frame; raise on slow hardware
         self._cuda_device_id = cuda_device_id()
@@ -423,7 +539,7 @@ class BallDriver(BaseProcessor):
             cuda_id=self._cuda_device_id,
             log_fn=self.log,
         )
-        self.set_runtime_info(info)
+        self.set_runtime_info(dict(info))
         inp = self._session.get_inputs()[0]
         self._input_name = inp.name
         self._input_size = inp.shape[2] if isinstance(inp.shape[2], int) else MODEL_INPUT_SIZE
@@ -448,10 +564,10 @@ class BallDriver(BaseProcessor):
             self._min_ball_px = float(data)
             return {"min_ball_px": self._min_ball_px}
         if action == "set_min_cutoff":
-            self._tracker.min_cutoff = max(0.01, float(data))
+            self._tracker.set_filter_params(max(0.01, float(data)), self._tracker.beta)
             return {"min_cutoff": self._tracker.min_cutoff}
         if action == "set_beta":
-            self._tracker.beta = max(0.0, float(data))
+            self._tracker.set_filter_params(self._tracker.min_cutoff, max(0.0, float(data)))
             return {"beta": self._tracker.beta}
         if action == "set_frame_skip":
             self._skip = max(0, int(data))
@@ -500,8 +616,10 @@ class BallDriver(BaseProcessor):
             self._confidence, self._iou_thresh,
             self._min_ball_px, self._max_ball_px, self._max_aspect,
         )
+        detections = _filter_visual_candidates(frame, detections)
         if self._homography is not None:
             detections = _warp_detections(detections, self._homography)
+            detections = _filter_output_bounds(detections, self._output_size)
 
         now = time.perf_counter()
         stable = self._tracker.update(detections, now)
@@ -509,16 +627,19 @@ class BallDriver(BaseProcessor):
         # can extrapolate between detections.  Critical for low-FPS cameras:
         # without it, a 15 Hz camera produces visible stepping on a 60 Hz
         # display because each detection is drawn for ~4 display frames.
-        balls: list[dict[str, Any]] = [
-            {
-                "x": int(t.x),
-                "y": int(t.y),
-                "r": round(t.r * 2, 1),
-                "vx": round(t.fx.velocity, 1),
-                "vy": round(t.fy.velocity, 1),
-            }
-            for t in stable
-        ]
+        balls: list[dict[str, Any]] = []
+        for t in stable:
+            x, y = t.render_position(now)
+            vx, vy = t.render_velocity()
+            balls.append(
+                {
+                    "x": int(x),
+                    "y": int(y),
+                    "r": round(t.r * 2, 1),
+                    "vx": round(vx, 1),
+                    "vy": round(vy, 1),
+                },
+            )
 
         self._frame_times.append(now)
         if len(self._frame_times) >= 2:
