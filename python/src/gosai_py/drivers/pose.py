@@ -92,17 +92,31 @@ class PoseDriver(BaseProcessor):
         if model_path is None:
             raise RuntimeError("pose: model unavailable")
 
-        try:
+        def create(allow_gpu: bool) -> tuple[Any, dict[str, Any]]:
             base_options, info = mediapipe_base_options(
                 mp.tasks.BaseOptions,
                 model_path=model_path,
                 model_name=MODEL_FILENAME,
+                allow_gpu=allow_gpu,
             )
             options = vision.HolisticLandmarkerOptions(
                 base_options=base_options,
                 running_mode=vision.RunningMode.VIDEO,
             )
-            self._landmarker = vision.HolisticLandmarker.create_from_options(options)
+            return vision.HolisticLandmarker.create_from_options(options), info
+
+        try:
+            try:
+                self._landmarker, info = create(allow_gpu=True)
+            except RuntimeError as exc:
+                # The holistic bundle's quantized blendshapes graph cannot bind
+                # Metal buffers, so the macOS GPU delegate fails at graph open.
+                # Retry on the CPU delegate instead of taking the driver down.
+                self.log(
+                    "warn",
+                    f"pose: GPU delegate failed, retrying on CPU delegate: {exc!r}",
+                )
+                self._landmarker, info = create(allow_gpu=False)
             self._mp = mp
             self._mp_uses_rgba = info.get("provider") == "GPUDelegate"
             self._mp_image_format = mp.ImageFormat.SRGBA if self._mp_uses_rgba else mp.ImageFormat.SRGB

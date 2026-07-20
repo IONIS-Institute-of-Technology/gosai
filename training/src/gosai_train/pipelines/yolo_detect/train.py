@@ -1,7 +1,12 @@
-"""Fine-tune a YOLO detector on the merged dataset."""
+"""Fine-tune a YOLO detector on the merged dataset.
+
+Every run gets its own timestamped folder under <model>/runs/ (never
+overwritten), so `export`/`eval` provenance is unambiguous.
+"""
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from ...context import ModelContext
@@ -25,6 +30,7 @@ def run(ctx: ModelContext, args: Any = None) -> None:
     if device in ("cpu", "mps") and (batch is None or int(batch) < 0):
         batch = 4 if imgsz >= 1280 else 6 if imgsz >= 960 else 8
 
+    run_name = f"{ctx.name}-{datetime.now():%Y%m%d-%H%M%S}"
     params: dict[str, Any] = dict(
         data=str(data_yaml),
         epochs=int(cfg.get("epochs", 100)),
@@ -34,19 +40,24 @@ def run(ctx: ModelContext, args: Any = None) -> None:
         device=device,
         patience=int(cfg.get("patience", 30)),
         seed=int(cfg.get("seed", 0)),
+        cache=cfg.get("cache", False),
+        workers=int(cfg.get("workers", 8)),
+        cos_lr=bool(cfg.get("cos_lr", False)),
         project=str(ctx.runs_dir),
-        name=str(cfg.get("name", ctx.name)),
-        exist_ok=True,
+        name=run_name,
     )
     for key in _AUG_KEYS:
         if key in cfg:
             params[key] = cfg[key]
 
-    console.print(f"[cyan]train[/] {cfg.get('model', 'yolo26s.pt')} on {device} (batch={batch})")
+    console.print(
+        f"[cyan]train[/] {cfg.get('model', 'yolo26s.pt')} on {device} "
+        f"(batch={batch}) -> runs/{run_name}"
+    )
 
     from ultralytics import YOLO  # type: ignore[import-not-found]
 
     model = YOLO(str(cfg.get("model", "yolo26s.pt")))
     model.train(**params)
 
-    console.print(f"[green]done[/] weights under {ctx.runs_dir}")
+    console.print(f"[green]done[/] weights under {ctx.runs_dir / run_name}")

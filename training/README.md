@@ -49,34 +49,68 @@ uv run gosai-train --model ball all
 ```bash
 make download     # fetch Roboflow datasets        -> models/<m>/data/raw/
 make negatives    # optional external negatives     -> models/<m>/data/negatives_pool/
-make prepare      # merge into single class         -> models/<m>/data/merged/
-make train        # fine-tune                       -> models/<m>/runs/
+make prepare      # merge/dedup/motion-blur         -> models/<m>/data/merged/
+make train        # fine-tune                       -> models/<m>/runs/<name>-<timestamp>/
+make eval         # metrics: test split, golden set, FP rate on no-ball frames
+make mine         # hard-negative mining: frames where the model fires, for review
 make export       # ONNX (+optional coreml/engine)  -> models/<m>/exports/
 make install      # copy into the driver package    -> (model's install_path)
 ```
 
-## Add your own footage (optional, never required)
+Every `train` creates a fresh timestamped run folder (nothing is overwritten);
+`export` and `eval` pick the newest `best.pt` and print which weights (and
+training date) they used, so a stale model can't be shipped silently.
 
-The pipeline trains fine without any custom data. To add your own (paths shown
-for the `ball` model):
+## Make it work on YOUR table (the highest-impact loop)
+
+Public datasets get the model in the ballpark; footage from your actual rig
+(top-down camera, your lighting, your table) is what makes it reliable. Three
+feedback loops, all optional but strongly recommended:
+
+### 1. Add labelled footage from your rig
 
 ```bash
-# 1. Drop video clips into models/ball/data/custom/videos/
-make frames                # extract frames -> models/ball/data/custom/images/
+# Drop short clips into models/ball/data/custom/videos/ -- vary lighting,
+# crowded racks, fast shots, balls near/in pockets.
+make frames                # extract frames -> data/custom/images/
 
-# 2. Auto-draft labels with your latest model (or a base model)
-make autolabel             # writes YOLO labels -> models/ball/data/custom/labels/
+# Auto-draft labels with your latest model (or a base model). Also writes
+# annotated previews to data/custom/previews/ for a fast visual check.
+make autolabel
 
-# 3. Spot-check / fix the drafted boxes (free tools: Label Studio, labelImg,
-#    or Roboflow), then retrain
+# Fix wrong/missing boxes (Label Studio, labelImg, or Roboflow), then retrain.
 make all
 ```
 
-You can also drop:
+Frames from one video always land on the same side of the train/val split, so
+consecutive near-identical frames can't leak between splits.
 
-- pre-labelled images straight into `data/custom/images/` + `data/custom/labels/`
-  (labels in YOLO format; the class index is forced to `0`).
-- negative/background images (no target objects) into `data/negatives/`.
+You can also drop pre-labelled images straight into `data/custom/images/` +
+`data/custom/labels/` (YOLO format; the class index is forced to `0`), and
+negative/background images (no balls) into `data/negatives/`.
+
+### 2. Mine hard negatives (kills false positives)
+
+When the detector fires on pockets, glare, or a ball sunk in a hole, feed
+those mistakes back as training signal:
+
+```bash
+make mine                                   # scans data/custom/videos
+uv run gosai-train mine --source ~/clips    # or any videos/images folder
+```
+
+Review `data/mining/previews/`; for every frame with a WRONG detection, move
+the same-named file from `data/mining/images/` into `data/negatives/`, then
+`make prepare train`. (Policy: a ball fully inside a pocket counts as "no
+ball" -- mine those frames as negatives.)
+
+### 3. Keep a golden test set
+
+Put labelled frames from your rig into `data/golden/images` + `data/golden/labels`
+(and some no-ball frames with empty label files). They are **never trained on**;
+`make eval` reports mAP/precision/recall on them plus the false-positive rate
+on no-ball images -- the numbers that actually match "does it work on our
+table". Use it to compare runs or base models (`yolo26s` vs `yolo26m`).
 
 ## Repository layout
 
@@ -92,12 +126,15 @@ training/
 │   ├── util.py                  shared IO helpers
 │   └── pipelines/
 │       └── yolo_detect/         download/negatives/prepare/frames/autolabel/
-│                                train/export/install stages
+│                                train/eval/mine/export/install stages
+│                                (sources.py = shared sample collection)
 └── models/
     └── ball/
         ├── model.yaml           manifest (type, class_name, install_path, ...)
         ├── configs/             datasets / classes / negatives / train
-        └── data/                custom/, negatives/ (+ generated raw/merged/...)
+        │                        (+ generated classes.lock.yaml for review)
+        └── data/                custom/, negatives/, golden/
+                                 (+ generated raw/merged/mining/...)
 ```
 
 ## Add a new model
@@ -128,12 +165,13 @@ pipeline package under `src/gosai_train/pipelines/` and register its `type` in
 
 ## Configuration (per model, under `models/<name>/configs/`)
 
-| File             | What                                                              |
-| ---------------- | ----------------------------------------------------------------- |
-| `datasets.yaml`  | Roboflow datasets to download/merge (add more here).              |
-| `classes.yaml`   | Per-class `keep`/`drop` mapping; auto-filled, review `overrides`. |
-| `negatives.yaml` | Negative ratio + optional external negative sources.              |
-| `train.yaml`     | Model size, epochs, image size, device, augmentation.             |
+| File                | What                                                                              |
+| ------------------- | --------------------------------------------------------------------------------- |
+| `datasets.yaml`     | Roboflow datasets to download/merge; per-dataset `cap` / `enabled`.                |
+| `classes.yaml`      | Manual `overrides:` for class `keep`/`drop` decisions.                             |
+| `classes.lock.yaml` | Generated: every discovered class and its decision -- review after adding a dataset. |
+| `negatives.yaml`    | Negative ratio + optional external negative sources.                               |
+| `train.yaml`        | Model size, epochs, image size, device, caching, augmentation, motion blur.        |
 
 Tips:
 
@@ -143,7 +181,13 @@ Tips:
   almost no letterbox padding. Lower `imgsz` to `960` if training is too slow.
 - Crowded scenes / tiny objects benefit from higher `imgsz` (slower).
 - Force a class decision: add it under `overrides` in `classes.yaml`, e.g.
-  `cue: drop`.
+  `cue: drop` (check `classes.lock.yaml` for what was discovered).
+- One dataset dominating the merge? Give it a `cap:` in `datasets.yaml`
+  (the snooker set is capped by default -- broadcast snooker is off-domain for
+  a top-down pool camera).
+- Moving balls: `prepare` synthesizes motion-blurred copies of a fraction of
+  train positives (see `motion_blur:` in `train.yaml`). `prepare` also removes
+  near-duplicate frames and prints a per-source composition table.
 
 ## Runtime backends (inference)
 
@@ -179,9 +223,15 @@ uv run gosai-train --model ball export --formats onnx,engine
 ## How it works (yolo-detect)
 
 ```
-Roboflow datasets ─┐
-custom footage ────┼─> prepare ─> data/merged (nc:1) ─> train (YOLO26s)
-negatives ─────────┘                                       │
+Roboflow datasets ─┐   (dedup, per-dataset caps,
+custom footage ────┼─>  motion-blur synthesis)
+negatives ─────────┘        │
+                            v
+                    prepare ─> data/merged (nc:1) ─> train (YOLO26s) ─> eval
+                        ^                                  │
+                        │                                  v
+        mine (hard negatives from your footage) <── runs/<name>-<ts>/best.pt
+                                                           │
                                                            v
    <driver>_models/<name>.onnx  <── install <── exports/<name>.onnx <── export (ONNX)
 ```

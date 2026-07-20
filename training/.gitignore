@@ -9,6 +9,9 @@ uv.lock
 models/*/data/raw/
 models/*/data/merged/
 models/*/data/negatives_pool/
+models/*/data/mining/
+models/*/data/custom/previews/
+models/*/data/golden/data.yaml
 models/*/runs/
 models/*/exports/
 
@@ -20,6 +23,8 @@ models/*/data/custom/images/*
 models/*/data/custom/labels/*
 models/*/data/custom/videos/*
 models/*/data/negatives/*
+models/*/data/golden/images/*
+models/*/data/golden/labels/*
 !**/.gitkeep
 
 # Python caches

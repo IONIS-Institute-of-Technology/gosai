@@ -329,12 +329,18 @@ def mediapipe_base_options(
     *,
     model_path: Path,
     model_name: str,
+    allow_gpu: bool = True,
 ) -> tuple[Any, RuntimeInfo]:
     """Create MediaPipe BaseOptions and runtime metadata.
 
     MediaPipe Python Tasks do not expose a CUDA provider. On macOS, auto/CoreML
     mode uses the GPU delegate. Callers must feed SRGBA images to that delegate;
     MediaPipe's Metal backend aborts on SRGB input.
+
+    ``allow_gpu=False`` forces the CPU delegate regardless of mode/env. Callers
+    use this to retry after the Metal delegate rejected a model (for example the
+    holistic landmarker bundle, whose quantized blendshapes graph cannot bind
+    Metal buffers).
     """
     mode = accelerator_mode()
     delegate_enum = getattr(base_options_cls, "Delegate", None)
@@ -363,7 +369,8 @@ def mediapipe_base_options(
         )
 
     wants_macos_gpu = (
-        system == "Darwin"
+        allow_gpu
+        and system == "Darwin"
         and gpu_delegate is not None
         and not mediapipe_gpu_disabled
         and (mediapipe_gpu_requested or mode in {"auto", "coreml"})
@@ -378,13 +385,17 @@ def mediapipe_base_options(
             accelerated=True,
         )
 
-    if mode == "coreml":
+    if mode == "coreml" and allow_gpu:
         raise RuntimeError("MediaPipe GPU delegate unavailable for CoreML/Metal acceleration")
+
+    if not allow_gpu:
+        reason = "MediaPipe GPU delegate rejected this model; running on CPU"
+    elif mode == "cpu":
+        reason = "CPU explicitly requested"
     else:
         reason = (
-            "CPU explicitly requested"
-            if mode == "cpu"
-            else "MediaPipe Python Tasks path is running on CPU; ONNX/CoreML remains active for supported models"
+            "MediaPipe Python Tasks path is running on CPU; "
+            "ONNX/CoreML remains active for supported models"
         )
 
     if cpu_delegate is not None:

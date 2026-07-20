@@ -78,6 +78,11 @@ class ModelContext:
     def train_config(self) -> Path:
         return self.configs_dir / "train.yaml"
 
+    @property
+    def classes_lock(self) -> Path:
+        """Generated keep/drop decisions (review file; overrides live in classes.yaml)."""
+        return self.configs_dir / "classes.lock.yaml"
+
     # ── data (inputs) ──
     @property
     def data_dir(self) -> Path:
@@ -99,6 +104,11 @@ class ModelContext:
     def dropin_neg_dir(self) -> Path:
         return self.data_dir / "negatives"
 
+    @property
+    def golden_dir(self) -> Path:
+        """Held-out own-camera eval set (never trained on): images/ + labels/."""
+        return self.data_dir / "golden"
+
     # ── data / artifacts (generated) ──
     @property
     def raw_dir(self) -> Path:
@@ -111,6 +121,11 @@ class ModelContext:
     @property
     def neg_pool_dir(self) -> Path:
         return self.data_dir / "negatives_pool"
+
+    @property
+    def mining_dir(self) -> Path:
+        """Output of `mine`: frames where the model fired, for FP review."""
+        return self.data_dir / "mining"
 
     @property
     def runs_dir(self) -> Path:

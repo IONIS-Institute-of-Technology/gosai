@@ -56,6 +56,9 @@ def run(ctx: ModelContext, args: Any = None) -> None:
 
     for entry in datasets:
         name = entry["name"]
+        if not entry.get("enabled", True):
+            console.print(f"[dim]skip {name}: disabled in datasets.yaml[/]")
+            continue
         workspace = entry["workspace"]
         project_id = entry["project"]
         dest = ctx.raw_dir / name

@@ -9,6 +9,9 @@ authors = [{ name = "GOSAI" }]
 
 dependencies = [
     "ultralytics>=8.4.100",
+    # Ultralytics auto-applies extra photometric augmentations (blur, CLAHE,
+    # grayscale) during training when albumentations is importable.
+    "albumentations>=1.4.0",
     "roboflow>=1.3.0",
     "onnx>=1.22.0",
     "onnxslim>=0.1.90",

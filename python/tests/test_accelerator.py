@@ -104,6 +104,41 @@ def test_mediapipe_auto_uses_macos_gpu_delegate(monkeypatch: pytest.MonkeyPatch)
     assert info["accelerated"] is True
 
 
+def test_mediapipe_allow_gpu_false_forces_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GOSAI_ACCELERATOR", raising=False)
+    monkeypatch.delenv("GOSAI_ORT_DEVICE", raising=False)
+    monkeypatch.delenv("GOSAI_MEDIAPIPE_GPU", raising=False)
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+
+    options, info = mediapipe_base_options(
+        FakeBaseOptions,
+        model_path=Path("holistic_landmarker.task"),
+        model_name="holistic_landmarker.task",
+        allow_gpu=False,
+    )
+
+    assert options.kwargs["delegate"] == FakeBaseOptions.Delegate.CPU
+    assert info["provider"] == "CPUDelegate"
+    assert info["accelerated"] is False
+    assert info["reason"] == "MediaPipe GPU delegate rejected this model; running on CPU"
+
+
+def test_mediapipe_allow_gpu_false_overrides_coreml_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GOSAI_ACCELERATOR", "coreml")
+    monkeypatch.delenv("GOSAI_MEDIAPIPE_GPU", raising=False)
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+
+    options, info = mediapipe_base_options(
+        FakeBaseOptions,
+        model_path=Path("holistic_landmarker.task"),
+        model_name="holistic_landmarker.task",
+        allow_gpu=False,
+    )
+
+    assert options.kwargs["delegate"] == FakeBaseOptions.Delegate.CPU
+    assert info["accelerated"] is False
+
+
 def test_mediapipe_gpu_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GOSAI_MEDIAPIPE_GPU", "0")
     monkeypatch.delenv("GOSAI_ACCELERATOR", raising=False)

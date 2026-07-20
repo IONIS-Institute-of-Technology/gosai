@@ -4,6 +4,14 @@
 #   https://universe.roboflow.com/<workspace>/<project>/
 # Set `version: latest` to always grab the newest generated version, or pin an
 # integer (e.g. 3) for reproducibility.
+#
+# Per-dataset knobs (all optional):
+#   enabled: false          skip the dataset entirely (download and prepare)
+#   cap: N                  keep at most N images (deterministic, positives
+#                           first) so one big dataset cannot dominate the merge
+#   trust_negatives: false  do NOT turn the dataset's no-ball frames into
+#                           negatives (use for sloppily-labelled sets where an
+#                           empty label file may just mean "nobody labelled it")
 
 format: yolov11 # Roboflow export format (YOLO bbox; yolov11 == yolov8 layout)
 version: latest # default version for entries that don't override it
@@ -19,12 +27,18 @@ datasets:
     project: '-wdzpn'
     version: latest
 
+  # Sloppy labelling (junk class names, unlabelled stock photos): its no-ball
+  # frames cannot be trusted as negatives.
   - name: pool-v2
     workspace: pool-table
     project: pool-v2
     version: latest
+    trust_negatives: false
 
+  # Broadcast side-view snooker: useful variety, but a domain mismatch with a
+  # top-down pool camera -- capped so pool footage dominates the merge.
   - name: snooker-vision
     workspace: morganlewis
     project: snooker-vision-tjn0z
     version: latest
+    cap: 800

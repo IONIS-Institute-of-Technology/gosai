@@ -3,6 +3,8 @@
 model: yolo26s.pt # base weights (auto-downloaded by ultralytics on first run)
 epochs: 100
 imgsz: 1280 # training resolution; matches the 720p (1280 long-side) feeds
+# Fast-iteration tip: set imgsz: 960 while experimenting (roughly 2x faster on
+# MPS), then do the final run at 1280.
 # rect: true would train ~16:9 but Ultralytics disables mosaic/mixup with it, so
 # we train square (mosaic on for crowded racks) and infer rectangular instead.
 rect: false
@@ -11,8 +13,13 @@ batch: -1 # -1 = AutoBatch (CUDA only); auto-scaled by imgsz on MPS/CPU
 device: auto # auto | mps | cpu | 0 | 0,1
 patience: 30 # early-stop patience (epochs without improvement)
 seed: 0
-project: runs # outputs under training/models/ball/runs/
-name: ball
+
+# Dataloading. `cache: true` keeps decoded images in RAM (the merged set is a
+# few GB at 1280 -- the main training speedup on Apple Silicon). Use
+# `cache: disk` if RAM is tight, or false to disable.
+cache: true
+workers: 8
+cos_lr: true
 
 # Augmentation tuned for lighting / glare robustness.
 hsv_h: 0.015
@@ -20,3 +27,12 @@ hsv_s: 0.7
 hsv_v: 0.5
 fliplr: 0.5
 mosaic: 1.0
+
+# Offline motion-blur synthesis, applied by `prepare`: a fraction of train
+# positives gets a directionally motion-blurred copy (boxes expanded along the
+# blur axis) so fast-moving balls stay detectable. Deterministic (seeded).
+motion_blur:
+  enabled: true
+  fraction: 0.25
+  kernel: [9, 25] # blur length range in pixels (odd values)
+  seed: 0

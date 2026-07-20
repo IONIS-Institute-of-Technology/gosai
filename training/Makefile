@@ -19,10 +19,10 @@
 MODEL ?= ball
 RUN := uv run gosai-train --model $(MODEL)
 
-.PHONY: setup models download negatives prepare frames autolabel train export install all clean help
+.PHONY: setup models download negatives prepare frames autolabel train eval mine export install all clean help
 
 help:
-	@echo "Targets: setup | models | download | negatives | prepare | frames | autolabel | train | export | install | all | clean"
+	@echo "Targets: setup | models | download | negatives | prepare | frames | autolabel | train | eval | mine | export | install | all | clean"
 	@echo "Select a model with MODEL=<name> (default: ball)."
 
 setup:
@@ -49,6 +49,12 @@ autolabel:
 train:
 	$(RUN) train
 
+eval:
+	$(RUN) eval
+
+mine:
+	$(RUN) mine
+
 export:
 	$(RUN) export
 
@@ -60,4 +66,5 @@ all:
 
 clean:
 	rm -rf models/$(MODEL)/data/raw models/$(MODEL)/data/merged \
-		models/$(MODEL)/data/negatives_pool models/$(MODEL)/runs models/$(MODEL)/exports
+		models/$(MODEL)/data/negatives_pool models/$(MODEL)/data/mining \
+		models/$(MODEL)/runs models/$(MODEL)/exports

@@ -35,8 +35,22 @@ def _build_parser() -> argparse.ArgumentParser:
     p_auto = _add(sub, "autolabel", "Auto-draft labels for data/custom/images.")
     p_auto.add_argument("--weights", default=None, help="Model weights (default: latest best.pt or base).")
     p_auto.add_argument("--conf", type=float, default=0.25, help="Detection confidence threshold.")
+    p_auto.add_argument(
+        "--preview", action=argparse.BooleanOptionalAction, default=True,
+        help="Write annotated preview JPEGs for review (default: on).",
+    )
 
     _add(sub, "train", "Fine-tune the model on the merged dataset.")
+
+    p_eval = _add(sub, "eval", "Evaluate weights on the test split, golden set, and FP rate.")
+    p_eval.add_argument("--weights", default=None, help="Weights to evaluate (default: latest best.pt).")
+    p_eval.add_argument("--conf", type=float, default=0.25, help="Confidence for the false-positive check.")
+
+    p_mine = _add(sub, "mine", "Mine hard negatives: collect frames where the model fires, for review.")
+    p_mine.add_argument("--source", default=None, help="Videos/images to scan (default: data/custom/videos).")
+    p_mine.add_argument("--weights", default=None, help="Model weights (default: latest best.pt).")
+    p_mine.add_argument("--conf", type=float, default=0.3, help="Detection confidence threshold.")
+    p_mine.add_argument("--step", type=int, default=10, help="Scan 1 of every N video frames.")
 
     p_export = _add(sub, "export", "Export the trained model (ONNX by default).")
     p_export.add_argument(

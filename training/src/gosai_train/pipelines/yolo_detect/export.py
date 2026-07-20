@@ -95,7 +95,17 @@ def run(ctx: ModelContext, args: Any = None) -> None:
         if latest is None:
             raise SystemExit("no trained weights found; run `gosai-train train` first")
         weights = str(latest)
-    console.print(f"[cyan]export[/] {weights} -> {', '.join(formats)} (imgsz={export_imgsz})")
+
+    # Provenance: make it obvious WHICH training run is being shipped.
+    weights_path = Path(weights)
+    if weights_path.exists():
+        from datetime import datetime
+
+        trained_at = datetime.fromtimestamp(weights_path.stat().st_mtime)
+        age_days = (datetime.now() - trained_at).days
+        stale = f" [yellow]({age_days} days old)[/]" if age_days > 7 else ""
+        console.print(f"[cyan]weights[/] {weights_path} (trained {trained_at:%Y-%m-%d %H:%M}){stale}")
+    console.print(f"[cyan]export[/] -> {', '.join(formats)} (imgsz={export_imgsz})")
 
     from ultralytics import YOLO  # type: ignore[import-not-found]
 

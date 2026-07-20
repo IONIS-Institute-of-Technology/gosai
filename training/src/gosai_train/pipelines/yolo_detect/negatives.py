@@ -15,7 +15,7 @@ from typing import Any
 
 from ...context import ModelContext
 from ...util import console, iter_images, load_yaml
-from .prepare import _collect_datasets
+from .sources import collect_datasets, load_overrides
 
 
 def _images_dir(ctx: ModelContext) -> Path:
@@ -82,11 +82,8 @@ def _fetch_source(ctx: ModelContext, source: dict[str, Any], tmp: Path) -> int:
 
 def _indomain_negative_bases(ctx: ModelContext) -> list[Path]:
     """No-ball frames mined from the downloaded datasets (real table frames)."""
-    classes_cfg = load_yaml(ctx.classes_config)
-    raw_overrides = classes_cfg.get("overrides") or {}
-    overrides = {str(k).strip().lower(): str(v).strip().lower() for k, v in raw_overrides.items()}
     try:
-        _positives, negatives = _collect_datasets(ctx, overrides, {}, ctx.map_all_classes)
+        _positives, negatives = collect_datasets(ctx, load_overrides(ctx))
     except Exception:
         return []
     return [s.image for s in negatives]

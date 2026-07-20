@@ -8,7 +8,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import autolabel, download, export, frames, install, negatives, prepare, train
+from . import (
+    autolabel,
+    download,
+    evaluate,
+    export,
+    frames,
+    install,
+    mine,
+    negatives,
+    prepare,
+    train,
+)
 
 
 def run_all(ctx: Any, args: Any = None) -> None:
@@ -28,6 +39,8 @@ COMMANDS = {
     "frames": frames.run,
     "autolabel": autolabel.run,
     "train": train.run,
+    "eval": evaluate.run,
+    "mine": mine.run,
     "export": export.run,
     "install": install.run,
     "all": run_all,

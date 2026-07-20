@@ -4,272 +4,242 @@
 - Non-ball boxes are dropped; frames left with no ball become negatives.
 - data/custom (your labelled footage), data/negatives (drop-in) and
   data/negatives_pool (mined/online) are folded in.
-- Negatives are capped to a sane ratio of positives, then split 80/10/10.
+- Near-duplicate frames are removed (perceptual dHash), negatives are capped
+  to a sane ratio of positives, and a fraction of train positives gets a
+  motion-blurred copy so moving balls stay detectable.
+- Images are hardlinked (copy fallback); a per-source stats table is printed.
 """
 
 from __future__ import annotations
 
-import hashlib
-import re
+import math
+import os
+import random
 import shutil
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from ...context import ModelContext
-from ...util import console, iter_images, load_yaml, save_yaml
-
-SPLIT_ALIASES = {
-    "train": "train",
-    "training": "train",
-    "valid": "val",
-    "validation": "val",
-    "val": "val",
-    "test": "test",
-    "testing": "test",
-}
-
-_SNOOKER_COLOURS = {
-    "red", "yellow", "green", "brown", "blue", "pink", "black", "white",
-    "orange", "purple", "maroon",
-}
-_DROP_KEYWORDS = (
-    "table", "pocket", "hole", "rail", "cushion", "stick", "cue", "person",
-    "hand", "glove", "arm", "player", "flag", "bag", "marker", "dot",
-    "triangle", "rack", "net", "frame", "wall", "floor", "light",
+from ...util import console, load_yaml, save_yaml
+from .sources import (
+    Sample,
+    collect_custom,
+    collect_datasets,
+    collect_extra_negatives,
+    load_overrides,
 )
 
-
-def classify_name(name: str) -> str:
-    """Classify a source class name as 'keep' (a ball) or 'drop'."""
-    n = " ".join(name.strip().lower().replace("-", " ").replace("_", " ").split())
-    if not n:
-        return "drop"
-    if "cue ball" in n or "cueball" in n:
-        return "keep"
-    if "ball" in n:
-        if any(k in n for k in ("table", "pocket", "hole", "rack")):
-            return "drop"
-        return "keep"
-    if re.fullmatch(r"\d{1,2}", n):
-        return "keep"
-    if n in _SNOOKER_COLOURS:
-        return "keep"
-    if any(k in n for k in _DROP_KEYWORDS):
-        return "drop"
-    return "drop"
+# Hamming distance (of 256-bit dHashes) at or below which two frames from the
+# SAME source are considered near-duplicates. Video-extracted datasets dedupe
+# heavily (consecutive frames), photo datasets stay intact. Across sources
+# only exact matches (distance 0) are dropped, so legitimately
+# similar-but-distinct images from different datasets survive.
+_DUP_THRESHOLD_SAME_SOURCE = 8
 
 
-@dataclass
-class _Sample:
-    image: Path
-    split: str
-    prefix: str
-    label_lines: list[str] = field(default_factory=list)  # empty == negative
+# ── near-duplicate removal ────────────────────────────────────────────────
 
+def _dhash(image_path: Path):
+    """256-bit difference hash as a 32-byte array; None when unreadable."""
+    import cv2  # type: ignore[import-not-found]
+    import numpy as np  # type: ignore[import-not-found]
 
-def _assign_split(key: str) -> str:
-    """Deterministic 80/10/10 split from a stable hash of the key."""
-    digest = hashlib.md5(key.encode()).hexdigest()
-    bucket = int(digest[:8], 16) % 10
-    if bucket < 8:
-        return "train"
-    if bucket == 8:
-        return "val"
-    return "test"
-
-
-def _dataset_class_names(dataset_dir: Path) -> list[str]:
-    data = load_yaml(dataset_dir / "data.yaml")
-    names = data.get("names")
-    if isinstance(names, dict):
-        return [str(names[k]) for k in sorted(names, key=lambda x: int(x))]
-    if isinstance(names, list):
-        return [str(n) for n in names]
-    return []
-
-
-def _label_for(image: Path) -> Path | None:
-    """Find the YOLO label file for an image in a sibling 'labels' dir."""
-    label = image.parent.parent / "labels" / (image.stem + ".txt")
-    if label.exists():
-        return label
-    sibling = image.with_suffix(".txt")
-    return sibling if sibling.exists() else None
-
-
-def _to_bbox_line(parts: list[str]) -> str | None:
-    """Normalize a YOLO label row to a detection bbox line ``0 cx cy w h``.
-
-    Accepts both bbox rows (4 coords) and segmentation polygons (>=6 coords,
-    an even count): polygons are converted to their enclosing box. This keeps
-    the merged dataset a pure *detect* dataset even when a source was exported
-    as segmentation, avoiding Ultralytics' detect/segment mixed-dataset warning.
-    """
-    coords = parts[1:]
-    try:
-        values = [float(v) for v in coords]
-    except ValueError:
+    img = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+    if img is None:
         return None
-
-    if len(values) == 4:
-        cx, cy, w, h = values
-    elif len(values) >= 6 and len(values) % 2 == 0:
-        xs = values[0::2]
-        ys = values[1::2]
-        x1, x2 = min(xs), max(xs)
-        y1, y2 = min(ys), max(ys)
-        cx, cy, w, h = (x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y2 - y1
-    else:
-        return None
-
-    if w <= 0 or h <= 0:
-        return None
-    return f"0 {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}"
+    small = cv2.resize(img, (17, 16), interpolation=cv2.INTER_AREA)
+    return np.packbits((small[:, 1:] > small[:, :-1]).flatten())
 
 
-def _remap_lines(label: Path | None, decisions: dict[int, str]) -> list[str]:
-    """Keep ball boxes (remapped to class 0); drop the rest. None/empty -> []."""
-    if label is None:
-        return []
+def _dedup(samples: list[Sample]) -> tuple[list[Sample], dict[str, int]]:
+    """Drop near-duplicate images. Deterministic: samples are visited in a
+    stable hash order, the first occurrence wins."""
+    import numpy as np  # type: ignore[import-not-found]
+
+    kept: list[Sample] = []
+    dropped: dict[str, int] = {}
+    exact_seen: set[bytes] = set()
+    per_source: dict[str, list[Any]] = {}
+
+    for sample in sorted(samples, key=lambda s: s.sort_key):
+        h = _dhash(sample.image)
+        if h is None or h.tobytes() in exact_seen:
+            dropped[sample.prefix] = dropped.get(sample.prefix, 0) + 1
+            continue
+        source_hashes = per_source.setdefault(sample.prefix, [])
+        if source_hashes:
+            distances = np.unpackbits(
+                np.bitwise_xor(np.asarray(source_hashes), h), axis=1
+            ).sum(axis=1)
+            if int(distances.min()) <= _DUP_THRESHOLD_SAME_SOURCE:
+                dropped[sample.prefix] = dropped.get(sample.prefix, 0) + 1
+                continue
+        exact_seen.add(h.tobytes())
+        source_hashes.append(h)
+        kept.append(sample)
+
+    return kept, dropped
+
+
+# ── motion-blur synthesis ─────────────────────────────────────────────────
+
+def _motion_blur_kernel(length: int, angle_deg: float):
+    import cv2  # type: ignore[import-not-found]
+    import numpy as np  # type: ignore[import-not-found]
+
+    kernel = np.zeros((length, length), dtype=np.float32)
+    c = (length - 1) / 2
+    dx = math.cos(math.radians(angle_deg))
+    dy = math.sin(math.radians(angle_deg))
+    p1 = (round(c - dx * c), round(c - dy * c))
+    p2 = (round(c + dx * c), round(c + dy * c))
+    cv2.line(kernel, p1, p2, 1.0, 1)
+    total = kernel.sum()
+    return kernel / total if total > 0 else None
+
+
+def _expand_boxes(lines: list[str], length: int, angle_deg: float,
+                  img_w: int, img_h: int) -> list[str]:
+    """Grow boxes along the blur axis (the smear spreads the ball that far)."""
+    grow_x = length * abs(math.cos(math.radians(angle_deg))) / max(img_w, 1)
+    grow_y = length * abs(math.sin(math.radians(angle_deg))) / max(img_h, 1)
     out: list[str] = []
-    for raw in label.read_text().splitlines():
-        parts = raw.split()
-        if len(parts) < 5:
-            continue
-        try:
-            cls = int(float(parts[0]))
-        except ValueError:
-            continue
-        if decisions.get(cls, "drop") != "keep":
-            continue
-        line = _to_bbox_line(parts)
-        if line is not None:
-            out.append(line)
+    for line in lines:
+        parts = line.split()
+        cx, cy, w, h = (float(v) for v in parts[1:5])
+        x1 = max(0.0, cx - w / 2 - grow_x / 2)
+        x2 = min(1.0, cx + w / 2 + grow_x / 2)
+        y1 = max(0.0, cy - h / 2 - grow_y / 2)
+        y2 = min(1.0, cy + h / 2 + grow_y / 2)
+        out.append(f"0 {(x1 + x2) / 2:.6f} {(y1 + y2) / 2:.6f} {x2 - x1:.6f} {y2 - y1:.6f}")
     return out
 
 
-def _collect_datasets(
-    ctx: ModelContext,
-    overrides: dict[str, str],
-    discovered: dict[str, str],
-    map_all: bool,
-):
-    positives: list[_Sample] = []
-    negatives: list[_Sample] = []
-    if not ctx.raw_dir.exists():
-        return positives, negatives
+def _synthesize_motion_blur(ctx: ModelContext, positives: list[Sample], cfg: dict) -> int:
+    """Write motion-blurred copies of a fraction of train positives into merged."""
+    import cv2  # type: ignore[import-not-found]
 
-    for dataset_dir in sorted(p for p in ctx.raw_dir.iterdir() if p.is_dir()):
-        names = _dataset_class_names(dataset_dir)
-        decisions: dict[int, str] = {}
-        for idx, name in enumerate(names):
-            if map_all:
-                decision = "keep"
-            else:
-                decision = overrides.get(name.strip().lower()) or classify_name(name)
-            decisions[idx] = decision
-            discovered[name] = decision
+    fraction = float(cfg.get("fraction", 0.25))
+    kernel_range = cfg.get("kernel", [9, 25])
+    k_min, k_max = int(kernel_range[0]), int(kernel_range[1])
 
-        kept = sum(1 for d in decisions.values() if d == "keep")
-        console.print(
-            f"[cyan]{dataset_dir.name}[/]: {len(names)} classes, {kept} mapped to {ctx.class_name}"
-        )
+    train_pos = sorted(
+        (s for s in positives if s.split == "train"), key=lambda s: s.sort_key
+    )
+    chosen = train_pos[: int(len(train_pos) * fraction)]
+    rng = random.Random(int(cfg.get("seed", 0)))
 
-        for split_dir in sorted(p for p in dataset_dir.iterdir() if p.is_dir()):
-            split = SPLIT_ALIASES.get(split_dir.name.lower())
-            if split is None:
-                continue
-            images_dir = split_dir / "images"
-            search = images_dir if images_dir.exists() else split_dir
-            for image in iter_images(search):
-                lines = _remap_lines(_label_for(image), decisions)
-                sample = _Sample(
-                    image=image,
-                    split=split,
-                    prefix=dataset_dir.name,
-                    label_lines=lines,
-                )
-                (positives if lines else negatives).append(sample)
-
-    return positives, negatives
-
-
-def _collect_custom(ctx: ModelContext) -> list[_Sample]:
-    """Custom labelled footage: images in data/custom/images with a label file."""
-    samples: list[_Sample] = []
-    for image in iter_images(ctx.custom_images):
-        label = ctx.custom_labels / (image.stem + ".txt")
-        if not label.exists():
-            console.print(f"[yellow]skip[/] custom/{image.name}: no label (run autolabel?)")
+    made = 0
+    for sample in chosen:
+        img = cv2.imread(str(sample.image))
+        if img is None:
             continue
-        lines: list[str] = []
-        for raw in label.read_text().splitlines():
-            parts = raw.split()
-            if len(parts) < 5:
-                continue
-            line = _to_bbox_line(parts)
-            if line is not None:
-                lines.append(line)
-        samples.append(
-            _Sample(image=image, split=_assign_split("custom/" + image.name),
-                    prefix="custom", label_lines=lines)
-        )
-    return samples
+        length = rng.randrange(k_min | 1, (k_max | 1) + 1, 2)  # odd lengths
+        angle = rng.uniform(0.0, 180.0)
+        kernel = _motion_blur_kernel(length, angle)
+        if kernel is None:
+            continue
+        blurred = cv2.filter2D(img, -1, kernel)
+
+        h, w = img.shape[:2]
+        stem = f"{sample.prefix}__{sample.image.stem}__mblur"
+        img_dst = ctx.merged_dir / "train" / "images" / f"{stem}.jpg"
+        lbl_dst = ctx.merged_dir / "train" / "labels" / f"{stem}.txt"
+        cv2.imwrite(str(img_dst), blurred)
+        lbl_dst.write_text("\n".join(_expand_boxes(sample.label_lines, length, angle, w, h)))
+        made += 1
+    return made
 
 
-def _collect_extra_negatives(ctx: ModelContext) -> list[_Sample]:
-    """Drop-in + mined/online negatives (images, no labels)."""
-    samples: list[_Sample] = []
-    for source_dir, prefix in ((ctx.dropin_neg_dir, "neg"), (ctx.neg_pool_dir, "negpool")):
-        for image in iter_images(source_dir):
-            samples.append(
-                _Sample(image=image, split=_assign_split(prefix + "/" + image.name),
-                        prefix=prefix, label_lines=[])
-            )
-    return samples
+# ── output writing / stats ────────────────────────────────────────────────
+
+def _place_image(src: Path, dst: Path) -> None:
+    """Hardlink when possible (fast, no extra disk); fall back to a copy."""
+    if dst.exists():
+        dst.unlink()
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
 
 
-def _write_sample(ctx: ModelContext, sample: _Sample) -> None:
+def _write_sample(ctx: ModelContext, sample: Sample) -> None:
     stem = f"{sample.prefix}__{sample.image.stem}"
     img_dst = ctx.merged_dir / sample.split / "images" / f"{stem}{sample.image.suffix.lower()}"
     lbl_dst = ctx.merged_dir / sample.split / "labels" / f"{stem}.txt"
     img_dst.parent.mkdir(parents=True, exist_ok=True)
     lbl_dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(sample.image, img_dst)
+    _place_image(sample.image, img_dst)
     lbl_dst.write_text("\n".join(sample.label_lines))
 
+
+def _print_stats(samples: list[Sample], dup_dropped: dict[str, int]) -> None:
+    from rich.table import Table
+
+    per_source: dict[str, dict[str, Any]] = {}
+    for s in samples:
+        row = per_source.setdefault(
+            s.prefix, {"pos": 0, "neg": 0, "boxes": 0, "sides": []}
+        )
+        if s.is_positive:
+            row["pos"] += 1
+            row["boxes"] += len(s.label_lines)
+            for line in s.label_lines:
+                parts = line.split()
+                row["sides"].append(max(float(parts[3]), float(parts[4])))
+        else:
+            row["neg"] += 1
+
+    table = Table(title="merged dataset composition", show_edge=False)
+    for col in ("source", "positives", "negatives", "boxes", "median box", "dups dropped"):
+        table.add_column(col, justify="right" if col != "source" else "left")
+    for prefix in sorted(per_source):
+        row = per_source[prefix]
+        sides = sorted(row["sides"])
+        median = f"{sides[len(sides) // 2] * 100:.1f}%" if sides else "-"
+        table.add_row(
+            prefix, str(row["pos"]), str(row["neg"]), str(row["boxes"]),
+            median, str(dup_dropped.get(prefix, 0)),
+        )
+    console.print(table)
+
+
+# ── entry point ───────────────────────────────────────────────────────────
 
 def run(ctx: ModelContext, args: Any = None) -> None:
     if not ctx.raw_dir.exists() or not any(ctx.raw_dir.iterdir()):
         raise SystemExit(f"no datasets in {ctx.raw_dir}; run `gosai-train download` first")
 
-    classes_cfg = load_yaml(ctx.classes_config)
-    raw_overrides = classes_cfg.get("overrides") or {}
-    overrides = {str(k).strip().lower(): str(v).strip().lower() for k, v in raw_overrides.items()}
+    overrides = load_overrides(ctx)
     discovered: dict[str, str] = {}
 
     neg_cfg = load_yaml(ctx.negatives_config)
     max_ratio = float(neg_cfg.get("max_negative_ratio", 0.5))
+    train_cfg = load_yaml(ctx.train_config)
+    blur_cfg = train_cfg.get("motion_blur") or {}
 
-    positives, ds_negatives = _collect_datasets(ctx, overrides, discovered, ctx.map_all_classes)
-    positives += _collect_custom(ctx)
-    negatives = ds_negatives + _collect_extra_negatives(ctx)
+    positives, ds_negatives = collect_datasets(ctx, overrides, discovered)
+    positives += collect_custom(ctx)
+    negatives = ds_negatives + collect_extra_negatives(ctx)
 
-    # Persist discovered decisions for review (keep overrides untouched).
-    classes_cfg["overrides"] = raw_overrides
-    classes_cfg["discovered"] = dict(sorted(discovered.items()))
-    save_yaml(ctx.classes_config, classes_cfg)
+    # Persist discovered keep/drop decisions for review (generated file;
+    # promote entries into classes.yaml `overrides:` to force a decision).
+    save_yaml(ctx.classes_lock, {"discovered": dict(sorted(discovered.items()))})
 
     if not positives:
         raise SystemExit(
             "no ball (positive) images found. Check classes.yaml mappings / dataset contents."
         )
 
+    console.print("[cyan]dedup[/] hashing images...")
+    all_samples, dup_dropped = _dedup(positives + negatives)
+    positives = [s for s in all_samples if s.is_positive]
+    negatives = [s for s in all_samples if not s.is_positive]
+
     # Cap negatives deterministically.
     cap = int(len(positives) * max_ratio)
-    negatives.sort(key=lambda s: hashlib.md5((s.prefix + s.image.name).encode()).hexdigest())
-    dropped = max(0, len(negatives) - cap)
+    negatives.sort(key=lambda s: s.sort_key)
+    neg_over_cap = max(0, len(negatives) - cap)
     negatives = negatives[:cap]
 
     # Fresh output.
@@ -277,6 +247,10 @@ def run(ctx: ModelContext, args: Any = None) -> None:
         shutil.rmtree(ctx.merged_dir)
     for sample in positives + negatives:
         _write_sample(ctx, sample)
+
+    blurred = 0
+    if blur_cfg.get("enabled", False):
+        blurred = _synthesize_motion_blur(ctx, positives, blur_cfg)
 
     save_yaml(
         ctx.merged_dir / "data.yaml",
@@ -293,10 +267,15 @@ def run(ctx: ModelContext, args: Any = None) -> None:
     counts: dict[str, dict[str, int]] = {}
     for sample in positives + negatives:
         bucket = counts.setdefault(sample.split, {"pos": 0, "neg": 0})
-        bucket["pos" if sample.label_lines else "neg"] += 1
+        bucket["pos" if sample.is_positive else "neg"] += 1
 
+    _print_stats(positives + negatives, dup_dropped)
     console.print("[green]done[/] merged dataset at " + str(ctx.merged_dir))
-    console.print(f"  positives: {len(positives)}  negatives: {len(negatives)} (capped, dropped {dropped})")
+    console.print(
+        f"  positives: {len(positives)}  negatives: {len(negatives)} "
+        f"(capped, dropped {neg_over_cap})  motion-blur copies: {blurred}"
+    )
     for split in ("train", "val", "test"):
         b = counts.get(split, {"pos": 0, "neg": 0})
-        console.print(f"  {split:<5} pos={b['pos']:<6} neg={b['neg']}")
+        extra = f" (+{blurred} blurred)" if split == "train" and blurred else ""
+        console.print(f"  {split:<5} pos={b['pos']:<6} neg={b['neg']}{extra}")
