@@ -8,3 +8,5 @@ __pycache__/
 *.tsbuildinfo
 bun.lock
 **/assets/**
+training/models/*/data/
+training/models/*/runs/

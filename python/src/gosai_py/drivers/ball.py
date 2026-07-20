@@ -1,21 +1,29 @@
-"""Ball detector using YOLOv8n via ONNX Runtime.
+"""Ball detector using a fine-tuned single-class YOLO model via ONNX Runtime.
 
-Runs a YOLOv8n model exported to ONNX for low-latency inference (no
-PyTorch at runtime). Detections run in camera space, then the calibration
-homography is applied to final ball centers/radii so emitted coordinates
-live in the 1920x1080 reference coordinate system.
+Runs a purpose-trained "ball" detector (YOLO26, single class) exported to ONNX
+for low-latency inference (no PyTorch at runtime). The single ONNX model is run
+under the fastest available ONNX Runtime execution provider — TensorRT or CUDA
+on NVIDIA, CoreML (Apple Neural Engine/GPU) on macOS, CPU otherwise — so the
+pre/post-processing here is shared across every backend. Detections run in
+camera space, then the calibration homography is applied to final ball
+centers/radii so emitted coordinates live in the 1920x1080 reference system.
 
-Detection is class-agnostic: all 80 COCO classes can fire, then candidates
-are filtered by confidence, shape, local edge support, and the calibrated
-table bounds.  Positions are smoothed with a One-Euro filter (Casiez et al.,
-CHI 2012) — strong smoothing when a ball is stationary (kills jitter), weak
-smoothing when it moves fast (kills lag).  Track association uses velocity
-prediction so a fast ball stays attached to its track instead of spawning a
-phantom. New tracks require consecutive hits before rendering, while confirmed
-tracks survive short detector misses using predicted positions.
+The model has a single class, so detections are ball candidates by definition —
+they are only filtered by confidence, size, and the calibrated table bounds.
+The model is trained with negatives (empty tables, pockets, hands, cues, glare)
+so pockets and sun rays do not fire. Positions are smoothed with a One-Euro
+filter (Casiez et al., CHI 2012) — strong smoothing when a ball is stationary
+(kills jitter), weak smoothing when it moves fast (kills lag). Track association
+uses velocity prediction so a fast ball stays attached to its track instead of
+spawning a phantom. New tracks require consecutive hits before rendering, while
+confirmed tracks survive short detector misses using predicted positions.
 
-On first launch the driver downloads ``yolov8n.onnx`` (~12 MB) into
-``~/.gosai/models/``.
+The model exports the YOLO26 end-to-end (NMS-free) head: the ONNX output is
+``(1, 300, 6)`` rows of ``[x1, y1, x2, y2, confidence, class_id]`` — no NMS is
+needed at runtime.
+
+The model ships with the package at ``ball_models/ball.onnx``. Produce/update it
+with the training pipeline in the repo's ``training/`` folder.
 
 Events:
 - ``balls``: list of ``{x, y, r}`` positions in display pixels.
@@ -32,16 +40,17 @@ Actions:
 - ``set_cuda_device(id)``           — NVIDIA GPU index (default 0)
 
 Environment (optional):
-- ``GOSAI_ACCELERATOR`` — ``auto``, ``cuda``, ``cpu``, ``coreml`` (macOS), ``dml``
+- ``GOSAI_ACCELERATOR`` — ``auto``, ``tensorrt``, ``cuda``, ``coreml`` (macOS),
+  ``dml``, ``cpu``. ``auto`` prefers TensorRT then CUDA on NVIDIA, CoreML on macOS.
 - ``GOSAI_CUDA_DEVICE_ID`` — CUDA device index when using NVIDIA (default 0)
+- ``GOSAI_TRT_CACHE_DIR`` — where TensorRT caches compiled engines
+  (default ``~/.cache/gosai/trt``); the first TensorRT run compiles and is slow.
 """
 
 from __future__ import annotations
 
 import math
-import os
 import time
-import urllib.request
 from collections import deque
 from pathlib import Path
 from typing import Any, ClassVar, NamedTuple
@@ -50,11 +59,12 @@ from gosai_py.driver import DriverContext
 from gosai_py.processor import BaseProcessor
 from gosai_py.runtime import create_onnx_session, cuda_device_id
 
-YOLO_ONNX_FILENAME = "yolov8n.onnx"
-YOLO_ONNX_URL = (
-    "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n.onnx"
-)
-MODEL_INPUT_SIZE = 640
+MODELS_DIR = Path(__file__).resolve().parent / "ball_models"
+MODEL_FILENAME = "ball.onnx"
+MODEL_PATH = MODELS_DIR / MODEL_FILENAME
+# (height, width) fallback; the real size is read from the ONNX model at load.
+# The ball model is exported at 720p 16:9 to match real-world camera feeds.
+MODEL_INPUT_SIZE = (736, 1280)
 
 
 class _Detection(NamedTuple):
@@ -64,72 +74,29 @@ class _Detection(NamedTuple):
     score: float
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────
-
-def _gosai_home() -> Path:
-    override = os.environ.get("GOSAI_HOME")
-    if override:
-        return Path(override).expanduser().resolve()
-    return Path.home() / ".gosai"
-
-
-def _models_dir() -> Path:
-    d = _gosai_home() / "models"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def _download_file(url: str, target: Path, log_fn: Any) -> bool:
-    try:
-        log_fn("info", f"ball: downloading {target.name}")
-        tmp = target.with_suffix(target.suffix + ".part")
-        with urllib.request.urlopen(url, timeout=60) as resp, tmp.open("wb") as fp:
-            while True:
-                chunk = resp.read(64 * 1024)
-                if not chunk:
-                    break
-                fp.write(chunk)
-        tmp.replace(target)
-        log_fn("info", f"ball: download complete ({target.name})")
-        return True
-    except Exception as exc:
-        log_fn("error", f"ball: download failed: {exc!r}")
-        return False
-
-
-def _ensure_onnx(log_fn: Any) -> Path | None:
-    """Return cached ONNX path, downloading from Ultralytics assets if missing."""
-    onnx_path = _models_dir() / YOLO_ONNX_FILENAME
-    if onnx_path.exists() and onnx_path.stat().st_size > 0:
-        return onnx_path
-    if _download_file(YOLO_ONNX_URL, onnx_path, log_fn):
-        return onnx_path
-    return None
-
-
 # ── ONNX inference helpers ───────────────────────────────────────────────
 
-def _letterbox(img: Any, size: int) -> tuple[Any, float, tuple[int, int]]:
-    """Resize with aspect-preserving padding (letterbox).
+def _letterbox(img: Any, size: tuple[int, int]) -> tuple[Any, float, tuple[int, int]]:
+    """Resize with aspect-preserving padding (letterbox) to (height, width).
 
     Returns the padded image, the scale factor, and (pad_top, pad_left).
     """
     import cv2  # type: ignore[import-not-found]
 
+    ih, iw = size
     h, w = img.shape[:2]
-    scale = min(size / h, size / w)
+    scale = min(ih / h, iw / w)
     nw, nh = round(w * scale), round(h * scale)
     if (nw, nh) != (w, h):
         img = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_LINEAR)
-    dh, dw = (size - nh) / 2, (size - nw) / 2
-    top, left = round(dh - 0.1), round(dw - 0.1)
-    bottom, right = round(dh + 0.1), round(dw + 0.1)
+    top, left = (ih - nh) // 2, (iw - nw) // 2
+    bottom, right = ih - nh - top, iw - nw - left
     img = cv2.copyMakeBorder(img, top, bottom, left, right,
                              cv2.BORDER_CONSTANT, value=(114, 114, 114))
     return img, scale, (top, left)
 
 
-def _preprocess(frame: Any, size: int) -> tuple[Any, float, tuple[int, int]]:
+def _preprocess(frame: Any, size: tuple[int, int]) -> tuple[Any, float, tuple[int, int]]:
     """BGR frame -> float32 NCHW tensor for ONNX."""
     import cv2  # type: ignore[import-not-found]
     import numpy as np  # type: ignore[import-not-found]
@@ -146,100 +113,49 @@ def _postprocess(
     scale: float,
     pad: tuple[int, int],
     conf_thresh: float,
-    iou_thresh: float,
     min_px: float,
     max_px: float,
     max_aspect: float,
 ) -> list[_Detection]:
-    """Extract ball candidates from raw ONNX output [1, 84, N]."""
-    import cv2  # type: ignore[import-not-found]
+    """Extract ball candidates from the YOLO26 NMS-free head ``[1, N, 6]``.
+
+    Each row is ``[x1, y1, x2, y2, confidence, class_id]`` in letterbox pixels.
+    The model already performs duplicate suppression, so no NMS is required.
+    """
     import numpy as np  # type: ignore[import-not-found]
 
-    preds = np.squeeze(output[0]).T  # [N, 84]
-    class_scores = preds[:, 4:]
-    max_scores = np.max(class_scores, axis=1)
+    preds = np.asarray(output[0])
+    if preds.ndim == 3:
+        preds = preds[0]  # [N, 6]
+    if preds.size == 0 or preds.shape[-1] < 6:
+        return []
 
-    mask = max_scores >= conf_thresh
-    preds = preds[mask]
-    max_scores = max_scores[mask]
+    scores = preds[:, 4]
+    preds = preds[scores >= conf_thresh]
     if len(preds) == 0:
         return []
 
-    # cx, cy, w, h in letterbox coords -> original image coords
-    boxes_cxcywh = preds[:, :4].copy()
-    boxes_cxcywh[:, 0] -= pad[1]
-    boxes_cxcywh[:, 1] -= pad[0]
-    boxes_cxcywh[:, :4] /= scale
-
-    # Convert to x,y,w,h for NMS
-    boxes_xywh = boxes_cxcywh.copy()
-    boxes_xywh[:, 0] -= boxes_xywh[:, 2] / 2
-    boxes_xywh[:, 1] -= boxes_xywh[:, 3] / 2
-
-    indices = cv2.dnn.NMSBoxes(
-        boxes_xywh.tolist(), max_scores.tolist(), conf_thresh, iou_thresh,
-    )
+    # xyxy in letterbox coords -> original image coords
+    boxes = preds[:, :4].copy()
+    boxes[:, [0, 2]] -= pad[1]
+    boxes[:, [1, 3]] -= pad[0]
+    boxes /= scale
 
     results: list[_Detection] = []
-    for i in np.array(indices).flatten():
-        cx, cy, w, h = boxes_cxcywh[i]
+    for (x1, y1, x2, y2), score in zip(boxes, preds[:, 4], strict=False):
+        w = float(x2 - x1)
+        h = float(y2 - y1)
         side = max(w, h)
         if side < min_px or side > max_px:
             continue
         aspect = max(w, h) / max(min(w, h), 1.0)
         if aspect > max_aspect:
             continue
+        cx = float(x1) + w / 2.0
+        cy = float(y1) + h / 2.0
         r = (w + h) / 4.0
-        results.append(_Detection(float(cx), float(cy), float(r), float(max_scores[i])))
+        results.append(_Detection(cx, cy, r, float(score)))
     return results
-
-
-def _edge_support_score(frame: Any, det: _Detection) -> float:
-    """Return how much candidate edge energy sits near the expected ball rim."""
-    import cv2  # type: ignore[import-not-found]
-    import numpy as np  # type: ignore[import-not-found]
-
-    radius = max(2.0, det.r)
-    pad = max(6, round(radius * 1.6))
-    h, w = frame.shape[:2]
-    x1 = max(0, round(det.x - pad))
-    y1 = max(0, round(det.y - pad))
-    x2 = min(w, round(det.x + pad))
-    y2 = min(h, round(det.y + pad))
-    if x2 - x1 < 6 or y2 - y1 < 6:
-        return 1.0
-
-    crop = frame[y1:y2, x1:x2]
-    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (3, 3), 0)
-    med = float(np.median(gray))
-    lower = int(max(0, 0.66 * med))
-    upper = int(min(255, max(lower + 20, 1.33 * med)))
-    edges = cv2.Canny(gray, lower, upper)
-
-    cy = det.y - y1
-    cx = det.x - x1
-    yy, xx = np.ogrid[: edges.shape[0], : edges.shape[1]]
-    dist = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
-    ring = np.abs(dist - radius) <= max(2.0, radius * 0.25)
-    if not np.any(ring):
-        return 1.0
-    return float(np.count_nonzero((edges > 0) & ring) / max(1.0, 2.0 * math.pi * radius))
-
-
-def _filter_visual_candidates(frame: Any, detections: list[_Detection]) -> list[_Detection]:
-    """Reject weak, non-circular flashes while keeping confident YOLO candidates."""
-    if not detections:
-        return []
-
-    filtered: list[_Detection] = []
-    for det in detections:
-        if det.score >= 0.16:
-            filtered.append(det)
-            continue
-        if _edge_support_score(frame, det) >= 0.08:
-            filtered.append(det)
-    return filtered
 
 
 def _warp_detections(
@@ -505,11 +421,10 @@ class BallDriver(BaseProcessor):
         super().__init__(context)
         self._session: Any = None
         self._input_name: str = ""
-        self._input_size: int = MODEL_INPUT_SIZE
+        self._input_size: tuple[int, int] = MODEL_INPUT_SIZE
         self._homography: Any = None
         self._output_size = self.DEFAULT_OUTPUT_SIZE
-        self._confidence = 0.10
-        self._iou_thresh = 0.5
+        self._confidence = 0.25
         self._min_ball_px = 10.0
         self._max_ball_px = 100.0
         self._max_aspect = 1.6
@@ -520,29 +435,30 @@ class BallDriver(BaseProcessor):
         self._frame_idx = 0
         self._skip = 0  # 0 = process every frame; raise on slow hardware
         self._cuda_device_id = cuda_device_id()
-        self._onnx_path: Path | None = None
 
     def pre_run(self) -> None:
         super().pre_run()
         self._load_session()
 
     def _load_session(self) -> None:
-        if self._onnx_path is None:
-            self._onnx_path = _ensure_onnx(self.log)
-        onnx_path = self._onnx_path
-        if onnx_path is None:
-            raise RuntimeError("ball: ONNX model unavailable")
+        if not MODEL_PATH.exists():
+            raise RuntimeError(
+                f"ball: model not found at {MODEL_PATH}. Train and install it with the "
+                "pipeline in the repo's `training/` folder (see training/README.md)."
+            )
 
         self._session, info = create_onnx_session(
-            onnx_path,
-            model_name=onnx_path.name,
+            MODEL_PATH,
+            model_name=MODEL_PATH.name,
             cuda_id=self._cuda_device_id,
             log_fn=self.log,
         )
         self.set_runtime_info(dict(info))
         inp = self._session.get_inputs()[0]
         self._input_name = inp.name
-        self._input_size = inp.shape[2] if isinstance(inp.shape[2], int) else MODEL_INPUT_SIZE
+        height = inp.shape[2] if isinstance(inp.shape[2], int) else MODEL_INPUT_SIZE[0]
+        width = inp.shape[3] if isinstance(inp.shape[3], int) else MODEL_INPUT_SIZE[1]
+        self._input_size = (height, width)
         self.start_latest_worker()
 
     def cleanup(self) -> None:
@@ -613,10 +529,9 @@ class BallDriver(BaseProcessor):
 
         detections = _postprocess(
             outputs, scale, pad,
-            self._confidence, self._iou_thresh,
+            self._confidence,
             self._min_ball_px, self._max_ball_px, self._max_aspect,
         )
-        detections = _filter_visual_candidates(frame, detections)
         if self._homography is not None:
             detections = _warp_detections(detections, self._homography)
             detections = _filter_output_bounds(detections, self._output_size)

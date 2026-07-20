@@ -16,7 +16,7 @@ from __future__ import annotations
 import threading
 import time
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, ClassVar
 
 
@@ -124,7 +124,7 @@ class BaseDriver:
     def record(self, metric: str, value: float) -> None:
         self._context.record_performance(metric, value)
 
-    def set_runtime_info(self, info: dict[str, Any] | None) -> None:
+    def set_runtime_info(self, info: Mapping[str, Any] | None) -> None:
         self._runtime_info = dict(info) if info is not None else None
 
     def runtime_info(self) -> dict[str, Any] | None:

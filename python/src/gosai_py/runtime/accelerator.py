@@ -1,11 +1,19 @@
 """Accelerator policy helpers shared by inference drivers.
 
-The policy is accelerator-first, not CUDA-only:
+The policy is accelerator-first, not CUDA-only. A single ONNX model is run under
+the fastest available ONNX Runtime execution provider, so the heavy inference
+code (pre/post-processing) is shared across every backend:
 
-- Linux/Windows auto mode prefers NVIDIA CUDA for ONNX Runtime.
-- macOS auto mode prefers CoreML/Metal-capable providers when available.
+- Linux/Windows auto mode prefers NVIDIA **TensorRT** (when the TensorRT EP is
+  available), then plain CUDA, for ONNX Runtime.
+- macOS auto mode prefers **CoreML** (Apple Neural Engine / GPU) when available.
 - CPU is allowed only when explicitly requested or when fallback is explicitly
   enabled with ``GOSAI_ALLOW_CPU_FALLBACK=1``.
+
+``GOSAI_ACCELERATOR`` selects a backend explicitly: ``auto`` | ``tensorrt`` |
+``cuda`` | ``coreml`` | ``dml`` | ``cpu``. TensorRT JIT-compiles the model on the
+first run and caches the engine under ``GOSAI_TRT_CACHE_DIR`` (default
+``~/.cache/gosai/trt``), so subsequent startups are fast.
 
 Drivers expose the returned ``RuntimeInfo`` in the bridge so the GUI can show
 which backend is actually active.
@@ -16,9 +24,9 @@ from __future__ import annotations
 import os
 import platform
 from pathlib import Path
-from typing import Any, TypeAlias, TypedDict
+from typing import Any, TypedDict
 
-ProviderSpec: TypeAlias = str | tuple[str, dict[str, Any]]
+type ProviderSpec = str | tuple[str, dict[str, Any]]
 
 
 class RuntimeInfo(TypedDict, total=False):
@@ -68,7 +76,7 @@ def runtime_info(
 
 
 def accelerator_mode() -> str:
-    """Return ``auto`` | ``cuda`` | ``coreml`` | ``cpu`` | ``dml``.
+    """Return ``auto`` | ``tensorrt`` | ``cuda`` | ``coreml`` | ``cpu`` | ``dml``.
 
     ``GOSAI_ACCELERATOR`` is the new cross-runtime knob. ``GOSAI_ORT_DEVICE`` is
     still honored so existing installs keep their configured behavior.
@@ -79,11 +87,21 @@ def accelerator_mode() -> str:
         "metal": "coreml",
         "mps": "coreml",
         "directml": "dml",
+        "trt": "tensorrt",
+        "trt-cuda": "tensorrt",
     }
     mode = aliases.get(mode, mode)
-    if mode in {"auto", "cuda", "coreml", "cpu", "dml"}:
+    if mode in {"auto", "tensorrt", "cuda", "coreml", "cpu", "dml"}:
         return mode
     return "auto"
+
+
+def _trt_cache_dir() -> str:
+    """Directory where the TensorRT EP caches compiled engines/timing data."""
+    raw = os.environ.get("GOSAI_TRT_CACHE_DIR")
+    base = Path(raw) if raw else Path.home() / ".cache" / "gosai" / "trt"
+    base.mkdir(parents=True, exist_ok=True)
+    return str(base)
 
 
 def allow_cpu_fallback() -> bool:
@@ -119,10 +137,40 @@ def choose_onnx_providers(
     selected_cuda_id = cuda_device_id() if cuda_id is None else max(0, int(cuda_id))
     cpu_allowed = selected_mode == "cpu" or allow_cpu_fallback() or not require_accelerated
 
+    trt_provider = "TensorrtExecutionProvider"
     cuda_provider = "CUDAExecutionProvider"
     coreml_provider = "CoreMLExecutionProvider"
     dml_provider = "DirectMLExecutionProvider"
     cpu_provider = "CPUExecutionProvider"
+
+    def cuda_spec() -> ProviderSpec:
+        return (cuda_provider, {"device_id": selected_cuda_id})
+
+    def trt_spec() -> ProviderSpec:
+        # FP16 + engine/timing caches: first run compiles, later runs are fast.
+        return (
+            trt_provider,
+            {
+                "device_id": selected_cuda_id,
+                "trt_fp16_enable": True,
+                "trt_engine_cache_enable": True,
+                "trt_engine_cache_path": _trt_cache_dir(),
+                "trt_timing_cache_enable": True,
+            },
+        )
+
+    def accelerated_info(
+        provider: str, device: str, providers: list[ProviderSpec],
+    ) -> tuple[list[ProviderSpec], RuntimeInfo]:
+        return providers, runtime_info(
+            backend="onnxruntime",
+            provider=provider,
+            device=device,
+            device_id=selected_cuda_id if device in ("cuda", "tensorrt") else None,
+            accelerated=True,
+            available_providers=available,
+            requested_providers=provider_names(providers),
+        )
 
     def cpu_info(reason: str) -> tuple[list[ProviderSpec], RuntimeInfo]:
         if cpu_provider not in available:
@@ -145,68 +193,51 @@ def choose_onnx_providers(
     if selected_mode == "cpu":
         return cpu_info("CPU explicitly requested")
 
+    if selected_mode == "tensorrt":
+        if trt_provider not in available:
+            raise RuntimeError(
+                f"TensorrtExecutionProvider unavailable; available providers: {available}. "
+                "Install onnxruntime-gpu built with TensorRT and the TensorRT libraries."
+            )
+        # TensorRT EP needs CUDA EP as a fallback for any unsupported subgraph.
+        providers: list[ProviderSpec] = [trt_spec()]
+        if cuda_provider in available:
+            providers.append(cuda_spec())
+        return accelerated_info(trt_provider, "tensorrt", providers)
+
     if selected_mode == "cuda":
         if cuda_provider not in available:
             raise RuntimeError(f"CUDAExecutionProvider unavailable; available providers: {available}")
-        providers: list[ProviderSpec] = [(cuda_provider, {"device_id": selected_cuda_id})]
-        return providers, runtime_info(
-            backend="onnxruntime",
-            provider=cuda_provider,
-            device="cuda",
-            device_id=selected_cuda_id,
-            accelerated=True,
-            available_providers=available,
-            requested_providers=provider_names(providers),
-        )
+        return accelerated_info(cuda_provider, "cuda", [cuda_spec()])
 
     if selected_mode == "coreml":
         if coreml_provider not in available:
             return cpu_info(f"CoreMLExecutionProvider unavailable; available providers: {available}")
-        return [coreml_provider], runtime_info(
-            backend="onnxruntime",
-            provider=coreml_provider,
-            device="coreml",
-            accelerated=True,
-            available_providers=available,
-            requested_providers=[coreml_provider],
-        )
+        return accelerated_info(coreml_provider, "coreml", [coreml_provider])
 
     if selected_mode == "dml":
         if dml_provider not in available:
             return cpu_info(f"DirectMLExecutionProvider unavailable; available providers: {available}")
-        return [dml_provider], runtime_info(
-            backend="onnxruntime",
-            provider=dml_provider,
-            device="directml",
-            accelerated=True,
-            available_providers=available,
-            requested_providers=[dml_provider],
-        )
+        return accelerated_info(dml_provider, "directml", [dml_provider])
 
     system = platform.system()
     if system == "Darwin":
         if coreml_provider in available:
-            return [coreml_provider], runtime_info(
-                backend="onnxruntime",
-                provider=coreml_provider,
-                device="coreml",
-                accelerated=True,
-                available_providers=available,
-                requested_providers=[coreml_provider],
-            )
+            return accelerated_info(coreml_provider, "coreml", [coreml_provider])
         return cpu_info(f"CoreMLExecutionProvider unavailable; available providers: {available}")
 
     if system in {"Linux", "Windows"}:
+        # Prefer TensorRT, then CUDA. The list is an ordered preference; ONNX
+        # Runtime activates the first provider that initializes successfully.
+        providers = []
+        if trt_provider in available:
+            providers.append(trt_spec())
         if cuda_provider in available:
-            providers = [(cuda_provider, {"device_id": selected_cuda_id})]
-            return providers, runtime_info(
-                backend="onnxruntime",
-                provider=cuda_provider,
-                device="cuda",
-                device_id=selected_cuda_id,
-                accelerated=True,
-                available_providers=available,
-                requested_providers=provider_names(providers),
+            providers.append(cuda_spec())
+        if providers:
+            primary = provider_names(providers)[0]
+            return accelerated_info(
+                primary, "tensorrt" if primary == trt_provider else "cuda", providers,
             )
         return cpu_info(f"CUDAExecutionProvider unavailable; available providers: {available}")
 
@@ -249,15 +280,36 @@ def create_onnx_session(
     opts = ort.SessionOptions()
     opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
     session = ort.InferenceSession(str(onnx_path), sess_options=opts, providers=providers)
+
+    # ONNX Runtime activates the first provider (in our preference order) that
+    # initializes, and always appends CPU as the last resort. The active backend
+    # is therefore active[0]; we only require that it is actually accelerated
+    # (unless CPU was explicitly requested/allowed).
     active = session.get_providers()
-    expected = requested[0] if requested else None
-    if expected and expected not in active:
+    active_provider = active[0] if active else "CPUExecutionProvider"
+    accelerated = active_provider != "CPUExecutionProvider"
+    selected_mode = mode or accelerator_mode()
+    if (
+        require_accelerated
+        and not accelerated
+        and selected_mode != "cpu"
+        and not allow_cpu_fallback()
+    ):
         raise RuntimeError(
-            f"{expected} was requested for {model_name}, but ONNX Runtime activated {active}."
+            f"{model_name}: requested {requested} but ONNX Runtime fell back to CPU "
+            f"({active}). Set GOSAI_ACCELERATOR=cpu or GOSAI_ALLOW_CPU_FALLBACK=1 to allow CPU."
         )
 
-    active_provider = active[0] if active else expected
-    info["provider"] = active_provider or info.get("provider", "unknown")
+    device_by_provider = {
+        "TensorrtExecutionProvider": "tensorrt",
+        "CUDAExecutionProvider": "cuda",
+        "CoreMLExecutionProvider": "coreml",
+        "DirectMLExecutionProvider": "directml",
+        "CPUExecutionProvider": "cpu",
+    }
+    info["provider"] = active_provider
+    info["device"] = device_by_provider.get(active_provider, info.get("device", "unknown"))
+    info["accelerated"] = accelerated
     info["model"] = model_name
     info["requested_providers"] = requested
     log_fn(

@@ -1,0 +1,15 @@
+# Manifest for a trainable model. One folder per model under training/models/.
+#
+#   type          which training pipeline to use (see src/gosai_train/registry.py)
+#   class_name    the single class written into the merged dataset
+#   map_all_classes  if true, every source class is treated as the target
+#                    (use for detectors where all labelled classes ARE the target);
+#                    if false, classes.yaml + the heuristic decide ball/drop
+#   install_path  where the exported model is copied (relative to repo root)
+
+name: ball
+type: yolo-detect
+description: Single-class billiard-ball detector for the `ball` driver.
+class_name: ball
+map_all_classes: false
+install_path: python/src/gosai_py/drivers/ball_models/ball.onnx

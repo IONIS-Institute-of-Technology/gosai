@@ -1,0 +1,27 @@
+# Virtualenv / uv
+.venv/
+uv.lock
+
+# Secrets
+.env
+
+# Generated datasets and artifacts (large, reproducible) -- per model
+models/*/data/raw/
+models/*/data/merged/
+models/*/data/negatives_pool/
+models/*/runs/
+models/*/exports/
+
+# Downloaded base weights (auto-fetched by ultralytics)
+*.pt
+
+# Drop-in user content (keep the folders, ignore the content)
+models/*/data/custom/images/*
+models/*/data/custom/labels/*
+models/*/data/custom/videos/*
+models/*/data/negatives/*
+!**/.gitkeep
+
+# Python caches
+__pycache__/
+*.pyc

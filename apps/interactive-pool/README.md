@@ -20,6 +20,11 @@ in real-time. A single composited experience drives the entire app:
 Drivers declared in `gosai.app.json` are auto-started by the server when the
 experience starts.
 
+The `ball` driver runs a fine-tuned single-class billiard-ball model
+(`python/src/gosai_py/drivers/ball_models/ball.onnx`). It is produced by the
+training pipeline in [`training/`](../../training/README.md); run that pipeline
+to (re)generate the model if ball detection needs improving.
+
 ## Build
 
 ```bash

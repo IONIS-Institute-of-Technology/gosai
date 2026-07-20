@@ -1,0 +1,40 @@
+# Negative (background) examples make the detector ignore non-balls: empty
+# tables, pockets, hands, cues, glare and sun rays.
+#
+# The strongest negatives are mined IN-DOMAIN automatically during `prepare`:
+# any downloaded frame that has no ball after class mapping becomes a negative
+# (empty tables, pocket-only frames, hand/cue-only frames). That needs no setup.
+#
+# This file controls OPTIONAL extra negatives fetched by `gosai-train negatives`.
+# Everything here is OFF by default so the pipeline works fully offline.
+
+# Cap on how many negatives are kept, relative to the number of ball images.
+# 0.5 == at most one negative per two ball images. Applied in `prepare`.
+max_negative_ratio: 0.5
+
+# Glare/sun-ray synthesis: composite soft bright hotspots + streaks onto real
+# no-ball table frames (mined from the datasets) to teach the model that glare,
+# reflections and sun rays are NOT balls. Works offline after `download`.
+glare_overlay:
+  enabled: true
+  count: 300
+
+# Optional external negative image sources. Mind each source's license.
+sources:
+  - name: glare # GLARE: traffic sun-glare scenes (CC BY 4.0)
+    enabled: false
+    type: gdrive_folder
+    id: '1gmoOSgvjR4DP7jGfGS_xAmxcMShyeThx'
+    cap: 300
+
+  - name: flare7k # Flare7K++ lens-flare patterns (research use only)
+    enabled: false
+    type: gdrive_file
+    id: '1PPXWxn7gYvqwHX301SuWmjI7IUUtqxab'
+    cap: 300
+
+  - name: extra-url # Any direct URL to a .zip of negative images
+    enabled: false
+    type: url
+    url: ''
+    cap: 300

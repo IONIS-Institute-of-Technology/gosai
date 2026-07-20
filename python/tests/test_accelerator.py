@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from gosai_py.runtime.accelerator import choose_onnx_providers, mediapipe_base_options
+from gosai_py.runtime.accelerator import (
+    choose_onnx_providers,
+    mediapipe_base_options,
+    provider_names,
+)
 
 
 class FakeBaseOptions:
@@ -27,6 +31,39 @@ def test_choose_cuda_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     assert providers == [("CUDAExecutionProvider", {"device_id": 1})]
     assert info["device"] == "cuda"
     assert info["accelerated"] is True
+
+
+def test_tensorrt_mode_prefers_trt_with_cuda_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GOSAI_ACCELERATOR", "tensorrt")
+
+    providers, info = choose_onnx_providers(
+        ["TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"],
+        cuda_id=0,
+    )
+
+    assert provider_names(providers) == ["TensorrtExecutionProvider", "CUDAExecutionProvider"]
+    assert info["device"] == "tensorrt"
+    assert info["accelerated"] is True
+
+
+def test_tensorrt_unavailable_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GOSAI_ACCELERATOR", "tensorrt")
+
+    with pytest.raises(RuntimeError, match="TensorrtExecutionProvider unavailable"):
+        choose_onnx_providers(["CUDAExecutionProvider", "CPUExecutionProvider"])
+
+
+def test_auto_linux_prefers_tensorrt(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GOSAI_ACCELERATOR", raising=False)
+    monkeypatch.delenv("GOSAI_ORT_DEVICE", raising=False)
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+
+    providers, info = choose_onnx_providers(
+        ["TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"],
+    )
+
+    assert provider_names(providers)[0] == "TensorrtExecutionProvider"
+    assert info["device"] == "tensorrt"
 
 
 def test_cpu_requires_explicit_request(monkeypatch: pytest.MonkeyPatch) -> None:

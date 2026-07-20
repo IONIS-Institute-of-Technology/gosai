@@ -1,0 +1,37 @@
+overrides: {}
+discovered:
+  '-': drop
+  '- collaborate with your team on computer vision projects': drop
+  -billiard-ball: keep
+  Ball: keep
+  Billiard-balls-project - v2 2023-09-11 9-09pm: keep
+  Orange: keep
+  Red: keep
+  Roboflow is an end-to-end computer vision platform that helps you: drop
+  White: keep
+  Yellow: keep
+  ball0: keep
+  ball1: keep
+  ball10: keep
+  ball11: keep
+  ball12: keep
+  ball13: keep
+  ball14: keep
+  ball15: keep
+  ball2: keep
+  ball3: keep
+  ball4: keep
+  ball5: keep
+  ball6: keep
+  ball7: keep
+  ball8: keep
+  ball9: keep
+  billiard-ball-Red: keep
+  billiard-ball-Yellow: keep
+  billiard-ball-white: keep
+  billiard-balls: keep
+  orange ball: keep
+  pocket: drop
+  red ball: keep
+  white ball: keep
+  yellow ball: keep

@@ -121,7 +121,7 @@ class CalibrationDriver(BaseDriver):
         # Cache the latest frame so `get_latest_frame` can return it without
         # re-asking the camera driver synchronously. Raw frames avoid Python-side
         # JPEG encode/decode during detection.
-        self._latest_frame = frame.copy() if hasattr(frame, "copy") else frame
+        self._latest_frame = frame.copy() if frame is not None and hasattr(frame, "copy") else frame
         self._latest_frame_b64 = encoded if isinstance(encoded, str) else None
         self._latest_frame_meta = {
             "width": data.get("width"),
@@ -131,7 +131,7 @@ class CalibrationDriver(BaseDriver):
         try:
             if frame is not None:
                 self._detect(frame)
-            else:
+            elif isinstance(encoded, str):
                 self._detect_encoded(encoded)
         except Exception as exc:
             self.log("error", f"detection failed: {exc!r}")
@@ -157,21 +157,10 @@ class CalibrationDriver(BaseDriver):
             self.log("error", f"opencv required: {exc}")
             return
 
-        if hasattr(cv2.aruco, "DICT_4X4_50"):
-            aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
-        else:
-            aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
-        params = (
-            cv2.aruco.DetectorParameters()
-            if hasattr(cv2.aruco, "DetectorParameters")
-            else cv2.aruco.DetectorParameters_create()
-        )
-
-        if hasattr(cv2.aruco, "ArucoDetector"):
-            detector = cv2.aruco.ArucoDetector(aruco_dict, params)
-            corners, ids, _ = detector.detectMarkers(frame)
-        else:
-            corners, ids, _ = cv2.aruco.detectMarkers(frame, aruco_dict, parameters=params)
+        aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+        params = cv2.aruco.DetectorParameters()
+        detector = cv2.aruco.ArucoDetector(aruco_dict, params)
+        corners, ids, _ = detector.detectMarkers(frame)
 
         if ids is None or len(ids) == 0:
             self.emit("detection", {"detected": 0, "ids": [], "corners": []})
@@ -268,15 +257,8 @@ class CalibrationDriver(BaseDriver):
         except ImportError as exc:
             return {"ok": False, "error": f"opencv required: {exc}"}
 
-        if hasattr(cv2.aruco, "getPredefinedDictionary"):
-            aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
-        else:
-            aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
-
-        if hasattr(cv2.aruco, "generateImageMarker"):
-            img = cv2.aruco.generateImageMarker(aruco_dict, marker_id, size)
-        else:
-            img = cv2.aruco.drawMarker(aruco_dict, marker_id, size)
+        aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+        img = cv2.aruco.generateImageMarker(aruco_dict, marker_id, size)
 
         ok, buf = cv2.imencode(".png", img)
         if not ok:

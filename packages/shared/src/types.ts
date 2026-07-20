@@ -14,13 +14,7 @@ export interface LogEntry {
 
 export type ExperienceState = 'idle' | 'starting' | 'running' | 'stopping' | 'crashed';
 export type DriverState =
-  | 'available'
-  | 'starting'
-  | 'running'
-  | 'paused'
-  | 'stopping'
-  | 'stopped'
-  | 'errored';
+  'available' | 'starting' | 'running' | 'paused' | 'stopping' | 'stopped' | 'errored';
 export type AppState = 'installed' | 'starting' | 'running' | 'stopping' | 'crashed';
 
 export interface DriverRuntimeInfo {

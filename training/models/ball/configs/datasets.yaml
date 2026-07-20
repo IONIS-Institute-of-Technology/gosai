@@ -1,0 +1,30 @@
+# Roboflow datasets to download and merge into the single-class "ball" dataset.
+#
+# Add more by appending entries. Each is parsed from a Roboflow Universe URL:
+#   https://universe.roboflow.com/<workspace>/<project>/
+# Set `version: latest` to always grab the newest generated version, or pin an
+# integer (e.g. 3) for reproducibility.
+
+format: yolov11 # Roboflow export format (YOLO bbox; yolov11 == yolov8 layout)
+version: latest # default version for entries that don't override it
+
+datasets:
+  - name: billiard-8
+    workspace: object-detection-billiard
+    project: billiard-8
+    version: latest
+
+  - name: wdzpn
+    workspace: '-ahcxq'
+    project: '-wdzpn'
+    version: latest
+
+  - name: pool-v2
+    workspace: pool-table
+    project: pool-v2
+    version: latest
+
+  - name: snooker-vision
+    workspace: morganlewis
+    project: snooker-vision-tjn0z
+    version: latest

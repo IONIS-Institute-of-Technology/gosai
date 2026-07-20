@@ -21,7 +21,10 @@ import msgpack  # type: ignore[import-not-found]
 
 def to_msgpack(value: Any) -> bytes:
     """Pack a value using MessagePack."""
-    return msgpack.packb(value, use_bin_type=True)
+    packed = msgpack.packb(value, use_bin_type=True)
+    if packed is None:
+        raise RuntimeError("msgpack.packb returned None")
+    return packed
 
 
 def from_msgpack(data: bytes) -> Any:

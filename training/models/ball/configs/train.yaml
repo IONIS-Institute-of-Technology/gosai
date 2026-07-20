@@ -1,0 +1,22 @@
+# Fine-tuning settings for the single-class ball detector.
+
+model: yolo26s.pt # base weights (auto-downloaded by ultralytics on first run)
+epochs: 100
+imgsz: 1280 # training resolution; matches the 720p (1280 long-side) feeds
+# rect: true would train ~16:9 but Ultralytics disables mosaic/mixup with it, so
+# we train square (mosaic on for crowded racks) and infer rectangular instead.
+rect: false
+infer_imgsz: [736, 1280] # exported ONNX input [h, w]: 720p 16:9 (stride-32 valid)
+batch: -1 # -1 = AutoBatch (CUDA only); auto-scaled by imgsz on MPS/CPU
+device: auto # auto | mps | cpu | 0 | 0,1
+patience: 30 # early-stop patience (epochs without improvement)
+seed: 0
+project: runs # outputs under training/models/ball/runs/
+name: ball
+
+# Augmentation tuned for lighting / glare robustness.
+hsv_h: 0.015
+hsv_s: 0.7
+hsv_v: 0.5
+fliplr: 0.5
+mosaic: 1.0

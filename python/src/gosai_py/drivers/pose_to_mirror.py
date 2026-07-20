@@ -236,14 +236,15 @@ class PoseToMirrorDriver(BaseProcessor):
         """Temporally lerp pixel-space points toward the previous frame."""
         old = self._mirrored.get(name)
         t = INTER_RATES.get(name, 1.0)
-        use_old = isinstance(old, list) and len(old) == len(points) and t < 1.0
+        if not (isinstance(old, list) and len(old) == len(points) and t < 1.0):
+            old = None
         out: list[list[float]] = []
         for i, point in enumerate(points):
             if not point:
                 out.append([])
                 continue
             x, y = point[0], point[1]
-            if use_old and old[i]:
+            if old is not None and old[i]:
                 rate = t if y > 0 else 0.01
                 x = _lerp(old[i][0], x, rate)
                 y = _lerp(old[i][1], y, rate)

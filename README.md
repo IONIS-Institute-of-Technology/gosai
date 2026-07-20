@@ -58,17 +58,23 @@ gosai-2/
 │        └── drivers/     Built-in drivers (camera, pose, hand_pose, ...)
 ├── apps/calibration/   Built-in calibration app
 ├── templates/basic/    Starter template
+├── training/           Model training pipeline (per-model under training/models/)
 └── memory/             Phase notes (development history)
 ```
+
+The `ball` driver used by `interactive-pool` runs a fine-tuned single-class
+billiard-ball model (`drivers/ball_models/ball.onnx`). Produce or update it (and
+train future driver models) with the multi-model pipeline in
+[`training/`](training/README.md).
 
 ## Requirements
 
 | Tool       | Min version | Notes                                |
 | ---------- | ----------- | ------------------------------------ |
-| **Bun**    | 1.2         | TypeScript runtime + bundler         |
+| **Bun**    | 1.3         | TypeScript runtime + bundler         |
 | **uv**     | 0.5         | Python package + virtual env manager |
-| **Node**   | 20.19       | Electron requires it                 |
-| **Python** | 3.11        | The drivers target 3.11+             |
+| **Node**   | 22.12       | Electron requires it                 |
+| **Python** | 3.12        | The drivers target 3.12+             |
 | **git**    | -           | For cloning external apps            |
 
 ## Quick Start
