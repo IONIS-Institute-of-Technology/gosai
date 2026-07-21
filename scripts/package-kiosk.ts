@@ -34,6 +34,7 @@ interface Manifest {
   name?: string;
   version?: string;
   default?: string;
+  calibration?: { required?: boolean; entry?: string };
   experiences: Array<{ slug: string; entry: string }>;
 }
 
@@ -157,6 +158,26 @@ for (const exp of manifest.experiences) {
     fail(`experience entry missing: ${entryPath} - build the app first`);
   }
 }
+if (manifest.calibration?.entry && !existsSync(join(appDir, manifest.calibration.entry))) {
+  fail(`calibration entry missing: ${join(appDir, manifest.calibration.entry)}`);
+}
+
+// Apps that declare calibration also need the built-in calibration runner in
+// the bundle; the kiosk shell launches it on first boot (and on demand via
+// GOSAI_KIOSK_CALIBRATE=1) to write the profile into the app's storage.
+let calibrationAppDir: string | null = null;
+if (manifest.calibration) {
+  calibrationAppDir = join(repoRoot, 'apps', 'calibration');
+  if (!existsSync(join(calibrationAppDir, 'gosai.app.json'))) {
+    fail(`app declares calibration but the runner app is missing at ${calibrationAppDir}`);
+  }
+  if (!skipBuild) {
+    await run(['bun', 'run', 'build'], calibrationAppDir);
+  }
+  if (!existsSync(join(calibrationAppDir, 'dist', 'calibrate.js'))) {
+    fail('calibration runner is not built (apps/calibration/dist/calibrate.js missing)');
+  }
+}
 
 // --- Stage the single app + kiosk marker --------------------------------------
 
@@ -164,14 +185,18 @@ const stagingDir = join(desktopDir, 'release', 'kiosk-staging', manifest.slug);
 rmSync(stagingDir, { recursive: true, force: true });
 mkdirSync(join(stagingDir, 'apps'), { recursive: true });
 
-cpSync(appDir, join(stagingDir, 'apps', manifest.slug), {
-  recursive: true,
-  dereference: true,
-  filter: (src) => {
-    const name = basename(src);
-    return name !== 'node_modules' && name !== '.git';
-  },
-});
+const stageApp = (from: string, slug: string): void => {
+  cpSync(from, join(stagingDir, 'apps', slug), {
+    recursive: true,
+    dereference: true,
+    filter: (src) => {
+      const name = basename(src);
+      return name !== 'node_modules' && name !== '.git';
+    },
+  });
+};
+stageApp(appDir, manifest.slug);
+if (calibrationAppDir) stageApp(calibrationAppDir, 'calibration');
 
 writeFileSync(
   join(stagingDir, 'kiosk.json'),

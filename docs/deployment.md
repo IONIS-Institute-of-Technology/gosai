@@ -114,18 +114,42 @@ chmod +x Second\ Self-kiosk-1.0.0-linux-x86_64.AppImage
 Environment variables override the packaged defaults at launch, so a
 deployed kiosk can be re-pointed without rebuilding:
 
-| Variable                    | Effect                                        |
-| --------------------------- | --------------------------------------------- |
+| Variable                    | Effect                                            |
+| --------------------------- | ------------------------------------------------- |
 | `GOSAI_HOME`                | Data directory (default `~/.gosai-kiosks/<slug>`) |
-| `GOSAI_KIOSK_DISPLAY`       | Display index (0-based)                       |
-| `GOSAI_KIOSK_EXPERIENCE`    | Experience slug to boot                       |
-| `GOSAI_KIOSK_WINDOWED=1`    | Window instead of fullscreen                  |
-| `GOSAI_KIOSK_PYTHON_EXTRAS` | Comma-separated Python extras                 |
+| `GOSAI_KIOSK_DISPLAY`       | Display index (0-based)                           |
+| `GOSAI_KIOSK_EXPERIENCE`    | Experience slug to boot                           |
+| `GOSAI_KIOSK_WINDOWED=1`    | Window instead of fullscreen                      |
+| `GOSAI_KIOSK_PYTHON_EXTRAS` | Comma-separated Python extras                     |
+
+| `GOSAI_KIOSK_CALIBRATE=1` | Force the calibration wizard on this launch |
 
 Device assignments (which camera / microphone / resolution the app uses)
 live in `<home>/apps/<slug>/_config/settings.json` and persist across
 launches. App key/value storage (calibration profiles, ...) is under
 `<home>/apps/<slug>/_data/`; logs under `<home>/logs/`.
+
+### Calibration
+
+Apps that declare `calibration` in their manifest (e.g. `interactive-pool`)
+are packaged together with the built-in calibration runner. On the kiosk:
+
+- **First boot:** if the app has `calibration.required: true` and no profile
+  exists yet, the kiosk automatically opens the calibration wizard
+  (fullscreen projector window + control window) before starting the app.
+  When the wizard finishes, the profile is stored in the kiosk's data
+  directory and the app launches.
+- **Re-calibration** (camera or projector moved): relaunch with
+
+  ```bash
+  GOSAI_KIOSK_CALIBRATE=1 ./interactive-pool.AppImage
+  ```
+
+  The wizard runs first, then the app starts as usual. Subsequent normal
+  launches reuse the new profile.
+
+The profile lives in `<home>/apps/<slug>/_data/`, so wiping the data
+directory also clears calibration.
 
 For unattended operation, a systemd user unit keeps the kiosk alive:
 

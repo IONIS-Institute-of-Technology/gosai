@@ -25,6 +25,7 @@ interface KioskArgs {
   experience?: string;
   pythonExtras?: string;
   windowed: boolean;
+  calibrate: boolean;
 }
 
 function usage(): never {
@@ -39,6 +40,7 @@ Options:
   --display <index>     Display to open on (0-based index, default: primary)
   --experience <slug>   Experience to run (default: the app's default)
   --python-extras <l>   Comma-separated Python extras (e.g. speech,realsense)
+  --calibrate           Force the calibration wizard before the app starts
   --windowed            Open in a window instead of fullscreen kiosk
   -h, --help            Show this help
 
@@ -50,7 +52,7 @@ Environment:
 
 function parseKioskArgs(argv: string[]): KioskArgs {
   const positional: string[] = [];
-  const args: KioskArgs = { appDir: '', windowed: false };
+  const args: KioskArgs = { appDir: '', windowed: false, calibrate: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     switch (arg) {
@@ -68,6 +70,9 @@ function parseKioskArgs(argv: string[]): KioskArgs {
         break;
       case '--windowed':
         args.windowed = true;
+        break;
+      case '--calibrate':
+        args.calibrate = true;
         break;
       case '-h':
       case '--help':
@@ -141,6 +146,7 @@ function runKiosk(argv: string[]): void {
   if (args.experience) childArgs.push('--kiosk-experience', args.experience);
   if (args.pythonExtras) childArgs.push('--kiosk-python-extras', args.pythonExtras);
   if (args.windowed) childArgs.push('--kiosk-windowed');
+  if (args.calibrate) childArgs.push('--kiosk-calibrate');
 
   const env: NodeJS.ProcessEnv = { ...process.env };
   if (args.home) env.GOSAI_HOME = resolve(args.home);

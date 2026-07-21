@@ -93,7 +93,10 @@ async function startEmbeddedServer(): Promise<ServerRunner> {
 }
 
 app.on('window-all-closed', () => {
-  app.quit();
+  // Kiosk boot transitions through window-less moments (splash → calibration
+  // wizard → app); quitting there is handled explicitly when the app-host
+  // window closes, so only auto-quit in regular desktop mode.
+  if (!kioskConfig) app.quit();
 });
 
 app.on('before-quit', async (event) => {

@@ -20,12 +20,20 @@ import { app, screen } from 'electron';
 import { ServerRunner } from './server-runner.js';
 import { ensurePythonRuntime } from './python-bootstrap.js';
 import { SplashWindow } from './splash.js';
+import {
+  DEFAULT_CALIBRATION_STATUS_KEY,
+  hasCalibrationRunner,
+  isCalibrated,
+  runKioskCalibration,
+  type CalibrationSchema,
+} from './kiosk-calibration.js';
 import type { WindowRegistry } from './windows.js';
 
 interface AppManifest {
   slug: string;
   name?: string;
   default?: string;
+  calibration?: CalibrationSchema;
   experiences: Array<{ slug: string; entry: string }>;
 }
 
@@ -41,6 +49,8 @@ export interface KioskConfig {
   readonly homeDir: string;
   /** Optional Python dependency extras (e.g. ["speech"]). */
   readonly pythonExtras: string[];
+  /** Force the calibration wizard on this launch even if already calibrated. */
+  readonly forceCalibrate: boolean;
 }
 
 interface KioskFileConfig {
@@ -140,6 +150,8 @@ function buildConfig(
       : {}),
     homeDir,
     pythonExtras: overrides.pythonExtras ?? [],
+    forceCalibrate:
+      process.argv.includes('--kiosk-calibrate') || process.env.GOSAI_KIOSK_CALIBRATE === '1',
   };
 }
 
@@ -204,14 +216,27 @@ function prepareAppsDir(config: KioskConfig): string {
   }
   const appsDir = join(config.homeDir, 'kiosk-apps');
   mkdirSync(appsDir, { recursive: true });
-  const link = join(appsDir, config.manifest.slug);
+  linkApp(appsDir, config.manifest.slug, config.appDir);
+
+  // Apps that declare calibration need the built-in calibration runner. For
+  // CLI launches, pick it up from a sibling directory (the repo layout).
+  if (config.manifest.calibration) {
+    const sibling = join(dirname(config.appDir), 'calibration');
+    if (existsSync(join(sibling, 'gosai.app.json'))) {
+      linkApp(appsDir, 'calibration', sibling);
+    }
+  }
+  return appsDir;
+}
+
+function linkApp(appsDir: string, slug: string, target: string): void {
+  const link = join(appsDir, slug);
   try {
     rmSync(link, { recursive: true, force: true });
   } catch {
     // stale link removal is best-effort
   }
-  symlinkSync(config.appDir, link, 'dir');
-  return appsDir;
+  symlinkSync(target, link, 'dir');
 }
 
 /**
@@ -252,6 +277,14 @@ export async function runKiosk(options: RunKioskOptions): Promise<ServerRunner> 
   const baseUrl = `http://${address.host}:${address.port}`;
 
   const appSlug = config.manifest.slug;
+  const displays = screen.getAllDisplays();
+  const display =
+    config.displayIndex !== undefined
+      ? (displays[config.displayIndex] ?? screen.getPrimaryDisplay())
+      : screen.getPrimaryDisplay();
+
+  await maybeCalibrate(config, windows, baseUrl, display.id);
+
   const started = await startExperienceWithRetry(baseUrl, appSlug, config.experienceSlug);
   if (!started) {
     console.error(
@@ -259,12 +292,6 @@ export async function runKiosk(options: RunKioskOptions): Promise<ServerRunner> 
         'opening the window anyway so the error is visible',
     );
   }
-
-  const displays = screen.getAllDisplays();
-  const display =
-    config.displayIndex !== undefined
-      ? (displays[config.displayIndex] ?? screen.getPrimaryDisplay())
-      : screen.getPrimaryDisplay();
 
   const handle = windows.openAppHost({
     displayId: display.id,
@@ -282,6 +309,42 @@ export async function runKiosk(options: RunKioskOptions): Promise<ServerRunner> 
       `running on ${baseUrl}, home=${config.homeDir}`,
   );
   return serverRunner;
+}
+
+/**
+ * Runs the calibration wizard before the app starts when the app requires
+ * calibration and no profile exists yet (first boot on-site), or when this
+ * launch was started with --kiosk-calibrate / GOSAI_KIOSK_CALIBRATE=1.
+ */
+async function maybeCalibrate(
+  config: KioskConfig,
+  windows: WindowRegistry,
+  baseUrl: string,
+  displayId: number,
+): Promise<void> {
+  const schema = config.manifest.calibration;
+  const required = schema?.required === true;
+  if (!required && !config.forceCalibrate) return;
+
+  const appSlug = config.manifest.slug;
+  const statusKey = schema?.statusKey ?? DEFAULT_CALIBRATION_STATUS_KEY;
+  if (!config.forceCalibrate && (await isCalibrated(baseUrl, appSlug, statusKey))) return;
+
+  if (!(await hasCalibrationRunner(baseUrl))) {
+    console.error(
+      `[gosai-kiosk] ${appSlug} needs calibration but the calibration runner app is not ` +
+        'bundled; repackage with a manifest that declares "calibration"',
+    );
+    return;
+  }
+
+  console.log(`[gosai-kiosk] running calibration wizard for ${appSlug}`);
+  try {
+    await runKioskCalibration({ baseUrl, windows, targetAppSlug: appSlug, displayId });
+    console.log('[gosai-kiosk] calibration wizard closed');
+  } catch (err) {
+    console.error(`[gosai-kiosk] calibration failed: ${String(err)}`);
+  }
 }
 
 async function startExperienceWithRetry(
