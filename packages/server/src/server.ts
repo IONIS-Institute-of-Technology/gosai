@@ -223,7 +223,9 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
 
   // Bundled SDK runtime served to apps via static script tag.
   app.get('/sdk-runtime.js', async (c) => {
-    const sdkPath = resolve(import.meta.dir, '..', '..', 'sdk', 'dist', 'browser.js');
+    const sdkPath = process.env.GOSAI_SDK_RUNTIME
+      ? resolve(process.env.GOSAI_SDK_RUNTIME)
+      : resolve(import.meta.dir, '..', '..', 'sdk', 'dist', 'browser.js');
     if (existsSync(sdkPath)) {
       const data = await Bun.file(sdkPath).arrayBuffer();
       return new Response(data, {

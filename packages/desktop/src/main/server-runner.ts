@@ -66,6 +66,9 @@ export class ServerRunner {
     if (this.options.pythonDir) env.GOSAI_PYTHON_DIR = this.options.pythonDir;
     if (this.options.builtinAppsDir) env.GOSAI_BUILTIN_APPS = this.options.builtinAppsDir;
     if (this.options.homeDir) env.GOSAI_HOME = this.options.homeDir;
+    if (app.isPackaged && !env.GOSAI_SDK_RUNTIME) {
+      env.GOSAI_SDK_RUNTIME = resolve(process.resourcesPath, 'sdk', 'browser.js');
+    }
 
     const child = spawn(command.bin, command.args, {
       env,

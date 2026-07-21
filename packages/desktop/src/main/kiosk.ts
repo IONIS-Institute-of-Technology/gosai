@@ -98,7 +98,23 @@ function readPackagedConfig(): KioskConfig | null {
 
   const appDir = join(process.resourcesPath, 'apps', file.appSlug);
   const manifest = readManifest(appDir);
-  return buildConfig(appDir, manifest, file);
+
+  // Environment variables override the values baked in at packaging time so
+  // a deployed kiosk can be re-pointed (display, experience, ...) without
+  // rebuilding the bundle.
+  const env = process.env;
+  const overrides: KioskFileConfig = {
+    ...file,
+    ...(env.GOSAI_KIOSK_EXPERIENCE ? { experienceSlug: env.GOSAI_KIOSK_EXPERIENCE } : {}),
+    ...(env.GOSAI_KIOSK_DISPLAY !== undefined
+      ? { displayIndex: Number.parseInt(env.GOSAI_KIOSK_DISPLAY, 10) }
+      : {}),
+    ...(env.GOSAI_KIOSK_WINDOWED === '1' ? { fullscreen: false } : {}),
+    ...(env.GOSAI_KIOSK_PYTHON_EXTRAS
+      ? { pythonExtras: parseExtras(env.GOSAI_KIOSK_PYTHON_EXTRAS) }
+      : {}),
+  };
+  return buildConfig(appDir, manifest, overrides);
 }
 
 function buildConfig(

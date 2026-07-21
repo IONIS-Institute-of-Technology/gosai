@@ -204,6 +204,8 @@ export interface CameraSettings {
   readonly width: number;
   readonly height: number;
   readonly fps: number;
+  /** Clockwise software rotation applied once at capture, before all consumers. */
+  readonly rotation?: 0 | 90 | 180 | 270;
 }
 
 /** One resolution and the frame rates that work at that size on the current device. */

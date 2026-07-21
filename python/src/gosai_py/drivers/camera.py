@@ -80,6 +80,7 @@ class CameraDriver(BaseDriver):
         self._width = 1280
         self._height = 720
         self._fps_target = 30.0
+        self._rotation = 0
         self._jpeg_quality = 60
         self._cap: Any = None  # cv2.VideoCapture instance
         self._last_emit = 0.0
@@ -104,6 +105,8 @@ class CameraDriver(BaseDriver):
             self._height = int(cfg["height"])
         if "fps" in cfg:
             self._fps_target = float(cfg["fps"])
+        if "rotation" in cfg:
+            self._rotation = _normalise_rotation(cfg["rotation"])
 
     @classmethod
     def probe_devices(cls, max_index: int = 8) -> list[dict[str, Any]]:
@@ -307,12 +310,15 @@ class CameraDriver(BaseDriver):
             self._latest_frame_id = 0
             self._published_frame_id = 0
 
+        output_w, output_h = (
+            (actual_h, actual_w) if self._rotation in (90, 270) else (actual_w, actual_h)
+        )
         self.set_runtime_info(
             {
                 "backend": "opencv",
                 "provider": self._capture_codec,
                 "device": f"camera:{self._device}",
-                "model": f"{actual_w}x{actual_h}@{self._fps_target:g}",
+                "model": f"{output_w}x{output_h}@{self._fps_target:g}",
                 "accelerated": False,
                 "reason": "camera capture codec",
             }
@@ -322,13 +328,14 @@ class CameraDriver(BaseDriver):
             "info",
             "camera open: "
             f"device={self._device} {actual_w}x{actual_h} "
-            f"target_fps={self._fps_target:g} codec={self._capture_codec}",
+            f"target_fps={self._fps_target:g} codec={self._capture_codec} "
+            f"rotation={self._rotation}",
         )
         self.emit(
             "frame_size",
             {
-                "width": actual_w,
-                "height": actual_h,
+                "width": output_w,
+                "height": output_h,
                 "fps": self._fps_target,
                 "codec": self._capture_codec,
             },
@@ -354,6 +361,8 @@ class CameraDriver(BaseDriver):
         self._capture_thread = None
 
     def _capture_loop(self) -> None:
+        import cv2  # type: ignore[import-not-found]
+
         while not self._capture_stop.is_set() and not self.stop_requested():
             cap = self._cap
             if cap is None:
@@ -363,6 +372,7 @@ class CameraDriver(BaseDriver):
             if not ok or frame is None:
                 self._capture_stop.wait(0.005)
                 continue
+            frame = _rotate_frame(frame, self._rotation, cv2)
             h, w = frame.shape[:2]
             capture_ts = time.time()
             perf_ts = time.perf_counter()
@@ -455,18 +465,18 @@ class CameraDriver(BaseDriver):
             raise RuntimeError(str(exc)) from exc
 
         if action == "set_device":
-            old = (self._device, self._width, self._height, self._fps_target)
+            old = (self._device, self._width, self._height, self._fps_target, self._rotation)
             self._device = int(data)
             if cv2 is not None:
                 try:
                     self._open(cv2)
                     self.publish_state("running")
                 except Exception:
-                    self._device, self._width, self._height, self._fps_target = old
+                    self._device, self._width, self._height, self._fps_target, self._rotation = old
                     raise
             return {"device": self._device}
         if action == "set_resolution":
-            old = (self._device, self._width, self._height, self._fps_target)
+            old = (self._device, self._width, self._height, self._fps_target, self._rotation)
             self._width = int(data.get("width", self._width))
             self._height = int(data.get("height", self._height))
             if cv2 is not None:
@@ -474,39 +484,41 @@ class CameraDriver(BaseDriver):
                     self._open(cv2)
                     self.publish_state("running")
                 except Exception:
-                    self._device, self._width, self._height, self._fps_target = old
+                    self._device, self._width, self._height, self._fps_target, self._rotation = old
                     raise
             return {"width": self._width, "height": self._height}
         if action == "set_fps":
-            old = (self._device, self._width, self._height, self._fps_target)
+            old = (self._device, self._width, self._height, self._fps_target, self._rotation)
             self._fps_target = float(data)
             if cv2 is not None:
                 try:
                     self._open(cv2)
                     self.publish_state("running")
                 except Exception:
-                    self._device, self._width, self._height, self._fps_target = old
+                    self._device, self._width, self._height, self._fps_target, self._rotation = old
                     raise
             return {"fps": self._fps_target}
         if action == "set_mode":
-            old = (self._device, self._width, self._height, self._fps_target)
+            old = (self._device, self._width, self._height, self._fps_target, self._rotation)
             if isinstance(data, dict):
                 self._device = int(data.get("device", self._device))
                 self._width = int(data.get("width", self._width))
                 self._height = int(data.get("height", self._height))
                 self._fps_target = float(data.get("fps", self._fps_target))
+                self._rotation = _normalise_rotation(data.get("rotation", self._rotation))
             if cv2 is not None:
                 try:
                     self._open(cv2)
                     self.publish_state("running")
                 except Exception:
-                    self._device, self._width, self._height, self._fps_target = old
+                    self._device, self._width, self._height, self._fps_target, self._rotation = old
                     raise
             return {
                 "device": self._device,
                 "width": self._width,
                 "height": self._height,
                 "fps": self._fps_target,
+                "rotation": self._rotation,
                 "codec": self._capture_codec,
             }
         if action == "snapshot":
@@ -540,6 +552,23 @@ def _open_capture(cv2: Any, device: int) -> Any:
     if platform.system() == "Linux" and hasattr(cv2, "CAP_V4L2"):
         return cv2.VideoCapture(device, cv2.CAP_V4L2)
     return cv2.VideoCapture(device)
+
+
+def _normalise_rotation(value: Any) -> int:
+    rotation = int(value)
+    if rotation not in (0, 90, 180, 270):
+        raise ValueError(f"camera rotation must be one of 0, 90, 180, 270; got {rotation}")
+    return rotation
+
+
+def _rotate_frame(frame: Any, rotation: int, cv2: Any) -> Any:
+    if rotation == 90:
+        return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+    if rotation == 180:
+        return cv2.rotate(frame, cv2.ROTATE_180)
+    if rotation == 270:
+        return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    return frame
 
 
 def _request_low_latency(cap: Any, cv2: Any) -> None:

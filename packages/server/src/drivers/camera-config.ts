@@ -17,6 +17,7 @@ export async function applyCameraSettings(
       width: settings.width,
       height: settings.height,
       fps: settings.fps,
+      rotation: settings.rotation ?? 0,
     });
   } catch (err) {
     log.warn('failed to apply camera settings to running driver', {

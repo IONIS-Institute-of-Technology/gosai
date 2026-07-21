@@ -19,7 +19,15 @@
 
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { app } from 'electron';
@@ -89,12 +97,27 @@ function hasBridge(pythonDir: string): boolean {
 
 function runtimeHash(resourcesPython: string, extras: string[]): string {
   const hash = createHash('sha256');
-  for (const file of ['pyproject.toml', 'uv.lock']) {
-    const path = join(resourcesPython, file);
-    if (existsSync(path)) hash.update(readFileSync(path));
-  }
+  hashPythonTree(hash, resourcesPython, resourcesPython);
   hash.update(extras.join(','));
   return hash.digest('hex').slice(0, 12);
+}
+
+function hashPythonTree(
+  hash: ReturnType<typeof createHash>,
+  root: string,
+  directory: string,
+): void {
+  for (const name of readdirSync(directory).sort()) {
+    if (name === '.venv' || name === '__pycache__' || name === '.pytest_cache') continue;
+    const path = join(directory, name);
+    const stat = statSync(path);
+    if (stat.isDirectory()) {
+      hashPythonTree(hash, root, path);
+    } else if (stat.isFile()) {
+      hash.update(path.slice(root.length));
+      hash.update(readFileSync(path));
+    }
+  }
 }
 
 function resolveUv(): string {

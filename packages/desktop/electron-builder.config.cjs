@@ -21,9 +21,16 @@
 
 const path = require('node:path');
 
+// package.json declares a semver range, but electron-builder needs the exact
+// version to download matching platform binaries. Bun hoists electron to the
+// workspace root, where electron-builder does not look, so resolve the
+// installed version explicitly.
+const electronVersion = require('electron/package.json').version;
+
 /** @type {import('electron-builder').Configuration} */
 module.exports = {
   appId: 'com.gosai.desktop',
+  electronVersion,
   productName: 'GOSAI',
   copyright: 'GOSAI Contributors',
   artifactName: '${productName}-${version}-${os}-${arch}.${ext}',
@@ -34,6 +41,11 @@ module.exports = {
   asar: true,
   files: ['out/**/*', 'package.json', '!**/*.map'],
   extraResources: [
+    {
+      from: path.resolve(__dirname, '..', 'sdk', 'dist'),
+      to: 'sdk',
+      filter: ['browser.js'],
+    },
     {
       from: path.resolve(__dirname, 'release/server'),
       to: 'server',
@@ -64,6 +76,9 @@ module.exports = {
     icon: undefined,
   },
   linux: {
+    // Derived from the npm package name (@gosai/desktop) otherwise, which
+    // contains characters that are invalid in file paths.
+    executableName: 'gosai',
     category: 'Development',
     target: [
       {

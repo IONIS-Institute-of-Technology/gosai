@@ -104,6 +104,51 @@ At launch the shell:
 Closing the window quits the kiosk. Artifacts land in
 `packages/desktop/release/kiosk/<slug>/`.
 
+### Running and configuring on the kiosk machine
+
+```bash
+chmod +x Second\ Self-kiosk-1.0.0-linux-x86_64.AppImage
+./Second\ Self-kiosk-1.0.0-linux-x86_64.AppImage
+```
+
+Environment variables override the packaged defaults at launch, so a
+deployed kiosk can be re-pointed without rebuilding:
+
+| Variable                    | Effect                                        |
+| --------------------------- | --------------------------------------------- |
+| `GOSAI_HOME`                | Data directory (default `~/.gosai-kiosks/<slug>`) |
+| `GOSAI_KIOSK_DISPLAY`       | Display index (0-based)                       |
+| `GOSAI_KIOSK_EXPERIENCE`    | Experience slug to boot                       |
+| `GOSAI_KIOSK_WINDOWED=1`    | Window instead of fullscreen                  |
+| `GOSAI_KIOSK_PYTHON_EXTRAS` | Comma-separated Python extras                 |
+
+Device assignments (which camera / microphone / resolution the app uses)
+live in `<home>/apps/<slug>/_config/settings.json` and persist across
+launches. App key/value storage (calibration profiles, ...) is under
+`<home>/apps/<slug>/_data/`; logs under `<home>/logs/`.
+
+For unattended operation, a systemd user unit keeps the kiosk alive:
+
+```ini
+# ~/.config/systemd/user/gosai-kiosk.service
+[Unit]
+Description=GOSAI kiosk
+After=graphical-session.target
+
+[Service]
+ExecStart=/opt/gosai/second-self.AppImage
+Environment=GOSAI_KIOSK_DISPLAY=0
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target
+```
+
+```bash
+systemctl --user enable --now gosai-kiosk
+```
+
 The regular packaged desktop performs the same first-run Python bootstrap
 when a `uv` binary is available (bundled under `Resources/bin` or already on
 `PATH`).

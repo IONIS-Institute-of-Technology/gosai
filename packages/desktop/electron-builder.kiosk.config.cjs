@@ -46,6 +46,10 @@ module.exports = {
     ...base.directories,
     output: path.resolve(__dirname, 'release', 'kiosk', slug),
   },
+  linux: {
+    ...base.linux,
+    executableName: `gosai-${slug}`,
+  },
   extraResources: [
     ...inheritedResources,
     {
