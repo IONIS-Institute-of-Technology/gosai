@@ -17,7 +17,13 @@ import { REF_HEIGHT, type FrameContext, type Layer } from '../shared/types.js';
 
 const STUDIED = [0, 11, 12, 15, 16, 23, 24];
 const LIMIT = 120;
-const TIME_LIMIT = 1000;
+/**
+ * Attempt time budget. The legacy countdown was 1000 loop frames at ~30fps
+ * (~33s); ours is wall-clock so it doesn't shrink with the display refresh
+ * rate. Matched moves refund time (legacy refunded 5 frames per match).
+ */
+const TIME_LIMIT_MS = 33_000;
+const MATCH_REFUND_MS = 166;
 
 type Moves = Record<string, Array<[number, number, number]>> & {
   size: [number, number];
@@ -45,7 +51,7 @@ export function createDanceLayer(deps: LayerDeps): Layer {
   let movesIndex = 0;
   let videoIndex = 0;
   let diff = 0;
-  let time = 0;
+  let elapsedMs = 0;
 
   function reset(): void {
     init = false;
@@ -55,7 +61,7 @@ export function createDanceLayer(deps: LayerDeps): Layer {
     movesIndex = 0;
     videoIndex = 0;
     diff = 0;
-    time = 0;
+    elapsedMs = 0;
   }
 
   return {
@@ -81,7 +87,7 @@ export function createDanceLayer(deps: LayerDeps): Layer {
 
     render(frame: FrameContext): void {
       const { ctx } = frame;
-      update();
+      update(frame.deltaMs);
       drawReference(ctx);
       drawHud(ctx);
     },
@@ -93,7 +99,7 @@ export function createDanceLayer(deps: LayerDeps): Layer {
     },
   };
 
-  function update(): void {
+  function update(deltaMs: number): void {
     if (!moves) return;
     const body = deps.feed.mirror.data.body_pose;
 
@@ -120,8 +126,8 @@ export function createDanceLayer(deps: LayerDeps): Layer {
       return;
     }
 
-    time++;
-    if (time > TIME_LIMIT) {
+    elapsedMs += deltaMs;
+    if (elapsedMs > TIME_LIMIT_MS) {
       deps.controller.stop('dance');
       reset();
       return;
@@ -139,13 +145,15 @@ export function createDanceLayer(deps: LayerDeps): Layer {
       diff = sum / STUDIED.length;
       if (diff < LIMIT) {
         movesIndex++;
-        time = Math.max(0, time - 5);
+        elapsedMs = Math.max(0, elapsedMs - MATCH_REFUND_MS);
       }
     } else {
       movesIndex++;
     }
 
-    if (movesIndex > videoIndex) videoIndex = movesIndex;
+    // Advance the reference gif one frame per tick toward the current move
+    // (legacy behavior) so the dancer animates smoothly instead of jumping.
+    if (movesIndex > videoIndex) videoIndex++;
   }
 
   function drawReference(ctx: CanvasRenderingContext2D): void {
@@ -194,7 +202,7 @@ export function createDanceLayer(deps: LayerDeps): Layer {
     ctx.save();
     ctx.translate(80, 180);
     ctx.rotate(-Math.PI / 2);
-    const sweep = (1 - time / TIME_LIMIT) * Math.PI * 2;
+    const sweep = (1 - elapsedMs / TIME_LIMIT_MS) * Math.PI * 2;
     ctx.strokeStyle = '#fff';
     ctx.fillStyle = '#fff';
     ctx.lineWidth = 2;

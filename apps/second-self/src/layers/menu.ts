@@ -2,9 +2,10 @@
  * Gesture-driven launcher menu.
  *
  * Ports the legacy `menu` app (components/menu2.js) to Canvas2D + the in-process
- * {@link MenuController}. The right-hand index fingertip (mirror landmark 8) is
- * the cursor. Dwelling on the central button opens the launcher; dwelling on a
- * row toggles a layer on/off or triggers/toggles one of its options.
+ * {@link MenuController}. An index fingertip (mirror landmark 8 of either hand;
+ * the raised one wins) is the cursor. Dwelling on the central button opens the
+ * launcher; dwelling on a row toggles a layer on/off or triggers/toggles one of
+ * its options.
  *
  * Running layers are highlighted; layers that expose options reveal their
  * option rows beneath them while running.
@@ -77,8 +78,11 @@ export function createMenuLayer(deps: LayerDeps): Layer {
 
     render(frame: FrameContext): void {
       const { ctx, timestamp } = frame;
-      const cursorLm = deps.feed.mirror.data.right_hand_pose[8];
-      const cursor = isValid(cursorLm) ? { x: cursorLm[0]!, y: cursorLm[1]! } : null;
+      // Either index fingertip drives the menu (legacy only tracked one hand,
+      // whose side depended on the driver's handedness convention). When both
+      // hands are up, the higher one wins: that's the pointing hand.
+      const m = deps.feed.mirror.data;
+      const cursor = pickCursor(m.right_hand_pose[8], m.left_hand_pose[8]);
 
       // Central toggle button dwell.
       if (cursor && dist(cursor.x, cursor.y, BUTTON_X, BUTTON_Y) < BUTTON_R) {
@@ -145,6 +149,20 @@ export function createMenuLayer(deps: LayerDeps): Layer {
       cooldownUntil.clear();
     },
   };
+}
+
+function pickCursor(
+  a: number[] | undefined,
+  b: number[] | undefined,
+): { x: number; y: number } | null {
+  const va = isValid(a);
+  const vb = isValid(b);
+  if (va && vb) {
+    return a![1]! <= b![1]! ? { x: a![0]!, y: a![1]! } : { x: b![0]!, y: b![1]! };
+  }
+  if (va) return { x: a![0]!, y: a![1]! };
+  if (vb) return { x: b![0]!, y: b![1]! };
+  return null;
 }
 
 function makeOptionRow(controller: MenuController, slug: string, opt: MenuOption): Row {
@@ -229,7 +247,7 @@ function drawRow(
 function drawHint(ctx: CanvasRenderingContext2D): void {
   drawText(
     ctx,
-    'Raise your right hand and hold the index over the menu button',
+    'Raise a hand and hold your index over the menu button',
     REF_WIDTH / 2,
     BUTTON_Y + BUTTON_R + 70,
     34,

@@ -5,6 +5,17 @@ subclass auto-discovered by the Python bridge (see
 `tests/test_drivers_discovery.py`). This note covers the two drivers added for
 the **second-self** app; the rest are documented by their module docstrings.
 
+## `pose` hand-key convention (important)
+
+`pose.raw_data` emits the hand keys **swapped** relative to the MediaPipe model
+output: `right_hand_pose` holds the model's *left*-hand landmarks and
+`left_hand_pose` holds the model's *right*-hand landmarks. This preserves the
+legacy platform convention (`gosai-old` did the swap in its pose driver): the
+SLR models were trained on that layout, the `slr_samples` correction files were
+recorded under it, and `pose_to_mirror` anchors each hand to the matching wrist
+landmark assuming it. Do not "fix" the swap without retraining/re-recording all
+of those.
+
 ## `pose_to_mirror`
 
 Projects MediaPipe landmarks onto an augmented mirror so the on-screen skeleton

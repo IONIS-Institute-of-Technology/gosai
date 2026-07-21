@@ -6,10 +6,15 @@
  * frame and must never mutate its contents.
  */
 
-import type { FrequencyData, MirroredData, SignData } from './types.js';
+import type { FrequencyData, MirroredData, RawPoseData, SignData } from './types.js';
 
 export interface MirrorSnapshot {
   data: MirroredData;
+  lastUpdate: number;
+}
+
+export interface RawPoseSnapshot {
+  data: RawPoseData;
   lastUpdate: number;
 }
 
@@ -25,6 +30,7 @@ export interface SignSnapshot {
 
 export interface MirrorFeed {
   readonly mirror: MirrorSnapshot;
+  readonly raw: RawPoseSnapshot;
   readonly frequency: FrequencySnapshot;
   readonly sign: SignSnapshot;
 }
@@ -38,6 +44,18 @@ export function createMirrorFeed(): MirrorFeed {
         left_hand_pose: [],
         face_mesh: [],
         body_world_pose: [],
+      },
+      lastUpdate: 0,
+    },
+    raw: {
+      data: {
+        body_pose: [],
+        right_hand_pose: [],
+        left_hand_pose: [],
+        face_mesh: [],
+        body_world_pose: [],
+        frame_width: 1280,
+        frame_height: 720,
       },
       lastUpdate: 0,
     },

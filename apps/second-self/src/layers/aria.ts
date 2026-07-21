@@ -1,9 +1,20 @@
 /**
  * Aria: a VRM avatar puppeted by the user's pose, hands and face.
  *
- * Ports the legacy `aria` app. The mirror landmarks (`pose_to_mirror`) are
- * solved into humanoid bone rotations and face blendshapes with Kalidokit, then
- * applied to a VRM model rendered with three.js + @pixiv/three-vrm (v3).
+ * Ports the legacy `aria` app. Like the legacy version it consumes the **raw**
+ * `pose.raw_data` landmarks (camera pixel space, unflipped, unsmoothed) — not
+ * the mirror projection, which is flipped/letterboxed and would corrupt the
+ * Kalidokit solves. Landmarks are solved into humanoid bone rotations and face
+ * blendshapes with Kalidokit, then applied to a VRM model rendered with
+ * three.js + @pixiv/three-vrm (v3).
+ *
+ * Convention note: Kalidokit emits rotations for VRM0 rigs (legacy three-vrm
+ * 0.x raw bones). three-vrm v3 *normalized* bones only bake out rest
+ * rotations — their frames stay aligned with the model's glTF world axes —
+ * and this VRoid VRM0 model has identity rest rotations on all humanoid
+ * bones, so Kalidokit rotations apply unchanged (no VRM1 x/z sign flip; that
+ * conversion is only for VRM1-authored models, whose bone frames are yawed
+ * 180 deg).
  *
  * Unlike the 2D layers this owns its own transparent WebGL canvas overlaid on
  * the compositor; it does not draw into the shared 2D context.
@@ -27,11 +38,16 @@ import {
 type Vec3 = { x: number; y: number; z: number };
 type Euler = { x: number; y: number; z: number; rotationOrder?: string };
 
-const IMAGE_SIZE = { width: REF_WIDTH, height: REF_HEIGHT };
+/** Feed considered stale after this long without a pose update. */
+const STALE_MS = 1000;
+/** Lerp used to ease bones back to the rest pose when tracking is lost. */
+const REST_LERP = 0.08;
 
 /** Kalidokit finger key -> VRM1 bone name, per hand side. */
 const FINGER_BONES = ['Index', 'Middle', 'Ring', 'Little'] as const;
 const FINGER_PARTS = ['Proximal', 'Intermediate', 'Distal'] as const;
+
+const RAD2DEG = 180 / Math.PI;
 
 export function createAriaLayer(deps: LayerDeps): Layer {
   let renderer: THREE.WebGLRenderer | null = null;
@@ -52,6 +68,7 @@ export function createAriaLayer(deps: LayerDeps): Layer {
     camera.updateProjectionMatrix();
   };
 
+  /** Slerp a bone toward a Kalidokit rotation (see convention note above). */
   function rigRotation(name: VRMHumanBoneName, rot: Euler, dampener = 1, lerpAmount = 0.3): void {
     const bone = vrm?.humanoid.getNormalizedBoneNode(name);
     if (!bone) return;
@@ -69,10 +86,9 @@ export function createAriaLayer(deps: LayerDeps): Layer {
   function rigPosition(name: VRMHumanBoneName, pos: Vec3, dampener = 1, lerpAmount = 0.3): void {
     const bone = vrm?.humanoid.getNormalizedBoneNode(name);
     if (!bone) return;
-    bone.position.lerp(
-      new THREE.Vector3(pos.x * dampener, pos.y * dampener, pos.z * dampener),
-      lerpAmount,
-    );
+    const target = new THREE.Vector3(pos.x * dampener, pos.y * dampener, pos.z * dampener);
+    if ([target.x, target.y, target.z].some((v) => Number.isNaN(v))) return;
+    bone.position.lerp(target, lerpAmount);
   }
 
   function rigFace(face: Kalidokit.TFace): void {
@@ -102,6 +118,9 @@ export function createAriaLayer(deps: LayerDeps): Layer {
         'XYZ',
       );
       oldLookTarget.copy(lookTarget);
+      // Applied by vrm.update() at the end of the frame (degrees).
+      vrm.lookAt.yaw = lookTarget.y * RAD2DEG;
+      vrm.lookAt.pitch = lookTarget.x * RAD2DEG;
     }
   }
 
@@ -132,29 +151,68 @@ export function createAriaLayer(deps: LayerDeps): Layer {
     }
   }
 
-  function animate(): void {
-    if (!vrm) return;
-    const d = deps.feed.mirror.data;
+  /** Ease the body (hips/spine/arms) back to a relaxed rest pose. */
+  function restBody(lerpAmount = REST_LERP): void {
+    const zero: Euler = { x: 0, y: 0, z: 0 };
+    rigRotation('hips', zero, 1, lerpAmount);
+    rigRotation('chest', zero, 1, lerpAmount);
+    rigRotation('spine', zero, 1, lerpAmount);
+    rigRotation('neck', zero, 1, lerpAmount);
+    // Arms down (legacy load pose; values in the Kalidokit/VRM0 frame).
+    rigRotation('leftUpperArm', { x: 0, y: 0, z: 1.4 }, 1, lerpAmount);
+    rigRotation('leftLowerArm', zero, 1, lerpAmount);
+    rigRotation('rightUpperArm', { x: 0, y: 0, z: -1.4 }, 1, lerpAmount);
+    rigRotation('rightLowerArm', zero, 1, lerpAmount);
+    // Hips position is left untouched: the model stays where it was last seen
+    // instead of drifting to an arbitrary anchor.
+  }
 
-    const face = toLandmarks(d.face_mesh, false);
-    const pose2d = toLandmarks(d.body_pose, false);
-    const pose3d = toLandmarks(d.body_world_pose ?? [], true);
-    // Legacy swaps handedness for the mirror view.
-    const leftHand = toLandmarks(d.right_hand_pose, false);
-    const rightHand = toLandmarks(d.left_hand_pose, false);
+  /** Ease one hand (wrist + fingers) back to a neutral pose. */
+  function restHand(side: 'left' | 'right', lerpAmount = REST_LERP): void {
+    const zero: Euler = { x: 0, y: 0, z: 0 };
+    rigRotation(`${side}Hand` as VRMHumanBoneName, zero, 1, lerpAmount);
+    for (const finger of FINGER_BONES) {
+      for (const part of FINGER_PARTS) {
+        rigRotation(`${side}${finger}${part}` as VRMHumanBoneName, zero, 1, lerpAmount);
+      }
+    }
+    rigRotation(`${side}ThumbMetacarpal` as VRMHumanBoneName, zero, 1, lerpAmount);
+    rigRotation(`${side}ThumbProximal` as VRMHumanBoneName, zero, 1, lerpAmount);
+    rigRotation(`${side}ThumbDistal` as VRMHumanBoneName, zero, 1, lerpAmount);
+  }
+
+  function animate(nowMs: number): void {
+    if (!vrm) return;
+    const raw = deps.feed.raw;
+    const stale = nowMs - raw.lastUpdate > STALE_MS;
+    const d = raw.data;
+
+    const imageSize = {
+      width: d.frame_width || 1280,
+      height: d.frame_height || 720,
+    };
+
+    const face = stale ? [] : toLandmarks(d.face_mesh, false, imageSize);
+    const pose2d = stale ? [] : toLandmarks(d.body_pose, false, imageSize);
+    const pose3d = stale ? [] : toLandmarks(d.body_world_pose, true, imageSize);
+    // Canonical Kalidokit mirror mapping: the solver's "Left" outputs are
+    // calibrated from the person's anatomical RIGHT side and drive the
+    // avatar's left bones. The driver's `left_hand_pose` holds the anatomical
+    // right hand (legacy swapped convention), i.e. exactly the "Left" input.
+    const leftHand = stale ? [] : toLandmarks(d.left_hand_pose, false, imageSize);
+    const rightHand = stale ? [] : toLandmarks(d.right_hand_pose, false, imageSize);
 
     if (face.length > 0) {
-      const riggedFace = Kalidokit.Face.solve(face, {
-        runtime: 'mediapipe',
-        imageSize: IMAGE_SIZE,
-      });
+      const riggedFace = trySolve(() =>
+        Kalidokit.Face.solve(face, { runtime: 'mediapipe', imageSize }),
+      );
       if (riggedFace) rigFace(riggedFace);
     }
 
     let riggedPose: Kalidokit.TPose | undefined;
     if (pose2d.length > 0 && pose3d.length > 0) {
       riggedPose =
-        Kalidokit.Pose.solve(pose3d, pose2d, { runtime: 'mediapipe', imageSize: IMAGE_SIZE }) ??
+        trySolve(() => Kalidokit.Pose.solve(pose3d, pose2d, { runtime: 'mediapipe', imageSize })) ??
         undefined;
       if (riggedPose) {
         rigRotation('hips', riggedPose.Hips.rotation as Euler, 0.7);
@@ -170,31 +228,40 @@ export function createAriaLayer(deps: LayerDeps): Layer {
         );
         rigRotation('chest', riggedPose.Spine as Euler, 0.25, 0.3);
         rigRotation('spine', riggedPose.Spine as Euler, 0.45, 0.3);
-        // Arms are mirrored (left<->right) for the reflection view.
-        rigRotation('leftUpperArm', riggedPose.RightUpperArm as Euler, 1, 0.3);
-        rigRotation('leftLowerArm', riggedPose.RightLowerArm as Euler, 1, 0.3);
-        rigRotation('rightUpperArm', riggedPose.LeftUpperArm as Euler, 1, 0.3);
-        rigRotation('rightLowerArm', riggedPose.LeftLowerArm as Euler, 1, 0.3);
+        // No side crossing here: Kalidokit's Left outputs already come from
+        // the person's right arm (mirror view). Crossing them (as the legacy
+        // code did) applies each side's sign conventions to the opposite
+        // bone, which flips the arms upside down.
+        rigRotation('leftUpperArm', riggedPose.LeftUpperArm as Euler, 1, 0.3);
+        rigRotation('leftLowerArm', riggedPose.LeftLowerArm as Euler, 1, 0.3);
+        rigRotation('rightUpperArm', riggedPose.RightUpperArm as Euler, 1, 0.3);
+        rigRotation('rightLowerArm', riggedPose.RightLowerArm as Euler, 1, 0.3);
       }
+    } else {
+      restBody();
     }
 
     if (leftHand.length > 0) {
-      const r = Kalidokit.Hand.solve(leftHand, 'Left');
+      const r = trySolve(() => Kalidokit.Hand.solve(leftHand, 'Left'));
       if (r)
         applyHand(
           'left',
           r as unknown as Record<string, Euler>,
           (riggedPose?.LeftHand as Vec3 | undefined)?.z ?? 0,
         );
+    } else {
+      restHand('left');
     }
     if (rightHand.length > 0) {
-      const r = Kalidokit.Hand.solve(rightHand, 'Right');
+      const r = trySolve(() => Kalidokit.Hand.solve(rightHand, 'Right'));
       if (r)
         applyHand(
           'right',
           r as unknown as Record<string, Euler>,
           (riggedPose?.RightHand as Vec3 | undefined)?.z ?? 0,
         );
+    } else {
+      restHand('right');
     }
   }
 
@@ -212,10 +279,16 @@ export function createAriaLayer(deps: LayerDeps): Layer {
       camera.position.set(0, 1.4, 0.7);
       camera.lookAt(0, 1.4, 0);
 
-      const light = new THREE.DirectionalLight(0xffffff, 1.5);
-      light.position.set(1, 1, 1).normalize();
-      scene.add(light);
-      scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+      // Close to the legacy setup (one directional at intensity 1): MToon
+      // materials blow out to white under stronger rigs.
+      const key = new THREE.DirectionalLight(0xffffff, 1.0);
+      key.position.set(1, 1, 1).normalize();
+      scene.add(key);
+      // Soft fill so the shaded side reads against the dark compositor.
+      const fill = new THREE.DirectionalLight(0xbfd4ff, 0.25);
+      fill.position.set(-1, 0.4, 1).normalize();
+      scene.add(fill);
+      scene.add(new THREE.AmbientLight(0xffffff, 0.3));
 
       const loader = new GLTFLoader();
       loader.register((parser) => new VRMLoaderPlugin(parser));
@@ -226,6 +299,7 @@ export function createAriaLayer(deps: LayerDeps): Layer {
           vrm = loaded;
           vrm.scene.rotation.y = Math.PI;
           scene.add(vrm.scene);
+          restBody(1); // start relaxed (arms down), not in the T-pose.
         } else {
           loadFailed = true;
         }
@@ -248,7 +322,7 @@ export function createAriaLayer(deps: LayerDeps): Layer {
         return;
       }
       if (!renderer || !scene || !camera) return;
-      animate();
+      animate(frame.timestamp);
       if (vrm) {
         vrm.update(clock.getDelta());
         vrm.scene.position.set(0, 0, -1);
@@ -275,11 +349,16 @@ interface KLandmark {
 }
 
 /**
- * Convert mirror-space landmark tuples to Kalidokit landmark objects. 2D/face/
- * hand landmarks are normalised by the reference image size; world landmarks
- * (`metric`) are passed through in meters.
+ * Convert raw landmark tuples to Kalidokit landmark objects. 2D face/pose/hand
+ * landmarks are normalised by the camera frame size (matching the legacy
+ * scene.js, including passing the third component through as z); world
+ * landmarks (`metric`) are passed through in meters.
  */
-function toLandmarks(arr: Landmark[], metric: boolean): KLandmark[] {
+function toLandmarks(
+  arr: Landmark[],
+  metric: boolean,
+  imageSize: { width: number; height: number },
+): KLandmark[] {
   const out: KLandmark[] = [];
   for (const lm of arr) {
     if (!lm || lm.length < 2) continue;
@@ -287,14 +366,23 @@ function toLandmarks(arr: Landmark[], metric: boolean): KLandmark[] {
       out.push({ x: lm[0]!, y: lm[1]!, z: lm[2] ?? 0, visibility: lm[3] });
     } else {
       out.push({
-        x: lm[0]! / REF_WIDTH,
-        y: lm[1]! / REF_HEIGHT,
-        z: (lm[2] ?? 0) / REF_WIDTH,
-        visibility: lm[3],
+        x: lm[0]! / imageSize.width,
+        y: lm[1]! / imageSize.height,
+        z: lm[2] ?? 0,
+        visibility: lm[2],
       });
     }
   }
   return out;
+}
+
+/** Run a Kalidokit solve, tolerating internal errors (e.g. missing iris pts). */
+function trySolve<T>(solve: () => T | undefined | null): T | undefined {
+  try {
+    return solve() ?? undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function lerp(a: number, b: number, t: number): number {

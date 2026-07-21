@@ -30,6 +30,24 @@ export interface MirroredData {
   ts?: number;
 }
 
+/**
+ * Payload emitted by the `pose` driver's `raw_data` event: landmarks in the
+ * camera frame's pixel space (unflipped, unsmoothed), plus metric 3D world
+ * landmarks and the frame size. This is what the aria avatar consumes, exactly
+ * like the legacy app (Kalidokit needs aspect-correct, unmirrored input).
+ */
+export interface RawPoseData {
+  body_pose: Landmark[];
+  /** Hand keys follow the legacy swapped convention (see drivers README). */
+  right_hand_pose: Landmark[];
+  left_hand_pose: Landmark[];
+  face_mesh: Landmark[];
+  /** Metric 3D body landmarks `[x, y, z, vis]` (meters, hip-origin). */
+  body_world_pose: Landmark[];
+  frame_width: number;
+  frame_height: number;
+}
+
 /** Payload emitted by the `frequency_analysis` driver's `frequency` event. */
 export interface FrequencyData {
   max_frequency: number;

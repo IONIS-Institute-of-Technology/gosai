@@ -45,6 +45,7 @@ import {
   type FrameContext,
   type FrequencyData,
   type MirroredData,
+  type RawPoseData,
   type SignData,
 } from './shared/types.js';
 
@@ -377,6 +378,17 @@ function wireDrivers(state: State, rt: ExperienceRuntimeContext): void {
     }),
   );
 
+  // Raw camera-space landmarks for the aria avatar (Kalidokit needs
+  // aspect-correct, unmirrored input; the mirror projection would distort it).
+  state.subs.push(
+    rt.drivers.on('pose', 'raw_data', (data) => {
+      const parsed = parseRawPose(data);
+      if (!parsed) return;
+      state.feed.raw.data = parsed;
+      state.feed.raw.lastUpdate = performance.now();
+    }),
+  );
+
   state.subs.push(
     rt.drivers.on('frequency_analysis', 'frequency', (data) => {
       const parsed = parseFrequency(data);
@@ -410,6 +422,20 @@ function parseMirrored(data: unknown): MirroredData | null {
     left_hand_pose: asLandmarks(d.left_hand_pose),
     face_mesh: asLandmarks(d.face_mesh),
     body_world_pose: asLandmarks(d.body_world_pose),
+  };
+}
+
+function parseRawPose(data: unknown): RawPoseData | null {
+  if (typeof data !== 'object' || data === null) return null;
+  const d = data as Record<string, unknown>;
+  return {
+    body_pose: asLandmarks(d.body_pose),
+    right_hand_pose: asLandmarks(d.right_hand_pose),
+    left_hand_pose: asLandmarks(d.left_hand_pose),
+    face_mesh: asLandmarks(d.face_mesh),
+    body_world_pose: asLandmarks(d.body_world_pose),
+    frame_width: Number(d.frame_width) || 1280,
+    frame_height: Number(d.frame_height) || 720,
   };
 }
 

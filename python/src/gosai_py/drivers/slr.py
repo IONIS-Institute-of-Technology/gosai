@@ -34,27 +34,45 @@ SEQUENCE_LENGTH = 30
 # Face landmark indices used by the 158-feature models (legacy ``face_lm_ind``).
 FACE_LM_IND = (10, 152, 234, 454)
 
+# The ONNX models were trained on raw pixel coordinates from the legacy
+# 640x480 RealSense camera. Live landmarks (which arrive in the actual camera
+# frame's pixel space) must be rescaled to this space or the input distribution
+# is off by the resolution ratio and recognition fails.
+TRAIN_WIDTH = 640.0
+TRAIN_HEIGHT = 480.0
 
-def _flatten_xy(landmarks: list[list[float]] | None, count: int) -> list[float]:
-    """Flatten landmarks to ``[x0, y0, x1, y1, ...]``, zero-padded to ``count``."""
+
+def _flatten_xy(
+    landmarks: list[list[float]] | None, count: int, sx: float, sy: float
+) -> list[float]:
+    """Flatten landmarks to ``[x0, y0, x1, y1, ...]`` scaled, zero-padded to ``count``."""
     if landmarks:
-        return [coord for lm in landmarks for coord in (float(lm[0]), float(lm[1]))]
+        return [coord for lm in landmarks for coord in (float(lm[0]) * sx, float(lm[1]) * sy)]
     return [0.0] * (count * 2)
 
 
 def _adapt_frame(frame: dict[str, Any], include_face: bool) -> list[float]:
-    """Build one model input frame from a pose ``raw_data`` payload."""
+    """Build one model input frame from a pose ``raw_data`` payload.
+
+    Landmarks are rescaled from the live camera frame's pixel space to the
+    legacy 640x480 training space.
+    """
+    frame_w = float(frame.get("frame_width") or TRAIN_WIDTH)
+    frame_h = float(frame.get("frame_height") or TRAIN_HEIGHT)
+    sx = TRAIN_WIDTH / max(frame_w, 1.0)
+    sy = TRAIN_HEIGHT / max(frame_h, 1.0)
+
     feats: list[float] = []
     if include_face:
         face = frame.get("face_mesh") or []
         for idx in FACE_LM_IND:
             if idx < len(face) and face[idx]:
-                feats.extend((float(face[idx][0]), float(face[idx][1])))
+                feats.extend((float(face[idx][0]) * sx, float(face[idx][1]) * sy))
             else:
                 feats.extend((0.0, 0.0))
-    feats.extend(_flatten_xy(frame.get("body_pose"), 33))
-    feats.extend(_flatten_xy(frame.get("right_hand_pose"), 21))
-    feats.extend(_flatten_xy(frame.get("left_hand_pose"), 21))
+    feats.extend(_flatten_xy(frame.get("body_pose"), 33, sx, sy))
+    feats.extend(_flatten_xy(frame.get("right_hand_pose"), 21, sx, sy))
+    feats.extend(_flatten_xy(frame.get("left_hand_pose"), 21, sx, sy))
     return feats
 
 

@@ -208,13 +208,18 @@ class PoseDriver(BaseProcessor):
         payload = {
             "face_mesh": to_xyv(result.face_landmarks),
             "body_pose": to_xyv(result.pose_landmarks),
-            "left_hand_pose": to_xyv(result.left_hand_landmarks),
-            "right_hand_pose": to_xyv(result.right_hand_landmarks),
+            # Legacy platform convention: hand keys are swapped relative to the
+            # model output (`right_hand_pose` holds the model's LEFT hand and
+            # vice versa). The SLR models were trained on this layout and every
+            # consumer (pose_to_mirror anchors, slr_samples, aria, menu)
+            # assumes it, so it must be preserved at the source.
+            "left_hand_pose": to_xyv(result.right_hand_landmarks),
+            "right_hand_pose": to_xyv(result.left_hand_landmarks),
             "body_world_pose": to_xyzv(result.pose_world_landmarks),
             # Landmark x/y are in the (full) camera frame's pixel space; report
             # the frame size so downstream projection is resolution-aware.
             "frame_width": float(w_full),
-            "frame_height": float(cropped.shape[0]),
+            "frame_height": float(frame.shape[0]),
             "ts": time.time(),
             "inference_ms": inference_ms,
         }

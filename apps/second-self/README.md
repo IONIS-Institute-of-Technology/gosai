@@ -39,7 +39,7 @@ per-layer options (the old `sub-menu.json` toggles become in-process options).
 
 | Driver               | Why                                                           |
 | -------------------- | ------------------------------------------------------------- |
-| `pose`               | MediaPipe Holistic landmarks (2D + metric 3D world landmarks) |
+| `pose`               | MediaPipe Holistic landmarks (2D + metric 3D world landmarks); `raw_data` feeds aria directly |
 | `pose_to_mirror`     | Projects landmarks into mirror pixel space (`mirrored_data`)  |
 | `frequency_analysis` | Microphone pitch/amplitude/FFT (`frequency`)                  |
 | `slr`                | Sign-language recognition over a 30-frame window (`new_sign`) |
@@ -57,7 +57,8 @@ Web Audio API in `src/shared/synth.ts` — no Python round-trip.
 
 ```
 webcam ─▶ pose ─┬─▶ pose_to_mirror ─(mirrored_data)─┐
-                └─▶ slr ─────────────(new_sign)──────┤
+                ├─▶ slr ─────────────(new_sign)──────┤
+                └────────────────────(raw_data)──────┤  (aria only)
 mic ────────────▶ frequency_analysis (frequency)─────┤
                                                       ▼
                                             main.ts compositor + feed
