@@ -49,14 +49,83 @@ new apps via the dashboard.
 
 When the packaged app launches:
 
-1. Electron's main process spawns the embedded `gosai-server` binary as a
-   child process (`ServerRunner.start()`).
-2. The server discovers the Python tree at `Contents/Resources/python/` and
-   runs `uv sync` if `.venv/bin/gosai-bridge` is missing. (Apps that depend
-   on optional extras like `cv` / `speech` should declare them in their own
-   `gosai.app.json -> python.requirements`.)
-3. The dashboard connects over WebSocket on `127.0.0.1:7777` and shows the
+1. Electron's main process materialises the Python runtime on first launch
+   (see the kiosk section below - the same bootstrap runs for the regular
+   desktop when `uv` is available), then spawns the embedded `gosai-server`
+   binary as a child process (`ServerRunner.start()`).
+2. The dashboard connects over WebSocket on `127.0.0.1:7777` and shows the
    list of built-in + installed apps.
+
+## Kiosk bundles (one executable per app)
+
+`bun run package:kiosk -- <app-dir>` produces a self-contained bundle that
+boots straight into a single app - intended for kiosk deployments on clean
+machines:
+
+```bash
+bun run package:kiosk -- apps/interactive-pool            # Linux AppImage (default)
+bun run package:kiosk -- apps/interactive-pool --macos    # macOS DMG
+```
+
+Options: `--experience <slug>` (default: the manifest's `default`),
+`--display <index>` (default: primary), `--python-extras <list>` (extra
+Python dependency groups such as `speech,realsense`), `--windowed`,
+`--skip-build`.
+
+The bundle contains the same runtime as the regular desktop package
+(Electron shell, compiled `gosai-server`, Python tree) plus:
+
+- `Resources/apps/<slug>/` - only the packaged app.
+- `Resources/kiosk.json` - tells the shell to boot into this app.
+- `Resources/bin/uv` - the `uv` binary for the target platform, used to
+  build the Python environment on first launch.
+
+At launch the shell:
+
+1. Creates an isolated data directory at `~/.gosai-kiosks/<slug>` (override
+   with `GOSAI_HOME`) holding config, storage, logs, and the Electron
+   profile - so kiosks never share state with each other or with a regular
+   GOSAI install.
+2. **First launch only:** materialises the Python runtime under
+   `~/.gosai-runtime/python-<hash>/` with the bundled `uv` - downloading a
+   managed CPython 3.12 and installing all base dependencies, which include
+   the full CV stack (OpenCV, MediaPipe, ONNX Runtime), so the camera /
+   pose / hand_pose / ball drivers work out of the box. A status window
+   shows progress; this step needs internet access once. The runtime is
+   keyed by a hash of `pyproject.toml` + `uv.lock` + extras, so kiosks with
+   identical requirements share one installation.
+3. Starts the embedded server on an **ephemeral port** (`GOSAI_PORT=0`; the
+   OS picks a free one), so any number of kiosks can run side by side with
+   no port configuration. The chosen port is written to
+   `<home>/server-info.json`.
+4. Starts the app's experience and opens it fullscreen on the primary
+   display (or the display index baked in at packaging time).
+
+Closing the window quits the kiosk. Artifacts land in
+`packages/desktop/release/kiosk/<slug>/`.
+
+The regular packaged desktop performs the same first-run Python bootstrap
+when a `uv` binary is available (bundled under `Resources/bin` or already on
+`PATH`).
+
+### Running kiosks without a per-app bundle
+
+The same kiosk mode works with a shared runtime. Either from the repo:
+
+```bash
+bun run kiosk /path/to/built-app --display 1
+```
+
+or against an installed GOSAI package:
+
+```bash
+GOSAI_DESKTOP_BIN=/Applications/GOSAI.app/Contents/MacOS/GOSAI \
+  bun run kiosk /path/to/built-app
+```
+
+`bun run kiosk` wraps the desktop shell's `--kiosk <app-dir>` flag; each
+invocation gets its own data directory and port exactly like a packaged
+kiosk.
 
 ## Troubleshooting
 

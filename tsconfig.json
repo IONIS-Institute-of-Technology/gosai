@@ -4,6 +4,7 @@
     { "path": "./packages/shared" },
     { "path": "./packages/server" },
     { "path": "./packages/sdk" },
-    { "path": "./packages/desktop" }
+    { "path": "./packages/desktop" },
+    { "path": "./packages/cli" }
   ]
 }

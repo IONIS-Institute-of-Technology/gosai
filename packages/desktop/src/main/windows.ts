@@ -4,7 +4,8 @@ import { IPC_CHANNELS } from './channels.js';
 
 interface WindowRegistryOptions {
   readonly rootDir: string;
-  readonly serverBaseUrl?: string;
+  readonly serverHost?: string;
+  readonly serverPort?: number;
 }
 
 interface AppHostHandle {
@@ -63,10 +64,32 @@ export class WindowRegistry {
   private readonly endingExperiences = new Set<string>();
   private powerSaveBlockerId: number | null = null;
   private shuttingDown = false;
-  private readonly serverBaseUrl: string;
+  private serverHost: string;
+  private serverPort: number;
 
   constructor(private readonly options: WindowRegistryOptions) {
-    this.serverBaseUrl = options.serverBaseUrl ?? 'http://127.0.0.1:7777';
+    this.serverHost = options.serverHost ?? '127.0.0.1';
+    this.serverPort = options.serverPort ?? 7777;
+  }
+
+  /**
+   * Points every window opened from now on at the given server. Called after
+   * the embedded server reports its (possibly ephemeral) port.
+   */
+  setServerAddress(addr: { host: string; port: number }): void {
+    this.serverHost = addr.host;
+    this.serverPort = addr.port;
+  }
+
+  private get serverBaseUrl(): string {
+    return `http://${this.serverHost}:${this.serverPort}`;
+  }
+
+  /** Query params every renderer window needs to find the server. */
+  private appendServerParams(query: URLSearchParams): URLSearchParams {
+    query.set('serverHost', this.serverHost);
+    query.set('serverPort', String(this.serverPort));
+    return query;
   }
 
   setShuttingDown(): void {
@@ -98,10 +121,13 @@ export class WindowRegistry {
 
     win.once('ready-to-show', () => win.show());
 
+    const query = this.appendServerParams(new URLSearchParams());
     if (isDev && process.env.ELECTRON_RENDERER_URL) {
-      void win.loadURL(`${process.env.ELECTRON_RENDERER_URL}/dashboard.html`);
+      void win.loadURL(`${process.env.ELECTRON_RENDERER_URL}/dashboard.html?${query.toString()}`);
     } else {
-      void win.loadFile(join(this.options.rootDir, '../renderer/dashboard.html'));
+      void win.loadFile(join(this.options.rootDir, '../renderer/dashboard.html'), {
+        search: `?${query.toString()}`,
+      });
     }
 
     win.on('closed', () => {
@@ -203,11 +229,13 @@ export class WindowRegistry {
     win.webContents.once('did-finish-load', showWindow);
     fallbackTimer = setTimeout(showWindow, 3000);
 
-    const query = new URLSearchParams({
-      app: opts.appSlug,
-      experience: opts.experienceSlug,
-      display: String(display.id),
-    });
+    const query = this.appendServerParams(
+      new URLSearchParams({
+        app: opts.appSlug,
+        experience: opts.experienceSlug,
+        display: String(display.id),
+      }),
+    );
     if (opts.targetAppSlug) query.set('target', opts.targetAppSlug);
     if (opts.driverBinding) query.set('driverBinding', opts.driverBinding);
 
@@ -300,11 +328,13 @@ export class WindowRegistry {
       win.focus();
     });
 
-    const query = new URLSearchParams({
-      app: opts.appSlug,
-      experience: opts.experienceSlug,
-      role: 'control',
-    });
+    const query = this.appendServerParams(
+      new URLSearchParams({
+        app: opts.appSlug,
+        experience: opts.experienceSlug,
+        role: 'control',
+      }),
+    );
     if (opts.targetAppSlug) query.set('target', opts.targetAppSlug);
     if (opts.driverBinding) query.set('driverBinding', opts.driverBinding);
 

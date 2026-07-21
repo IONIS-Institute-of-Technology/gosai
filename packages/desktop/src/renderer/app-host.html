@@ -8,12 +8,23 @@
       content="default-src 'self'; script-src 'self' 'unsafe-inline' http://127.0.0.1:* http://localhost:*; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: http: https:; img-src 'self' data: blob: http://127.0.0.1:* http://localhost:*; media-src 'self' blob:;"
     />
     <title>GOSAI App</title>
-    <script type="importmap">
-      {
-        "imports": {
-          "@gosai/sdk": "http://127.0.0.1:7777/sdk-runtime.js"
-        }
-      }
+    <!--
+      The SDK import map must point at the server that launched this window.
+      The port arrives via the ?serverPort= query param (ephemeral ports in
+      kiosk mode), so the map is written synchronously during parsing, before
+      any module loads.
+    -->
+    <script>
+      (function () {
+        var params = new URLSearchParams(window.location.search);
+        var host = params.get('serverHost') || '127.0.0.1';
+        var port = params.get('serverPort') || '7777';
+        var map = { imports: { '@gosai/sdk': 'http://' + host + ':' + port + '/sdk-runtime.js' } };
+        var el = document.createElement('script');
+        el.type = 'importmap';
+        el.textContent = JSON.stringify(map);
+        document.currentScript.after(el);
+      })();
     </script>
   </head>
   <body class="bg-black text-white antialiased overflow-hidden">

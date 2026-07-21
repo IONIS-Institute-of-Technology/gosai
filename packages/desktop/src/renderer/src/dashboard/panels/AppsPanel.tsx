@@ -22,8 +22,8 @@ import { isNotConnectedError } from '../../lib/server-client.js';
 import { Panel } from '../components/Panel.js';
 import { EmptyState } from '../components/EmptyState.jsx';
 import { AppSettingsModal } from '../components/AppSettingsModal.js';
+import { SERVER_BASE_URL } from '../../lib/server-url.js';
 
-const SERVER_BASE_URL = 'http://127.0.0.1:7777';
 const DEFAULT_CALIBRATION_STATUS_KEY = 'calibration_status';
 
 function formatKey(width: number, height: number): string {

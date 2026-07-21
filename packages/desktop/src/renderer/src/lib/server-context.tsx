@@ -1,7 +1,8 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { ServerClient, type ConnectionStatus } from './server-client.js';
+import { SERVER_WS_URL } from './server-url.js';
 
-const DEFAULT_URL = 'ws://127.0.0.1:7777/ws';
+const DEFAULT_URL = SERVER_WS_URL;
 
 interface ServerContextValue {
   client: ServerClient;

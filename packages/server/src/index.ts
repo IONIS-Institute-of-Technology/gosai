@@ -1,5 +1,5 @@
-import { resolve } from 'node:path';
-import { existsSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { existsSync, writeFileSync } from 'node:fs';
 import { createServer, type ServerOptions } from './server.js';
 import { defaultPaths, type GosaiPaths } from './paths.js';
 
@@ -22,6 +22,19 @@ const options: ServerOptions = {
 };
 
 const server = await createServer(options);
+
+// Machine-readable readiness signal. GOSAI_PORT=0 asks the OS for a free
+// ephemeral port, so supervisors (the Electron shell, the kiosk CLI) discover
+// the actual port from this stdout line or from server-info.json.
+console.log(`GOSAI_READY ${JSON.stringify({ port: server.port, host, pid: process.pid })}`);
+try {
+  writeFileSync(
+    join(paths.root, 'server-info.json'),
+    JSON.stringify({ port: server.port, host, pid: process.pid, startedAt: Date.now() }, null, 2),
+  );
+} catch {
+  // Non-fatal: the stdout line above is the primary channel.
+}
 
 const shutdown = async (signal: string): Promise<void> => {
   await server.stop();

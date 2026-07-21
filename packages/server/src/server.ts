@@ -28,6 +28,8 @@ export interface ServerOptions {
 
 export interface GosaiServer {
   stop(): Promise<void>;
+  /** Actual bound port (differs from options.port when 0 was requested). */
+  readonly port: number;
   readonly logger: Logger;
   readonly bus: EventBus;
   readonly drivers: DriverManager;
@@ -119,6 +121,27 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
   app.get('/v1/apps', (c) => c.json({ apps: apps.listApps() }));
   app.get('/v1/drivers', (c) => c.json({ drivers: drivers.listDrivers() }));
   app.get('/v1/experiences', (c) => c.json({ experiences: apps.listRunningExperiences() }));
+
+  app.post('/v1/experiences/start', async (c) => {
+    let body: { appSlug?: string; experienceSlug?: string; driverBinding?: string };
+    try {
+      body = (await c.req.json()) as typeof body;
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    if (!body.appSlug || !body.experienceSlug) {
+      return c.json({ error: 'appSlug and experienceSlug are required' }, 400);
+    }
+    try {
+      const running = await apps.startExperience(body.appSlug, body.experienceSlug, {
+        driverBinding: body.driverBinding,
+      });
+      return c.json({ ok: true, experience: running });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
+    }
+  });
 
   app.post('/v1/experiences/stop', async (c) => {
     let body: { appSlug?: string; experienceSlug?: string };
@@ -253,9 +276,11 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
     throw err;
   }
 
-  log.info(`gosai server up on http://${options.host}:${options.port}`);
+  const boundPort = server.port ?? options.port;
+  log.info(`gosai server up on http://${options.host}:${boundPort}`);
 
   return {
+    port: boundPort,
     logger,
     bus,
     drivers,

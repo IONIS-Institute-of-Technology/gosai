@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { AppSettingsField, AppSettingsSchema, InstalledApp } from '@gosai/shared';
-
-const SERVER_BASE_URL = 'http://127.0.0.1:7777';
+import { SERVER_BASE_URL } from '../../lib/server-url.js';
 
 type SettingValue = string | number | boolean;
 type ConfigObject = Record<string, unknown>;

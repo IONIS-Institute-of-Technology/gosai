@@ -81,10 +81,9 @@ train future driver models) with the multi-model pipeline in
 
 ```bash
 bun install
-bun run python:sync          # creates python/.venv with uv
-bun run python:sync -- --extra cv     # for camera/pose/hand_pose drivers
-bun run python:sync -- --extra audio  # for microphone/speaker drivers
-bun run python:sync -- --extra speech # for STT/VAD drivers
+bun run python:sync          # creates python/.venv with uv (CV + audio included)
+bun run python:sync -- --extra speech    # for STT/VAD drivers
+bun run python:sync -- --extra realsense # for Intel RealSense cameras
 bun run build:sdk           # builds /sdk-runtime.js for app-host windows
 bun run build:apps          # builds built-in app entry bundles
 bun run dev
@@ -114,6 +113,8 @@ To install a new app paste its git URL into the Apps tab of the dashboard.
 | `bun run python:test`      | `pytest` for the Python runtime                   |
 | `bun run package:mac`      | Build server bin + macOS DMG (arm64+x64)          |
 | `bun run package:linux`    | Build server bin + Linux AppImage                 |
+| `bun run package:kiosk`    | Build a single-app kiosk bundle (see below)       |
+| `bun run kiosk`            | Launch a built app as a kiosk from the repo       |
 | `bun run clean`            | Remove all build artifacts                        |
 
 ## Authoring an app
@@ -189,6 +190,34 @@ Calibration is also per app, but it is declared separately with a top-level
 `calibration` object. Apps that need it provide a browser ESM calibration entry;
 GOSAI's built-in calibration runner loads that entry and writes the resulting
 profile into the target app's own storage.
+
+## Kiosk mode
+
+A kiosk runs exactly one app: no dashboard, one fullscreen window, its own
+data directory (`~/.gosai-kiosks/<slug>` by default), and an embedded server
+on an ephemeral port - several kiosks coexist on one machine with zero port
+management.
+
+Launch a built app as a kiosk from the repo (or against a packaged GOSAI via
+`GOSAI_DESKTOP_BIN`):
+
+```bash
+bun run build:desktop && bun run build:sdk   # once
+bun run kiosk apps/interactive-pool          # add --display 1, --windowed, ...
+```
+
+Or package a self-contained kiosk bundle for a clean machine (embeds
+Electron, the compiled server, the Python tree, `uv`, and only that app):
+
+```bash
+bun run package:kiosk -- apps/interactive-pool          # Linux AppImage (default)
+bun run package:kiosk -- apps/interactive-pool --macos  # macOS DMG
+```
+
+On its first launch the bundle installs Python 3.12 and all CV driver
+dependencies by itself (needs internet once); after that it runs offline.
+Artifacts land in `packages/desktop/release/kiosk/<slug>/`. See
+[`docs/deployment.md`](docs/deployment.md) for details.
 
 ## Packaging
 

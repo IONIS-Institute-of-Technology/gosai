@@ -1,11 +1,10 @@
 import { type JSX, useEffect, useState } from 'react';
+import { SERVER_BASE_URL } from '../lib/server-url.js';
 
 interface LoadResult {
   status: 'loading' | 'ready' | 'error';
   message?: string;
 }
-
-const SERVER_BASE_URL = 'http://127.0.0.1:7777';
 
 export function AppHost(): JSX.Element {
   const [result, setResult] = useState<LoadResult>({ status: 'loading' });
