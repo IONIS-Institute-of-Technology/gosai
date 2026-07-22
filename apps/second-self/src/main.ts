@@ -39,6 +39,7 @@ import {
 import type { LayerDeps } from './shared/deps.js';
 import { createMirrorFeed, type MirrorFeed } from './shared/feed.js';
 import { LayerManager, type LayerDef } from './shared/menu-controller.js';
+import { SleepController } from './shared/sleep.js';
 import { Synth } from './shared/synth.js';
 import {
   REF_HEIGHT,
@@ -99,6 +100,7 @@ interface State {
   manager: LayerManager;
   subs: DriverSubscription[];
   config: SecondSelfConfig;
+  sleep: SleepController | null;
 }
 
 export default defineExperience<State>({
@@ -124,6 +126,7 @@ export default defineExperience<State>({
       manager: placeholder,
       subs: [],
       config: DEFAULT_CONFIG,
+      sleep: null,
     };
   },
 
@@ -146,6 +149,8 @@ export default defineExperience<State>({
       // Replaced just below with the real manager (layers capture `deps`).
       controller: undefined as unknown as LayerManager,
     };
+
+    state.sleep = new SleepController(state.config.sleep, state.feed);
 
     const defs = buildLayerDefs(deps);
     state.manager = new LayerManager(defs, (slug, err) => {
@@ -197,7 +202,13 @@ export default defineExperience<State>({
       frameCount: frame.frameCount,
     };
 
+    state.sleep?.update(frameCtx.timestamp, frameCtx.deltaMs);
+
+    // Fully asleep: the canvas is already black-filled, skip all layer work.
+    if (state.sleep?.dormant()) return;
+
     state.manager.render(frameCtx);
+    state.sleep?.render(state.ctx, frameCtx.timestamp);
   },
 
   async stop(rt: ExperienceRuntimeContext, state: State): Promise<void> {

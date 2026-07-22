@@ -99,10 +99,22 @@ The app is registered in the repo root `build:apps` script.
 Configuration is intentionally minimal — two fields, everything else automatic
 or produced by the in-app calibration wizard:
 
-| Field               | Values                  | Meaning                                                                        |
-| ------------------- | ----------------------- | ------------------------------------------------------------------------------ |
-| `projection.mode`   | `direct` / `reflection` | `direct` = webcam selfie overlay (default); `reflection` = physical mirror rig |
-| `projection.mirror` | `true` / `false`        | Horizontal flip for a selfie view (direct mode)                                |
+| Field                   | Values                  | Meaning                                                                        |
+| ----------------------- | ----------------------- | ------------------------------------------------------------------------------ |
+| `projection.mode`       | `direct` / `reflection` | `direct` = webcam selfie overlay (default); `reflection` = physical mirror rig |
+| `projection.mirror`     | `true` / `false`        | Horizontal flip for a selfie view (direct mode)                                |
+| `sleep.enabled`         | `true` / `false`        | Presence-based display sleep (default `true`)                                  |
+| `sleep.wakeConfidence`  | `0..1`                  | Smoothed pose confidence needed to wake (default `0.6`)                        |
+| `sleep.sleepConfidence` | `0..1`                  | Below this the user counts as absent (default `0.35`)                         |
+| `sleep.sleepDelaySec`   | seconds                 | Continuous absence before falling asleep (default `12`)                       |
+
+When nobody is detected in front of the mirror for `sleepDelaySec`, the display
+falls completely dark with a "magic veil" animation (a glowing iris ring closes
+over the screen, trailing sparkles); while dark, layer rendering is skipped
+entirely. When someone approaches, the veil reopens from the person's head
+position with the reverse reveal. Presence is derived from the visibility of
+the core body landmarks (nose/shoulders/hips) in the raw `pose` feed, smoothed
+and gated with hysteresis so the mirror never flickers between states.
 
 It lives in the app's key/value storage under `config` (edit via the app's
 **Settings** button in the dashboard, or `POST

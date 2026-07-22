@@ -31,8 +31,20 @@ export interface ProjectionConfig {
   mirror: boolean;
 }
 
+export interface SleepConfig {
+  /** Master switch for presence-based display sleep. */
+  enabled: boolean;
+  /** Smoothed presence confidence required to wake the display (0..1). */
+  wakeConfidence: number;
+  /** Below this smoothed confidence the user counts as absent (0..1). */
+  sleepConfidence: number;
+  /** Seconds of continuous absence before the display falls asleep. */
+  sleepDelaySec: number;
+}
+
 export interface SecondSelfConfig {
   projection: ProjectionConfig;
+  sleep: SleepConfig;
 }
 
 /**
@@ -56,6 +68,12 @@ export const DEFAULT_CONFIG: SecondSelfConfig = {
   projection: {
     mode: 'direct',
     mirror: true,
+  },
+  sleep: {
+    enabled: true,
+    wakeConfidence: 0.6,
+    sleepConfidence: 0.35,
+    sleepDelaySec: 12,
   },
 };
 
@@ -119,11 +137,17 @@ export function toMirrorDriverConfig(
 
 function mergeConfig(base: SecondSelfConfig, override: unknown): SecondSelfConfig {
   if (typeof override !== 'object' || override === null) return base;
-  const o = override as { projection?: Partial<ProjectionConfig> };
+  const o = override as { projection?: Partial<ProjectionConfig>; sleep?: Partial<SleepConfig> };
   return {
     projection: {
       mode: pickEnum(o.projection?.mode, ['direct', 'reflection'], base.projection.mode),
       mirror: pickBool(o.projection?.mirror, base.projection.mirror),
+    },
+    sleep: {
+      enabled: pickBool(o.sleep?.enabled, base.sleep.enabled),
+      wakeConfidence: pickNumber(o.sleep?.wakeConfidence, base.sleep.wakeConfidence, 0, 1),
+      sleepConfidence: pickNumber(o.sleep?.sleepConfidence, base.sleep.sleepConfidence, 0, 1),
+      sleepDelaySec: pickNumber(o.sleep?.sleepDelaySec, base.sleep.sleepDelaySec, 0, 3600),
     },
   };
 }
@@ -147,6 +171,12 @@ function parseMirrorProfile(value: unknown): MirrorProfile | null {
     ...(typeof v.residual_px_mean === 'number' ? { residual_px_mean: v.residual_px_mean } : {}),
     ...(typeof v.updatedAt === 'number' ? { updatedAt: v.updatedAt } : {}),
   };
+}
+
+function pickNumber(value: unknown, fallback: number, lo: number, hi: number): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.min(hi, Math.max(lo, value))
+    : fallback;
 }
 
 function pickBool(value: unknown, fallback: boolean): boolean {
