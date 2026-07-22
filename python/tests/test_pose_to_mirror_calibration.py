@@ -20,7 +20,12 @@ from gosai_py.drivers.pose_to_mirror import (
     RIGHT_INDEX,
     RIGHT_SHOULDER,
     PoseToMirrorDriver,
+    _map_location,
 )
+
+# MediaPipe ankle indices (used by the physical-invariant test).
+LEFT_ANKLE = 27
+RIGHT_ANKLE = 28
 
 TRUE_TILT_DEG = 12.0
 TRUE_SCALE = 1.0
@@ -192,3 +197,106 @@ def test_clear_samples(driver: PoseToMirrorDriver) -> None:
     assert driver.execute("clear_calibration_samples", None) == {"ok": True, "samples": 0}
     result = driver.execute("solve_calibration", {})
     assert not result["ok"]
+
+
+# ---------------------------------------------------------------------------
+# Physical invariants of the reflection math
+# ---------------------------------------------------------------------------
+
+MIRROR_TILT_DEG = 17.0
+
+# Mirror-frame joint positions (x right, y down, z = distance from the mirror
+# plane, all mm). The camera center sits on the extended mirror plane (z = 0),
+# tilted down by MIRROR_TILT_DEG. The person stands parallel to the mirror.
+STANDING_JOINTS_MIRROR: dict[int, tuple[float, float]] = {
+    NOSE: (0.0, 200.0),
+    LEFT_SHOULDER: (200.0, 400.0),
+    RIGHT_SHOULDER: (-200.0, 400.0),
+    LEFT_ANKLE: (150.0, 1800.0),
+    RIGHT_ANKLE: (-150.0, 1800.0),
+}
+
+
+def _make_standing_raw(distance_mm: float, tilt_deg: float) -> dict[str, Any]:
+    """Raw pose payload for a person standing at `distance_mm` from the mirror.
+
+    Joints are placed in the mirror frame, moved into the tilted camera frame,
+    and projected through the same pinhole model the driver assumes. World z is
+    set to the exact camera-z offset from the shoulders so the driver's
+    weak-perspective depth recovery is exact at scale=1.
+    """
+    theta = math.radians(tilt_deg)
+    cos_t, sin_t = math.cos(theta), math.sin(theta)
+
+    def to_camera(x: float, y: float, z: float) -> tuple[float, float, float]:
+        return (x, y * cos_t - z * sin_t, y * sin_t + z * cos_t)
+
+    cam = {
+        i: to_camera(x, y, distance_mm) for i, (x, y) in STANDING_JOINTS_MIRROR.items()
+    }
+    shoulder_z = cam[LEFT_SHOULDER][2]
+    body_pose: list[list[float]] = []
+    body_world: list[list[float]] = []
+    for i in range(33):
+        x, y, z = cam.get(i, cam[NOSE])
+        u, v = _project_px(x, y, z)
+        body_pose.append([u, v, 0.9])
+        body_world.append([x / 1000.0, y / 1000.0, (z - shoulder_z) / 1000.0, 0.9])
+    return {
+        "body_pose": body_pose,
+        "body_world_pose": body_world,
+        "frame_width": FRAME_W,
+        "frame_height": FRAME_H,
+        "ts": time.time(),
+    }
+
+
+@pytest.mark.parametrize("distance_mm", [1000.0, 1500.0, 2500.0])
+def test_reflection_matches_physical_mirror(
+    driver: PoseToMirrorDriver, distance_mm: float
+) -> None:
+    """The trace of your reflection on the glass is half your size, at any
+    distance: the glass point for body point P seen from eye E is (E + P) / 2
+    in mirror-plane coordinates. The projected coordinates must therefore be
+    independent of distance and match that midpoint exactly."""
+    raw = _make_standing_raw(distance_mm, MIRROR_TILT_DEG)
+    eye_x, eye_y = STANDING_JOINTS_MIRROR[NOSE]
+
+    reflected: dict[int, list[float]] = {}
+    for index, (px, py) in STANDING_JOINTS_MIRROR.items():
+        loc = driver._reflect_body_landmark(raw, index, MIRROR_TILT_DEG, 1.0)
+        assert loc is not None
+        assert loc[0] == pytest.approx((eye_x + px) / 2.0, abs=1e-3)
+        assert loc[1] == pytest.approx((eye_y + py) / 2.0, abs=1e-3)
+        reflected[index] = loc
+
+    real_span = STANDING_JOINTS_MIRROR[LEFT_ANKLE][1] - STANDING_JOINTS_MIRROR[NOSE][1]
+    glass_span = reflected[LEFT_ANKLE][1] - reflected[NOSE][1]
+    assert glass_span == pytest.approx(real_span / 2.0, abs=1e-3)
+
+
+def test_mirror_offset_shifts_intersection() -> None:
+    """A camera offset along the mirror normal changes the interpolation
+    weight when eye and point sit at different depths."""
+    fx = fy = 600.0
+    ppx, ppy = FRAME_W / 2.0, FRAME_H / 2.0
+    eye_depth, point_depth = 2000.0, 1000.0
+    eye = (0.0, 0.0, eye_depth)
+    point_mm = (100.0, 300.0)
+    point_px = [
+        point_mm[0] * fx / point_depth + ppx,
+        point_mm[1] * fy / point_depth + ppy,
+    ]
+
+    for offset in (0.0, 100.0):
+        t = (eye_depth - offset) / (eye_depth + point_depth - 2.0 * offset)
+        loc = _map_location(
+            point_px, eye_depth, eye, point_depth, fx, fy, ppx, ppy, 0.0, offset
+        )
+        assert loc[0] == pytest.approx(t * point_mm[0], abs=1e-6)
+        assert loc[1] == pytest.approx(t * point_mm[1], abs=1e-6)
+
+
+def test_mirror_offset_config_roundtrip(driver: PoseToMirrorDriver) -> None:
+    cfg = driver.execute("set_mirror_config", {"mirror_offset_mm": 45.0})
+    assert cfg["mirror_offset_mm"] == 45.0

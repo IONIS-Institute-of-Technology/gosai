@@ -12,8 +12,11 @@ dependency by using the metric 3D that MediaPipe Holistic already produces
 
 - The legacy RealSense intrinsics used zero distortion coefficients, so
   `rs2_deproject_pixel_to_point` reduces to the exact pinhole formula used here
-  (`x = (u - ppx) / fx * depth`). The projection math is therefore numerically
-  identical to the legacy path; only the depth source changed.
+  (`x = (u - ppx) / fx * depth`). Unlike the legacy path, the camera tilt is
+  applied as a full rigid rotation into a mirror-aligned frame, so the virtual
+  image construction uses distances perpendicular to the mirror plane (the
+  legacy code rotated only the y coordinates, which broke the geometry for any
+  nonzero tilt).
 - Absolute camera distance is recovered with a weak-perspective estimate from
   shoulder span (metric size from `body_world_pose` vs. pixel size from
   `body_pose`). Per-joint depth offsets come from `body_world_pose.z`.
@@ -118,7 +121,8 @@ DEFAULT_CONFIG: dict[str, float] = {
     "screen_height_mm": 698.4,
     "width": 1080.0,
     "height": 1920.0,
-    "tilt_deg": 17.0,  # camera tilt; rotates the y-z plane.
+    "tilt_deg": 17.0,  # camera tilt relative to the mirror plane (deg).
+    "mirror_offset_mm": 0.0,  # camera center's distance from the mirror plane along its normal.
     "hfov_deg": 60.0,  # used to derive focal length from frame width.
     "scale": 1.0,  # multiplies the estimated distance (per-install tuning).
     "default_distance_mm": 1500.0,  # fallback subject distance.
@@ -200,24 +204,38 @@ def _map_location(
     ppx: float,
     ppy: float,
     theta: float,
+    mirror_offset: float = 0.0,
 ) -> list[float]:
-    """Reflect a single point onto the mirror plane (legacy ``map_location``).
+    """Reflect a single point onto the mirror plane.
 
-    Finds where the line from the eye to the point's mirror image crosses the
-    mirror (the reflection the user sees), weighted by ``da / (da + db)``.
+    Finds where the sight line from the eye to the point's virtual (mirror)
+    image crosses the mirror plane. Both points are first moved from the
+    camera frame into a mirror-aligned frame (rigid rotation about the x axis
+    by ``theta``, the camera tilt relative to the mirror), so distances are
+    measured perpendicular to the mirror plane. ``mirror_offset`` is the
+    camera center's distance (mm) from the extended mirror plane along its
+    normal (in-plane offsets are absorbed by the output affine).
     """
-    da = eyes_depth
-    db = point_depth
     xa, ya, za = eyes_coords
-    xb, yb, zb = _deproject(point[0], point[1], db, fx, fy, ppx, ppy)
+    xb, yb, zb = _deproject(point[0], point[1], point_depth, fx, fy, ppx, ppy)
 
-    ya = ya * math.cos(theta) + za * math.sin(theta)
-    yb = yb * math.cos(theta) + zb * math.sin(theta)
+    cos_t = math.cos(theta)
+    sin_t = math.sin(theta)
+    # Camera frame -> mirror-aligned frame.
+    ya2 = ya * cos_t + za * sin_t
+    za2 = za * cos_t - ya * sin_t
+    yb2 = yb * cos_t + zb * sin_t
+    zb2 = zb * cos_t - yb * sin_t
 
-    dz = db + da
-    if dz != 0:
-        xi = xa + (da / dz) * (xb - xa)
-        yi = ya + (da / dz) * (yb - ya)
+    # Distances to the mirror plane, measured along its normal.
+    da = za2 - mirror_offset
+    db = zb2 - mirror_offset
+
+    dz = da + db
+    if dz > 1e-6:
+        t = da / dz
+        xi = xa + t * (xb - xa)
+        yi = ya2 + t * (yb2 - ya2)
         if not math.isnan(xi) and not math.isnan(yi):
             return [xi, yi]
     return [-1.0, -1.0]
@@ -360,7 +378,16 @@ class PoseToMirrorDriver(BaseProcessor):
         eyes_coords = _deproject(eyes_px[0], eyes_px[1], eyes_depth, fx, fy, ppx, ppy)
         point_depth = max(distance + world_z_mm(index), 1.0)
         loc = _map_location(
-            body_pose[index][:2], eyes_depth, eyes_coords, point_depth, fx, fy, ppx, ppy, theta
+            body_pose[index][:2],
+            eyes_depth,
+            eyes_coords,
+            point_depth,
+            fx,
+            fy,
+            ppx,
+            ppy,
+            theta,
+            self._config["mirror_offset_mm"],
         )
         if loc[0] == -1.0 and loc[1] == -1.0:
             return None
@@ -379,6 +406,7 @@ class PoseToMirrorDriver(BaseProcessor):
         theta: float,
         ref: list[float] | None = None,
     ) -> list[list[float]]:
+        mirror_offset = self._config["mirror_offset_mm"]
         projected: list[list[float]] = []
         for i, point in enumerate(points):
             if not point:
@@ -390,7 +418,9 @@ class PoseToMirrorDriver(BaseProcessor):
             else:
                 visibility = ref[3] if len(ref) > 3 else 1.0
                 point_depth = ref[2] if len(ref) > 2 else eyes_depth
-            loc = _map_location(point[:2], eyes_depth, eyes_coords, point_depth, fx, fy, ppx, ppy, theta)
+            loc = _map_location(
+                point[:2], eyes_depth, eyes_coords, point_depth, fx, fy, ppx, ppy, theta, mirror_offset
+            )
             projected.append([loc[0], loc[1], point_depth, visibility])
         return projected
 

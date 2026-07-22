@@ -105,8 +105,6 @@ const EXPECTED: Record<
       'set_confidence',
       'set_max_ball_px',
       'set_min_ball_px',
-      'set_min_cutoff',
-      'set_beta',
       'set_frame_skip',
       'set_cuda_device',
     ],

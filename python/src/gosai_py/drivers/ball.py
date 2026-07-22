@@ -11,12 +11,11 @@ centers/radii so emitted coordinates live in the 1920x1080 reference system.
 The model has a single class, so detections are ball candidates by definition —
 they are only filtered by confidence, size, and the calibrated table bounds.
 The model is trained with negatives (empty tables, pockets, hands, cues, glare)
-so pockets and sun rays do not fire. Positions are smoothed with a One-Euro
-filter (Casiez et al., CHI 2012) — strong smoothing when a ball is stationary
-(kills jitter), weak smoothing when it moves fast (kills lag). Track association
-uses velocity prediction so a fast ball stays attached to its track instead of
-spawning a phantom. New tracks require consecutive hits before rendering, while
-confirmed tracks survive short detector misses using predicted positions.
+so pockets and sun rays do not fire. Detected positions are emitted raw — no
+smoothing — so rendered motion has zero added latency. A minimal
+nearest-neighbour tracker only estimates per-ball velocity (for renderer-side
+extrapolation between detections) and holds a ball for a couple of missed
+frames so it does not flicker when YOLO drops a frame.
 
 The model exports the YOLO26 end-to-end (NMS-free) head: the ONNX output is
 ``(1, 300, 6)`` rows of ``[x1, y1, x2, y2, confidence, class_id]`` — no NMS is
@@ -34,12 +33,12 @@ Actions:
 - ``set_output_size({width, height})``
 - ``set_confidence(0..1)``
 - ``set_max_ball_px(px)`` / ``set_min_ball_px(px)``
-- ``set_min_cutoff(hz)``            — One-Euro min cutoff (lower = smoother static)
-- ``set_beta(value)``               — One-Euro speed coeff (lower = smoother moving)
 - ``set_frame_skip(n)``             — run YOLO every (n+1) frames; 0 = every frame
 - ``set_cuda_device(id)``           — NVIDIA GPU index (default 0)
 
 Environment (optional):
+- ``GOSAI_BALL_CONFIDENCE`` — detection confidence threshold 0..1 (default 0.70);
+  the ``set_confidence`` action still overrides it at runtime.
 - ``GOSAI_ACCELERATOR`` — ``auto``, ``tensorrt``, ``cuda``, ``coreml`` (macOS),
   ``dml``, ``cpu``. ``auto`` prefers TensorRT then CUDA on NVIDIA, CoreML on macOS.
 - ``GOSAI_CUDA_DEVICE_ID`` — CUDA device index when using NVIDIA (default 0)
@@ -50,6 +49,7 @@ Environment (optional):
 from __future__ import annotations
 
 import math
+import os
 import time
 from collections import deque
 from pathlib import Path
@@ -65,6 +65,19 @@ MODEL_PATH = MODELS_DIR / MODEL_FILENAME
 # (height, width) fallback; the real size is read from the ONNX model at load.
 # The ball model is exported at 720p 16:9 to match real-world camera feeds.
 MODEL_INPUT_SIZE = (736, 1280)
+
+
+DEFAULT_CONFIDENCE = 0.70
+
+
+def _default_confidence() -> float:
+    """Confidence threshold default, overridable via GOSAI_BALL_CONFIDENCE."""
+    raw = os.environ.get("GOSAI_BALL_CONFIDENCE", "")
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_CONFIDENCE
+    return max(0.01, min(1.0, value))
 
 
 class _Detection(NamedTuple):
@@ -202,83 +215,38 @@ def _filter_output_bounds(
     return filtered
 
 
-# ── One-Euro filter + ball tracker ───────────────────────────────────────
+# ── Minimal ball tracker ─────────────────────────────────────────────────
 
-class _OneEuro:
-    """One-Euro filter (Casiez et al., CHI 2012).
-
-    Adaptive low-pass filter.  Cutoff frequency rises with measured
-    speed: heavy smoothing on a stationary signal (low cutoff, kills
-    jitter), light smoothing on a moving signal (high cutoff, kills
-    lag).  Far superior to a fixed-alpha EMA for tracking.
-    """
-
-    __slots__ = ("_dx_filt", "_t_prev", "_x_filt",
-                 "beta", "d_cutoff", "min_cutoff")
-
-    def __init__(self, min_cutoff: float = 1.0, beta: float = 0.05,
-                 d_cutoff: float = 1.0) -> None:
-        self.min_cutoff = min_cutoff
-        self.beta = beta
-        self.d_cutoff = d_cutoff
-        self._x_filt: float | None = None
-        self._dx_filt: float = 0.0
-        self._t_prev: float | None = None
-
-    @staticmethod
-    def _alpha(cutoff: float, dt: float) -> float:
-        tau = 1.0 / (2.0 * math.pi * max(cutoff, 1e-6))
-        return dt / (tau + dt) if (tau + dt) > 0 else 1.0
-
-    def __call__(self, x: float, t: float) -> float:
-        if self._x_filt is None or self._t_prev is None:
-            self._x_filt = x
-            self._t_prev = t
-            return x
-        dt = max(t - self._t_prev, 1e-6)
-        dx_raw = (x - self._x_filt) / dt
-        a_d = self._alpha(self.d_cutoff, dt)
-        self._dx_filt = a_d * dx_raw + (1.0 - a_d) * self._dx_filt
-        cutoff = self.min_cutoff + self.beta * abs(self._dx_filt)
-        a = self._alpha(cutoff, dt)
-        self._x_filt = a * x + (1.0 - a) * self._x_filt
-        self._t_prev = t
-        return self._x_filt
-
-    @property
-    def velocity(self) -> float:
-        return self._dx_filt
+# EMA weight for velocity estimation (velocity only -- positions pass raw).
+_VELOCITY_ALPHA = 0.5
 
 
 class _TrackedBall:
-    __slots__ = ("age", "fr", "fx", "fy", "last_seen_t", "missed", "r", "score", "x", "y")
+    __slots__ = ("last_seen_t", "missed", "r", "vx", "vy", "x", "y")
 
-    def __init__(self, det: _Detection, t: float,
-                 min_cutoff: float, beta: float) -> None:
-        self.fx = _OneEuro(min_cutoff=min_cutoff, beta=beta)
-        self.fy = _OneEuro(min_cutoff=min_cutoff, beta=beta)
-        # Radius changes slowly -- smooth harder.
-        self.fr = _OneEuro(min_cutoff=min_cutoff * 0.5, beta=beta * 0.5)
-        self.x = self.fx(det.x, t)
-        self.y = self.fy(det.y, t)
-        self.r = self.fr(det.r, t)
-        self.score = det.score
+    def __init__(self, det: _Detection, t: float) -> None:
+        self.x = det.x
+        self.y = det.y
+        self.r = det.r
+        self.vx = 0.0
+        self.vy = 0.0
         self.last_seen_t = t
-        self.age = 1
         self.missed = 0
 
     def update(self, det: _Detection, t: float) -> None:
-        self.x = self.fx(det.x, t)
-        self.y = self.fy(det.y, t)
-        self.r = self.fr(det.r, t)
-        self.score = self.score * 0.7 + det.score * 0.3
+        dt = max(t - self.last_seen_t, 1e-6)
+        # Positions pass through raw; only velocity is lightly averaged so
+        # renderer-side extrapolation doesn't jitter.
+        self.vx = _VELOCITY_ALPHA * ((det.x - self.x) / dt) + (1.0 - _VELOCITY_ALPHA) * self.vx
+        self.vy = _VELOCITY_ALPHA * ((det.y - self.y) / dt) + (1.0 - _VELOCITY_ALPHA) * self.vy
+        self.x = det.x
+        self.y = det.y
+        self.r = det.r
         self.last_seen_t = t
-        self.age += 1
         self.missed = 0
 
     def predict(self, dt: float) -> tuple[float, float]:
-        """Linear extrapolation using smoothed velocity."""
-        return self.x + self.fx.velocity * dt, self.y + self.fy.velocity * dt
+        return self.x + self.vx * dt, self.y + self.vy * dt
 
     def render_position(self, t: float) -> tuple[float, float]:
         if self.missed <= 0:
@@ -286,73 +254,49 @@ class _TrackedBall:
         return self.predict(max(0.0, t - self.last_seen_t))
 
     def render_velocity(self) -> tuple[float, float]:
-        # Decay extrapolation while YOLO is missing the ball to avoid long overshoots.
+        # Decay extrapolation while YOLO is missing the ball to avoid overshoots.
         decay = 0.65 ** max(0, self.missed)
-        return self.fx.velocity * decay, self.fy.velocity * decay
-
-    def set_filter_params(self, min_cutoff: float, beta: float) -> None:
-        self.fx.min_cutoff = min_cutoff
-        self.fx.beta = beta
-        self.fy.min_cutoff = min_cutoff
-        self.fy.beta = beta
-        self.fr.min_cutoff = min_cutoff * 0.5
-        self.fr.beta = beta * 0.5
+        return self.vx * decay, self.vy * decay
 
 
 class _BallTracker:
-    """Velocity-aware tracker with One-Euro smoothing.
+    """Minimal nearest-neighbour tracker with zero position smoothing.
 
-    Tracks are matched against detections using the **predicted** next
-    position (current filtered position + smoothed velocity * dt), so a
-    fast-moving ball stays attached to its existing track instead of
-    spawning a phantom duplicate.
-
-    New tracks must be confirmed by consecutive detections before they
-    are rendered, which absorbs one-frame glare/sun-ray false positives.
-    Confirmed tracks are rendered through short misses using predicted
-    positions, which keeps real moving balls from visibly flickering when
-    YOLO drops a frame.
+    Detections are emitted at their raw positions, so there is no added
+    motion latency. The tracker only keeps per-ball identity across frames
+    to estimate velocity (used by the renderer to extrapolate between
+    detections) and holds a confirmed ball at its predicted position for a
+    couple of missed frames so a dropped YOLO frame does not flicker.
     """
 
-    def __init__(self, min_cutoff: float = 1.0, beta: float = 0.05,
-                 max_miss: int = 5, render_miss: int = 3,
-                 match_radius: float = 110.0, min_match_radius: float = 45.0,
-                 min_age: int = 2) -> None:
-        self.min_cutoff = min_cutoff
-        self.beta = beta
+    def __init__(self, max_miss: int = 3, render_miss: int = 2,
+                 match_radius: float = 110.0, min_match_radius: float = 45.0) -> None:
         self.max_miss = max_miss
         self.render_miss = render_miss
         self.match_radius = match_radius
         self.min_match_radius = min_match_radius
-        self.min_age = min_age
         self.tracks: list[_TrackedBall] = []
-        self._t_prev: float | None = None
 
     def update(self, detections: list[_Detection],
                t: float) -> list[_TrackedBall]:
-        self._t_prev = t
-
         used_det: set[int] = set()
         used_trk: set[int] = set()
 
-        # Velocity-aware matching: compare detections to predicted positions.
-        pairs: list[tuple[float, float, int, int]] = []
+        # Greedy nearest-neighbour matching against predicted positions so a
+        # fast ball stays attached to its track instead of spawning a phantom.
+        pairs: list[tuple[float, int, int]] = []
         for ti, trk in enumerate(self.tracks):
             dt = max(0.0, t - trk.last_seen_t)
             px, py = trk.predict(dt) if dt > 0 else (trk.x, trk.y)
-            speed = math.hypot(trk.fx.velocity, trk.fy.velocity)
+            speed = math.hypot(trk.vx, trk.vy)
             radius_gate = trk.r * 2.4 + speed * dt * 1.1
             gate = min(self.match_radius, max(self.min_match_radius, radius_gate))
-            if trk.age < self.min_age:
-                gate *= 0.75
             for di, det in enumerate(detections):
                 dist = math.hypot(det.x - px, det.y - py)
                 if dist < gate:
-                    # Prefer close matches, with a tiny confidence tie-breaker.
-                    cost = (dist / gate) - det.score * 0.02
-                    pairs.append((cost, dist, ti, di))
+                    pairs.append((dist, ti, di))
         pairs.sort()
-        for _cost, _dist, ti, di in pairs:
+        for _dist, ti, di in pairs:
             if ti in used_trk or di in used_det:
                 continue
             self.tracks[ti].update(detections[di], t)
@@ -365,33 +309,17 @@ class _BallTracker:
 
         for di, det in enumerate(detections):
             if di not in used_det:
-                self.tracks.append(_TrackedBall(det, t, self.min_cutoff, self.beta))
+                self.tracks.append(_TrackedBall(det, t))
 
-        self.tracks = [trk for trk in self.tracks if self._keep_track(trk)]
+        self.tracks = [trk for trk in self.tracks if trk.missed <= self.max_miss]
 
         return self._renderable()
 
     def current(self) -> list[_TrackedBall]:
         return self._renderable()
 
-    def set_filter_params(self, min_cutoff: float, beta: float) -> None:
-        self.min_cutoff = min_cutoff
-        self.beta = beta
-        for trk in self.tracks:
-            trk.set_filter_params(min_cutoff, beta)
-
-    def _keep_track(self, trk: _TrackedBall) -> bool:
-        if trk.missed > self.max_miss:
-            return False
-        # Unconfirmed tracks must be consecutive hits; a flickering false
-        # positive never becomes visible by reappearing every few frames.
-        return trk.age >= self.min_age or trk.missed == 0
-
     def _renderable(self) -> list[_TrackedBall]:
-        return [
-            t for t in self.tracks
-            if t.age >= self.min_age and t.missed <= self.render_miss
-        ]
+        return [t for t in self.tracks if t.missed <= self.render_miss]
 
 
 # ── Driver ───────────────────────────────────────────────────────────────
@@ -406,8 +334,6 @@ class BallDriver(BaseProcessor):
         "set_confidence",
         "set_max_ball_px",
         "set_min_ball_px",
-        "set_min_cutoff",
-        "set_beta",
         "set_frame_skip",
         "set_cuda_device",
     )
@@ -424,13 +350,12 @@ class BallDriver(BaseProcessor):
         self._input_size: tuple[int, int] = MODEL_INPUT_SIZE
         self._homography: Any = None
         self._output_size = self.DEFAULT_OUTPUT_SIZE
-        self._confidence = 0.25
+        self._confidence = _default_confidence()
         self._min_ball_px = 10.0
         self._max_ball_px = 100.0
         self._max_aspect = 1.6
         self._frame_times: deque[float] = deque(maxlen=50)
-        self._tracker = _BallTracker(min_cutoff=1.0, beta=0.05,
-                                     max_miss=5, render_miss=3, min_age=2,
+        self._tracker = _BallTracker(max_miss=3, render_miss=2,
                                      match_radius=110.0, min_match_radius=45.0)
         self._frame_idx = 0
         self._skip = 0  # 0 = process every frame; raise on slow hardware
@@ -479,12 +404,6 @@ class BallDriver(BaseProcessor):
         if action == "set_min_ball_px":
             self._min_ball_px = float(data)
             return {"min_ball_px": self._min_ball_px}
-        if action == "set_min_cutoff":
-            self._tracker.set_filter_params(max(0.01, float(data)), self._tracker.beta)
-            return {"min_cutoff": self._tracker.min_cutoff}
-        if action == "set_beta":
-            self._tracker.set_filter_params(self._tracker.min_cutoff, max(0.0, float(data)))
-            return {"beta": self._tracker.beta}
         if action == "set_frame_skip":
             self._skip = max(0, int(data))
             return {"frame_skip": self._skip}
