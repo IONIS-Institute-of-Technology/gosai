@@ -19,7 +19,7 @@ from typing import Any
 
 from ...context import ModelContext
 from ...devices import resolve_device
-from ...util import console, find_latest, iter_images, load_yaml, save_yaml
+from ...util import console, find_latest, iter_images, load_yaml, paths_txt, save_yaml
 
 
 def _empty_label(label: Path) -> bool:
@@ -131,8 +131,8 @@ def run(ctx: ModelContext, args: Any = None) -> None:
     if negatives:
         fired = boxes = 0
         results = model.predict(
-            source=[str(p) for p in negatives], conf=conf, device=device,
-            stream=True, verbose=False,
+            source=paths_txt("eval-negatives", negatives), conf=conf, device=device,
+            batch=1, stream=True, verbose=False,
         )
         for result in results:
             n = len(result.boxes)

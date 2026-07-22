@@ -58,6 +58,24 @@ def iter_images(directory: Path):
             yield p
 
 
+def paths_txt(prefix: str, paths: list[Path]) -> str:
+    """Write paths to a temp .txt and return it, for use as an ultralytics source.
+
+    Passing a Python list to `model.predict()` makes ultralytics decode every
+    image into memory and run them as ONE batch (`LoadPilAndNumpy`), which OOMs
+    on large sets. A .txt source streams via `LoadImagesAndVideos` and respects
+    the requested batch size.
+    """
+    import tempfile
+
+    f = tempfile.NamedTemporaryFile(
+        "w", prefix=f"gosai-{prefix}-", suffix=".txt", delete=False
+    )
+    with f:
+        f.write("\n".join(str(p) for p in paths))
+    return f.name
+
+
 def find_latest(root: Path, pattern: str) -> Path | None:
     """Newest file under root matching the rglob pattern (e.g. 'best.pt')."""
     if not root.exists():

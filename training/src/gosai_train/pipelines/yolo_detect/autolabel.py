@@ -14,7 +14,7 @@ from typing import Any
 
 from ...context import ModelContext
 from ...devices import select_device
-from ...util import console, find_latest, iter_images
+from ...util import console, find_latest, iter_images, paths_txt
 from .preview import draw_detections
 
 COCO_SPORTS_BALL = 32
@@ -52,8 +52,8 @@ def run(ctx: ModelContext, args: Any = None) -> None:
 
     device = select_device()
     results = model.predict(
-        source=[str(p) for p in images], conf=conf, device=device,
-        stream=True, verbose=False,
+        source=paths_txt("autolabel", images), conf=conf, device=device,
+        batch=1, stream=True, verbose=False,
     )
 
     labelled = boxes_total = 0
