@@ -106,15 +106,19 @@ or produced by the in-app calibration wizard:
 | `sleep.enabled`         | `true` / `false`        | Presence-based display sleep (default `true`)                                  |
 | `sleep.wakeConfidence`  | `0..1`                  | Smoothed pose confidence needed to wake (default `0.6`)                        |
 | `sleep.sleepConfidence` | `0..1`                  | Below this the user counts as absent (default `0.35`)                          |
-| `sleep.sleepDelaySec`   | seconds                 | Continuous absence before falling asleep (default `12`)                        |
+| `sleep.sleepDelaySec`   | seconds                 | Continuous absence before falling asleep (default `7`)                         |
+| `sleep.maxDistanceM`    | meters                  | People estimated farther than this are ignored (default `2`)                   |
 
 When nobody is detected in front of the mirror for `sleepDelaySec`, the display
-falls completely dark with a "magic veil" animation (a glowing iris ring closes
-over the screen, trailing sparkles); while dark, layer rendering is skipped
-entirely. When someone approaches, the veil reopens from the person's head
-position with the reverse reveal. Presence is derived from the visibility of
-the core body landmarks (nose/shoulders/hips) in the raw `pose` feed, smoothed
-and gated with hysteresis so the mirror never flickers between states.
+falls completely dark with a "magic veil" animation: a soft opacity gradient
+closes over the screen from the center, trailing sparkles. While dark, layer
+rendering is skipped entirely. Someone standing in front for 2 seconds straight
+(passers-by are ignored) wakes it with the reverse reveal plus expanding water
+ripples. Presence is derived from the visibility of the core body landmarks
+(nose/shoulders/hips) in the raw `pose` feed, gated by the person's estimated
+distance (weak-perspective shoulder-span estimate, same math as
+`pose_to_mirror`), smoothed and hysteresis-gated so the mirror never flickers
+between states.
 
 It lives in the app's key/value storage under `config` (edit via the app's
 **Settings** button in the dashboard, or `POST

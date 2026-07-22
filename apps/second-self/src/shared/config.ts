@@ -40,6 +40,8 @@ export interface SleepConfig {
   sleepConfidence: number;
   /** Seconds of continuous absence before the display falls asleep. */
   sleepDelaySec: number;
+  /** People estimated farther than this (meters) are ignored. */
+  maxDistanceM: number;
 }
 
 export interface SecondSelfConfig {
@@ -73,7 +75,8 @@ export const DEFAULT_CONFIG: SecondSelfConfig = {
     enabled: true,
     wakeConfidence: 0.6,
     sleepConfidence: 0.35,
-    sleepDelaySec: 12,
+    sleepDelaySec: 7,
+    maxDistanceM: 2,
   },
 };
 
@@ -156,6 +159,7 @@ function mergeConfig(base: SecondSelfConfig, override: unknown): SecondSelfConfi
       wakeConfidence: pickNumber(o.sleep?.wakeConfidence, base.sleep.wakeConfidence, 0, 1),
       sleepConfidence: pickNumber(o.sleep?.sleepConfidence, base.sleep.sleepConfidence, 0, 1),
       sleepDelaySec: pickNumber(o.sleep?.sleepDelaySec, base.sleep.sleepDelaySec, 0, 3600),
+      maxDistanceM: pickNumber(o.sleep?.maxDistanceM, base.sleep.maxDistanceM, 0.3, 20),
     },
   };
 }
