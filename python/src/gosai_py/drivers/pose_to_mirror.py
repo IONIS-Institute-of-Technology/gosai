@@ -324,7 +324,16 @@ class PoseToMirrorDriver(BaseProcessor):
         fx: float,
         scale: float | None = None,
     ) -> float:
-        """Weak-perspective distance (mm) from shoulder span; fallback to default."""
+        """Weak-perspective distance (mm) of the world origin (mid-hips).
+
+        The shoulder span (metric size from ``body_world_pose`` vs pixel size
+        from ``body_pose``) yields the camera-z of the *shoulders*. Per-joint
+        depths are later composed as ``distance + world_z(i)`` where MediaPipe
+        world z is **hip-origin**, so the base must be re-anchored by
+        subtracting the shoulders' own world z. Skipping that adds a constant
+        offset to every depth, which distorts the reflection in a
+        distance-dependent way (skeleton too small up close).
+        """
         default = self._config["default_distance_mm"]
         if scale is None:
             scale = self._config["scale"]
@@ -336,7 +345,9 @@ class PoseToMirrorDriver(BaseProcessor):
             px = math.hypot(lp[0] - rp[0], lp[1] - rp[1])
             meters = math.hypot(lw[0] - rw[0], lw[1] - rw[1])
             if px > 1.0 and meters > 0.05:
-                return fx * (meters * 1000.0) / px * scale
+                shoulders_z = fx * (meters * 1000.0) / px * scale
+                shoulders_wz_mm = (float(lw[2]) + float(rw[2])) / 2.0 * 1000.0
+                return shoulders_z - shoulders_wz_mm
         except (IndexError, TypeError):
             pass
         return default

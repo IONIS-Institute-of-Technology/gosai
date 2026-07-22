@@ -23,7 +23,9 @@ from gosai_py.drivers.pose_to_mirror import (
     _map_location,
 )
 
-# MediaPipe ankle indices (used by the physical-invariant test).
+# MediaPipe hip/ankle indices (used by the physical-invariant test).
+LEFT_HIP = 23
+RIGHT_HIP = 24
 LEFT_ANKLE = 27
 RIGHT_ANKLE = 28
 
@@ -212,6 +214,8 @@ STANDING_JOINTS_MIRROR: dict[int, tuple[float, float]] = {
     NOSE: (0.0, 200.0),
     LEFT_SHOULDER: (200.0, 400.0),
     RIGHT_SHOULDER: (-200.0, 400.0),
+    LEFT_HIP: (100.0, 1000.0),
+    RIGHT_HIP: (-100.0, 1000.0),
     LEFT_ANKLE: (150.0, 1800.0),
     RIGHT_ANKLE: (-150.0, 1800.0),
 }
@@ -221,9 +225,9 @@ def _make_standing_raw(distance_mm: float, tilt_deg: float) -> dict[str, Any]:
     """Raw pose payload for a person standing at `distance_mm` from the mirror.
 
     Joints are placed in the mirror frame, moved into the tilted camera frame,
-    and projected through the same pinhole model the driver assumes. World z is
-    set to the exact camera-z offset from the shoulders so the driver's
-    weak-perspective depth recovery is exact at scale=1.
+    and projected through the same pinhole model the driver assumes. World
+    coordinates follow the MediaPipe convention: metric, camera-aligned axes,
+    origin at the mid-hip point.
     """
     theta = math.radians(tilt_deg)
     cos_t, sin_t = math.cos(theta), math.sin(theta)
@@ -234,14 +238,23 @@ def _make_standing_raw(distance_mm: float, tilt_deg: float) -> dict[str, Any]:
     cam = {
         i: to_camera(x, y, distance_mm) for i, (x, y) in STANDING_JOINTS_MIRROR.items()
     }
-    shoulder_z = cam[LEFT_SHOULDER][2]
+    mid_hip = tuple(
+        (a + b) / 2.0 for a, b in zip(cam[LEFT_HIP], cam[RIGHT_HIP], strict=True)
+    )
     body_pose: list[list[float]] = []
     body_world: list[list[float]] = []
     for i in range(33):
         x, y, z = cam.get(i, cam[NOSE])
         u, v = _project_px(x, y, z)
         body_pose.append([u, v, 0.9])
-        body_world.append([x / 1000.0, y / 1000.0, (z - shoulder_z) / 1000.0, 0.9])
+        body_world.append(
+            [
+                (x - mid_hip[0]) / 1000.0,
+                (y - mid_hip[1]) / 1000.0,
+                (z - mid_hip[2]) / 1000.0,
+                0.9,
+            ]
+        )
     return {
         "body_pose": body_pose,
         "body_world_pose": body_world,

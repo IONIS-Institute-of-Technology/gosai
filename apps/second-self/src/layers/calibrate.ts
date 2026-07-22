@@ -36,6 +36,14 @@ const HOLD_MS = 1000;
 /** Delay after a target appears before a hold can begin (time to move + aim). */
 const TARGET_COOLDOWN_MS = 1500;
 const STILLNESS_FRAC = 0.03; // max deviation from the window mean, in frame diagonals.
+/**
+ * A hold only arms once a fingertip moved this far (frame diagonals) from
+ * where it was when the target appeared: a hand that is already resting still
+ * (after the intro or the step-back screen) must not fill the hold before the
+ * user actually reaches for the new dot. Double the stillness tolerance so
+ * idle jitter cannot arm it.
+ */
+const ARM_MOVE_FRAC = 0.06;
 const MIN_FINGER_VIS = 0.4;
 const RAW_FRESH_MS = 500;
 /** Minimum time the intro stays up (people need to read it). */
@@ -96,6 +104,12 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
   // Body index fingertip (19/20) locked at hold start, so the tracked point
   // never jumps between hands mid-hold; passed to the driver on capture.
   let holdLandmark: number | null = null;
+  // Fingertip positions snapshotted when the current target appeared. The
+  // hold stays disarmed until the tracked tip moves away from its snapshot,
+  // so a hand still resting from the previous dot/screen cannot trigger a
+  // capture before the user actually aims at the new dot.
+  let armAnchors: Record<number, [number, number] | null> = {};
+  let holdArmed = false;
   let introStableSince = 0;
   // Shoulder span (raw px) medians per capture, used for step-back detection.
   let round1Spans: number[] = [];
@@ -121,6 +135,8 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
     phaseStartedAt = performance.now();
     holdWindow = [];
     holdLandmark = null;
+    armAnchors = {};
+    holdArmed = false;
     introStableSince = 0;
     round1Spans = [];
     stepbackSince = 0;
@@ -186,6 +202,16 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
 
   // -- capture logic ----------------------------------------------------------
 
+  /** Show the current target: reset the aim cooldown and disarm the hold. */
+  function showTarget(now: number): void {
+    targetShownAt = now;
+    holdArmed = false;
+    armAnchors = {
+      [LEFT_INDEX]: rawLandmark(LEFT_INDEX),
+      [RIGHT_INDEX]: rawLandmark(RIGHT_INDEX),
+    };
+  }
+
   /** Returns hold progress 0..1; manages the stability window. */
   function updateHold(now: number): number {
     if (!bodyPresent(now) || now - targetShownAt < TARGET_COOLDOWN_MS) {
@@ -194,11 +220,26 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
       return 0;
     }
     if (holdLandmark === null) holdLandmark = pickHoldLandmark();
-    const tip = holdLandmark === null ? null : rawLandmark(holdLandmark);
-    if (!tip) {
+    const landmark = holdLandmark;
+    const tip = landmark === null ? null : rawLandmark(landmark);
+    if (!tip || landmark === null) {
       holdWindow = [];
       holdLandmark = null;
       return 0;
+    }
+    if (!holdArmed) {
+      // A fingertip that was already resting when the target appeared must
+      // travel toward the new dot before holding still starts to count. A tip
+      // with no anchor (hand was down/hidden) arms by becoming visible.
+      const anchor = armAnchors[landmark] ?? null;
+      const moved =
+        anchor === null ||
+        Math.hypot(tip[0] - anchor[0], tip[1] - anchor[1]) > ARM_MOVE_FRAC * frameDiagonal();
+      if (!moved) {
+        holdWindow = [];
+        return 0;
+      }
+      holdArmed = true;
     }
     holdWindow.push([tip[0], tip[1], now]);
     holdWindow = holdWindow.filter(([, , ts]) => now - ts <= HOLD_MS);
@@ -257,7 +298,7 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
 
   function advanceTarget(): void {
     targetIdx += 1;
-    targetShownAt = performance.now();
+    showTarget(performance.now());
     if (targetIdx < targets().length) return;
     if (round === 1) {
       phase = 'stepback';
@@ -466,7 +507,7 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
         phase = 'capture';
         targetIdx = 0;
         round = 1;
-        targetShownAt = now;
+        showTarget(now);
       }
     } else {
       introStableSince = 0;
@@ -510,11 +551,13 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
       'middle',
     );
 
-    const aiming = now - targetShownAt < TARGET_COOLDOWN_MS;
     const progress = pending ? 1 : updateHold(now);
+    // Dim while aiming: during the cooldown, or until the fingertip actually
+    // moved toward the new dot (the hold is not armed yet).
+    const aiming = now - targetShownAt < TARGET_COOLDOWN_MS || !holdArmed;
 
     // Target: pulsing outer ring + solid dot + progress arc. The aim window
-    // (cooldown) renders dimmer so users see when holding starts to count.
+    // renders dimmer so users see when holding starts to count.
     const pulse = 1 + 0.08 * Math.sin(now / 250);
     strokeCircle(ctx, tx, ty, 92 * pulse, 3, DIM);
     fillCircle(ctx, tx, ty, 26, pending ? GREEN : aiming ? 'rgba(255,129,0,0.45)' : ORANGE);
@@ -553,7 +596,7 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
         phase = 'capture';
         round = 2;
         targetIdx = 0;
-        targetShownAt = now;
+        showTarget(now);
       }
     } else {
       stepbackStableSince = 0;
