@@ -735,9 +735,12 @@ class PoseToMirrorDriver(BaseProcessor):
             return None
         ax, bx = fit_x
         ay, by = fit_y
-        # A physical mirror cannot flip or collapse an axis; reject degenerate
-        # fits (they only appear when the samples are bad).
-        if ax <= 0 or ay <= 0:
+        # Reject degenerate fits (collapsed axes) and vertical flips (only a
+        # misconfigured camera rotation produces those). The horizontal sign is
+        # legitimate either way: it depends on which side of the mirror the
+        # camera looks from (a front-facing camera behind a one-way mirror
+        # needs ax < 0, the legacy above-the-mirror rig used ax > 0).
+        if abs(ax) < 1e-9 or ay <= 0:
             return None
 
         errors = [

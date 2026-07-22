@@ -55,6 +55,8 @@ interface Row {
   label: string;
   active: boolean;
   indent: boolean;
+  /** Close the launcher after firing (app rows; keeps it open for options). */
+  closesMenu: boolean;
   fire(): void;
 }
 
@@ -145,6 +147,7 @@ export function createMenuLayer(deps: LayerDeps): Layer {
         label: item.label,
         active: running,
         indent: false,
+        closesMenu: true,
         fire: () => controller.toggle(item.slug),
       });
       if (running && item.options && item.options.length > 0) {
@@ -218,6 +221,13 @@ export function createMenuLayer(deps: LayerDeps): Layer {
           row.fire();
           next = 0;
           cooldownUntil.set(row.id, timestamp + COOLDOWN_MS);
+          // Selecting an app closes the launcher so its rows never overlap
+          // the experience that just started (options keep it open).
+          if (row.closesMenu) {
+            open = false;
+            dwell.clear();
+            return;
+          }
         }
         dwell.set(row.id, next);
 
@@ -246,6 +256,7 @@ function makeOptionRow(controller: MenuController, slug: string, opt: MenuOption
     label: isToggle ? opt.name : `▶ ${opt.name}`,
     active: isToggle ? controller.getOption(slug, opt.name) : false,
     indent: true,
+    closesMenu: false,
     fire: () => {
       if (isToggle) controller.toggleOption(slug, opt.name);
       else controller.triggerOption(slug, opt.name);

@@ -24,7 +24,10 @@ from gosai_py.drivers.pose_to_mirror import (
 
 TRUE_TILT_DEG = 12.0
 TRUE_SCALE = 1.0
-TRUE_AFFINE = (2.4, 520.0, 2.6, 180.0)  # ax, bx, ay, by
+# ax, bx, ay, by. The legacy above-the-mirror rig has ax > 0; a camera behind
+# a one-way mirror (facing the user) needs ax < 0 -- both must be solvable.
+TRUE_AFFINE = (2.4, 520.0, 2.6, 180.0)
+TRUE_AFFINE_FLIPPED = (-2.4, 560.0, 2.6, 180.0)
 
 FRAME_W = 720.0
 FRAME_H = 1280.0
@@ -98,12 +101,16 @@ def _make_raw(
     }
 
 
-def _target_for(driver: PoseToMirrorDriver, raw: dict[str, Any]) -> list[float]:
+def _target_for(
+    driver: PoseToMirrorDriver,
+    raw: dict[str, Any],
+    affine: tuple[float, float, float, float],
+) -> list[float]:
     """Ground-truth target pixel: reflect with the true tilt/scale, then apply
     the true affine."""
     loc = driver._reflect_body_landmark(raw, RIGHT_INDEX, TRUE_TILT_DEG, TRUE_SCALE)
     assert loc is not None
-    ax, bx, ay, by = TRUE_AFFINE
+    ax, bx, ay, by = affine
     return [ax * loc[0] + bx, ay * loc[1] + by]
 
 
@@ -127,10 +134,13 @@ SAMPLE_SPECS: list[tuple[float, tuple[float, float]]] = [
 ]
 
 
-def _capture_all(driver: PoseToMirrorDriver) -> None:
+def _capture_all(
+    driver: PoseToMirrorDriver,
+    affine: tuple[float, float, float, float] = TRUE_AFFINE,
+) -> None:
     for distance, fingertip in SAMPLE_SPECS:
         raw = _make_raw(distance, fingertip)
-        target = _target_for(driver, raw)
+        target = _target_for(driver, raw, affine)
         driver._raw_history.extend(_make_raw(distance, fingertip) for _ in range(6))
         result = driver.execute("capture_calibration_sample", {"target": target})
         assert result["ok"], result
@@ -143,8 +153,11 @@ def test_capture_requires_recent_frames(driver: PoseToMirrorDriver) -> None:
     assert "recent pose frames" in result["error"]
 
 
-def test_solver_recovers_ground_truth(driver: PoseToMirrorDriver) -> None:
-    _capture_all(driver)
+@pytest.mark.parametrize("affine", [TRUE_AFFINE, TRUE_AFFINE_FLIPPED])
+def test_solver_recovers_ground_truth(
+    driver: PoseToMirrorDriver, affine: tuple[float, float, float, float]
+) -> None:
+    _capture_all(driver, affine)
     fit = driver.execute("solve_calibration", {})
     assert fit["ok"], fit
 
@@ -153,10 +166,10 @@ def test_solver_recovers_ground_truth(driver: PoseToMirrorDriver) -> None:
     assert abs(fit["tilt_deg"] - TRUE_TILT_DEG) <= 1.0
     assert abs(fit["scale"] - TRUE_SCALE) <= 0.05
     ax, bx, ay, by = fit["affine"]
-    assert ax == pytest.approx(TRUE_AFFINE[0], rel=0.05)
-    assert ay == pytest.approx(TRUE_AFFINE[2], rel=0.05)
-    assert bx == pytest.approx(TRUE_AFFINE[1], abs=25.0)
-    assert by == pytest.approx(TRUE_AFFINE[3], abs=25.0)
+    assert ax == pytest.approx(affine[0], rel=0.05)
+    assert ay == pytest.approx(affine[2], rel=0.05)
+    assert bx == pytest.approx(affine[1], abs=25.0)
+    assert by == pytest.approx(affine[3], abs=25.0)
 
     # The fit is applied to the live config/affine by default.
     assert driver._affine is not None

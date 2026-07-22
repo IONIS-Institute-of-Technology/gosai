@@ -32,14 +32,21 @@ const LEFT_INDEX = 19;
 const RIGHT_INDEX = 20;
 
 // Capture tuning.
-const HOLD_MS = 1200;
-const TARGET_COOLDOWN_MS = 700;
-const STILLNESS_FRAC = 0.018; // max deviation from the window mean, in frame diagonals.
+const HOLD_MS = 1000;
+/** Delay after a target appears before a hold can begin (time to move + aim). */
+const TARGET_COOLDOWN_MS = 1500;
+const STILLNESS_FRAC = 0.03; // max deviation from the window mean, in frame diagonals.
 const MIN_FINGER_VIS = 0.4;
 const RAW_FRESH_MS = 500;
-const INTRO_STABLE_MS = 2000;
+/** Minimum time the intro stays up (people need to read it). */
+const INTRO_MIN_MS = 8000;
+const INTRO_STABLE_MS = 3000;
 const STEPBACK_SPAN_CHANGE = 0.12; // fractional shoulder-span change that counts as "moved".
 const STEPBACK_STABLE_MS = 1000;
+/** Minimum time the step-back screen stays up. */
+const STEPBACK_MIN_MS = 4000;
+/** How long a solve-failure screen stays up before restarting. */
+const FAIL_SHOW_MS = 8000;
 const VERIFY_DWELL_MS = 1400;
 const CURSOR_GRACE_MS = 300;
 
@@ -62,7 +69,7 @@ const GREEN = '#a6d854';
 const WHITE = '#ffffff';
 const DIM = 'rgba(255,255,255,0.65)';
 
-type Phase = 'intro' | 'capture' | 'stepback' | 'solving' | 'verify' | 'saving';
+type Phase = 'intro' | 'capture' | 'stepback' | 'solving' | 'verify' | 'saving' | 'failed';
 
 interface SolveResult {
   ok: boolean;
@@ -82,9 +89,13 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
   let targetShownAt = 0;
   let message = '';
   let pending = false;
+  let phaseStartedAt = 0;
 
   // Stability window over the raw fingertip: [x, y, timestamp].
   let holdWindow: Array<[number, number, number]> = [];
+  // Body index fingertip (19/20) locked at hold start, so the tracked point
+  // never jumps between hands mid-hold; passed to the driver on capture.
+  let holdLandmark: number | null = null;
   let introStableSince = 0;
   // Shoulder span (raw px) medians per capture, used for step-back detection.
   let round1Spans: number[] = [];
@@ -93,6 +104,7 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
 
   let fit: SolveResult | null = null;
   let saved = false;
+  let failReason = '';
 
   // Verify-screen dwell state.
   let cursorLast: { x: number; y: number } | null = null;
@@ -106,12 +118,15 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
     targetShownAt = 0;
     message = '';
     pending = false;
+    phaseStartedAt = performance.now();
     holdWindow = [];
+    holdLandmark = null;
     introStableSince = 0;
     round1Spans = [];
     stepbackSince = 0;
     stepbackStableSince = 0;
     fit = null;
+    failReason = '';
     cursorLast = null;
     cursorLastTs = 0;
     verifyDwell.clear();
@@ -140,17 +155,20 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
     return rawFresh(now) && body.length > 0 && (body[0]?.[2] ?? 0) > 0.5;
   }
 
-  /** Raw camera-space fingertip: the more visible of the body index tips. */
-  function rawFingertip(): [number, number, number] | null {
+  /** Raw camera-space position of a body landmark, if visible enough. */
+  function rawLandmark(index: number): [number, number] | null {
+    const lm = deps.feed.raw.data.body_pose[index];
+    if (!lm || (lm[2] ?? 0) < MIN_FINGER_VIS) return null;
+    return [lm[0]!, lm[1]!];
+  }
+
+  /** The more visible index fingertip, used to lock a new hold onto one hand. */
+  function pickHoldLandmark(): number | null {
     const body = deps.feed.raw.data.body_pose;
-    const left = body[LEFT_INDEX];
-    const right = body[RIGHT_INDEX];
-    const lv = left?.[2] ?? 0;
-    const rv = right?.[2] ?? 0;
-    const best = rv >= lv ? right : left;
-    const vis = Math.max(lv, rv);
-    if (!best || vis < MIN_FINGER_VIS) return null;
-    return [best[0]!, best[1]!, vis];
+    const lv = body[LEFT_INDEX]?.[2] ?? 0;
+    const rv = body[RIGHT_INDEX]?.[2] ?? 0;
+    if (Math.max(lv, rv) < MIN_FINGER_VIS) return null;
+    return rv >= lv ? RIGHT_INDEX : LEFT_INDEX;
   }
 
   function shoulderSpan(): number | null {
@@ -172,11 +190,14 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
   function updateHold(now: number): number {
     if (!bodyPresent(now) || now - targetShownAt < TARGET_COOLDOWN_MS) {
       holdWindow = [];
+      holdLandmark = null;
       return 0;
     }
-    const tip = rawFingertip();
+    if (holdLandmark === null) holdLandmark = pickHoldLandmark();
+    const tip = holdLandmark === null ? null : rawLandmark(holdLandmark);
     if (!tip) {
       holdWindow = [];
+      holdLandmark = null;
       return 0;
     }
     holdWindow.push([tip[0], tip[1], now]);
@@ -210,7 +231,10 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
     message = '';
     const span = shoulderSpan();
     void deps.rt.drivers
-      .execute('pose_to_mirror', 'capture_calibration_sample', { target: [target[0], target[1]] })
+      .execute('pose_to_mirror', 'capture_calibration_sample', {
+        target: [target[0], target[1]],
+        ...(holdLandmark !== null ? { landmark: holdLandmark } : {}),
+      })
       .then((res) => {
         const r = res as { ok?: boolean; error?: string };
         if (!r?.ok) {
@@ -227,6 +251,7 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
       .finally(() => {
         pending = false;
         holdWindow = [];
+        holdLandmark = null;
       });
   }
 
@@ -244,6 +269,19 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
     }
   }
 
+  function solveFailed(error: string): void {
+    void deps.rt.drivers
+      .execute('pose_to_mirror', 'clear_calibration_samples', {})
+      .catch(() => undefined);
+    message = '';
+    fit = null;
+    phase = 'failed';
+    phaseStartedAt = performance.now();
+    deps.rt.log.warn('calibrate: solve failed', { error });
+    // Keep the reason for the failure screen.
+    failReason = error;
+  }
+
   // No `pending` guard here: solve() is invoked exactly once (from
   // advanceTarget, while the capture promise that called it is still marked
   // pending) and re-entry is prevented by the 'solving' phase itself.
@@ -253,8 +291,7 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
       .then(async (res) => {
         const r = res as SolveResult;
         if (!r?.ok) {
-          message = r?.error ?? 'calibration failed';
-          restartRun();
+          solveFailed(r?.error ?? 'unknown error');
           return;
         }
         // The verify overlay must show the *fitted reflection* projection,
@@ -267,9 +304,7 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
         verifyDwell.clear();
       })
       .catch((err) => {
-        deps.rt.log.warn('calibrate: solve failed', { err: String(err) });
-        message = 'calibration failed, restarting';
-        restartRun();
+        solveFailed(String(err));
       });
   }
 
@@ -372,6 +407,9 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
         case 'saving':
           drawCentered(ctx, ['Saving…'], 700);
           break;
+        case 'failed':
+          renderFailed(ctx, timestamp);
+          break;
       }
       if (message) {
         drawText(ctx, message, REF_WIDTH / 2, REF_HEIGHT - 120, 30, ORANGE, 'center', 'middle');
@@ -399,16 +437,30 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
         'Stand one big step away from the mirror,',
         'facing it, with your whole body visible.',
         '',
-        'You will point at dots with your index finger:',
-        'line up your finger’s reflection with each dot',
-        'and hold still until the ring fills.',
+        'Dots will appear one by one.',
+        'Point at each with the index finger of ONE hand',
+        '(either hand is fine, use the same one throughout):',
+        'line up your finger’s REFLECTION with the dot,',
+        'then hold still until the ring around it fills.',
       ],
-      480,
+      420,
     );
+    // Never advance before people had time to read, regardless of tracking.
+    const readProgress = Math.min(1, (now - phaseStartedAt) / INTRO_MIN_MS);
     if (bodyPresent(now)) {
       if (introStableSince === 0) introStableSince = now;
-      const progress = Math.min(1, (now - introStableSince) / INTRO_STABLE_MS);
-      drawText(ctx, 'Ready…', REF_WIDTH / 2, 1400, 34, GREEN, 'center', 'middle');
+      const stableProgress = Math.min(1, (now - introStableSince) / INTRO_STABLE_MS);
+      const progress = Math.min(readProgress, stableProgress);
+      drawText(
+        ctx,
+        progress >= 1 ? 'Here we go!' : 'Starting soon — read the steps above',
+        REF_WIDTH / 2,
+        1400,
+        34,
+        GREEN,
+        'center',
+        'middle',
+      );
       drawProgressRing(ctx, REF_WIDTH / 2, 1520, 40, progress, GREEN);
       if (progress >= 1) {
         phase = 'capture';
@@ -429,17 +481,27 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
 
     drawText(
       ctx,
-      'Align your fingertip’s reflection with the dot and hold still',
+      'Point at the dot with your index finger:',
       REF_WIDTH / 2,
-      330,
-      30,
+      300,
+      32,
       DIM,
       'center',
       'middle',
     );
     drawText(
       ctx,
-      `${capturedCount() + 1} / ${totalTargets()}`,
+      'your finger’s reflection on the dot — then hold still',
+      REF_WIDTH / 2,
+      345,
+      32,
+      DIM,
+      'center',
+      'middle',
+    );
+    drawText(
+      ctx,
+      `dot ${capturedCount() + 1} of ${totalTargets()}`,
       REF_WIDTH / 2,
       REF_HEIGHT - 60,
       32,
@@ -448,12 +510,14 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
       'middle',
     );
 
+    const aiming = now - targetShownAt < TARGET_COOLDOWN_MS;
     const progress = pending ? 1 : updateHold(now);
 
-    // Target: pulsing outer ring + solid dot + progress arc.
+    // Target: pulsing outer ring + solid dot + progress arc. The aim window
+    // (cooldown) renders dimmer so users see when holding starts to count.
     const pulse = 1 + 0.08 * Math.sin(now / 250);
     strokeCircle(ctx, tx, ty, 92 * pulse, 3, DIM);
-    fillCircle(ctx, tx, ty, 26, pending ? GREEN : ORANGE);
+    fillCircle(ctx, tx, ty, 26, pending ? GREEN : aiming ? 'rgba(255,129,0,0.45)' : ORANGE);
     drawProgressRing(ctx, tx, ty, 62, progress, GREEN);
 
     if (!pending && progress >= 1) captureTarget(target);
@@ -462,18 +526,26 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
   function renderStepback(ctx: CanvasRenderingContext2D, now: number): void {
     drawCentered(
       ctx,
-      ['Great!', '', 'Now take one big step back', 'and face the mirror again.'],
-      600,
+      [
+        'Great — halfway there!',
+        '',
+        'Now take one big step BACK',
+        'and face the mirror again.',
+        '',
+        'Three more dots follow from this distance.',
+      ],
+      540,
     );
+    const minTimePassed = now - stepbackSince > STEPBACK_MIN_MS;
     const baseline = median(round1Spans);
     const span = shoulderSpan();
     const moved =
       baseline !== null &&
       span !== null &&
       Math.abs(span - baseline) / baseline > STEPBACK_SPAN_CHANGE;
-    const waitedLong = now - stepbackSince > 10_000;
+    const waitedLong = now - stepbackSince > 12_000;
 
-    if ((moved || waitedLong) && bodyPresent(now)) {
+    if (minTimePassed && (moved || waitedLong) && bodyPresent(now)) {
       if (stepbackStableSince === 0) stepbackStableSince = now;
       const progress = Math.min(1, (now - stepbackStableSince) / STEPBACK_STABLE_MS);
       drawProgressRing(ctx, REF_WIDTH / 2, 1400, 40, progress, GREEN);
@@ -486,6 +558,26 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
     } else {
       stepbackStableSince = 0;
     }
+  }
+
+  function renderFailed(ctx: CanvasRenderingContext2D, now: number): void {
+    drawCentered(
+      ctx,
+      [
+        'Calibration failed',
+        '',
+        failReason || 'The samples could not be fitted.',
+        '',
+        'Tips: keep your whole body in view, hold each dot',
+        'steadily, and use the same hand for every dot.',
+        '',
+        'Restarting…',
+      ],
+      560,
+    );
+    const progress = Math.min(1, (now - phaseStartedAt) / FAIL_SHOW_MS);
+    drawProgressRing(ctx, REF_WIDTH / 2, 1500, 40, progress, ORANGE);
+    if (progress >= 1) reset();
   }
 
   function renderVerify(ctx: CanvasRenderingContext2D, now: number, deltaMs: number): void {
