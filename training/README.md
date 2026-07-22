@@ -190,13 +190,13 @@ pipeline package under `src/gosai_train/pipelines/` and register its `type` in
 
 ## Configuration (per model, under `models/<name>/configs/`)
 
-| File                | What                                                                              |
-| ------------------- | --------------------------------------------------------------------------------- |
-| `datasets.yaml`     | Roboflow datasets to download/merge; per-dataset `cap` / `enabled`.                |
-| `classes.yaml`      | Manual `overrides:` for class `keep`/`drop` decisions.                             |
+| File                | What                                                                                 |
+| ------------------- | ------------------------------------------------------------------------------------ |
+| `datasets.yaml`     | Roboflow datasets to download/merge; per-dataset `cap` / `enabled`.                  |
+| `classes.yaml`      | Manual `overrides:` for class `keep`/`drop` decisions.                               |
 | `classes.lock.yaml` | Generated: every discovered class and its decision -- review after adding a dataset. |
-| `negatives.yaml`    | Negative ratio + optional external negative sources.                               |
-| `train.yaml`        | Model size, epochs, image size, device, caching, augmentation, motion blur.        |
+| `negatives.yaml`    | Negative ratio + optional external negative sources.                                 |
+| `train.yaml`        | Model size, epochs, image size, device, caching, augmentation, motion blur.          |
 
 Tips:
 

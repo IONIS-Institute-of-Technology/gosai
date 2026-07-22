@@ -83,8 +83,7 @@ export class SleepController {
     this.presentSince = present ? (this.presentSince ?? now) : null;
     this.absentSince = absent ? (this.absentSince ?? now) : null;
 
-    const wakeConfirmed =
-      this.presentSince !== null && now - this.presentSince >= WAKE_CONFIRM_MS;
+    const wakeConfirmed = this.presentSince !== null && now - this.presentSince >= WAKE_CONFIRM_MS;
     const sleepConfirmed =
       this.absentSince !== null && now - this.absentSince >= this.cfg.sleepDelaySec * 1000;
 

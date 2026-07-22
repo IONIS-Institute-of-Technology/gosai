@@ -38,12 +38,12 @@ per-layer options (the old `sub-menu.json` toggles become in-process options).
 
 ## Drivers used
 
-| Driver               | Why                                                           |
-| -------------------- | ------------------------------------------------------------- |
+| Driver               | Why                                                                                           |
+| -------------------- | --------------------------------------------------------------------------------------------- |
 | `pose`               | MediaPipe Holistic landmarks (2D + metric 3D world landmarks); `raw_data` feeds aria directly |
-| `pose_to_mirror`     | Projects landmarks into mirror pixel space (`mirrored_data`)  |
-| `frequency_analysis` | Microphone pitch/amplitude/FFT (`frequency`)                  |
-| `slr`                | Sign-language recognition over a 30-frame window (`new_sign`) |
+| `pose_to_mirror`     | Projects landmarks into mirror pixel space (`mirrored_data`)                                  |
+| `frequency_analysis` | Microphone pitch/amplitude/FFT (`frequency`)                                                  |
+| `slr`                | Sign-language recognition over a 30-frame window (`new_sign`)                                 |
 
 `pose_to_mirror` and `slr` are **new built-in drivers** added to `gosai/python`
 for this app (the legacy platform had them; the new one did not). They are
@@ -105,8 +105,8 @@ or produced by the in-app calibration wizard:
 | `projection.mirror`     | `true` / `false`        | Horizontal flip for a selfie view (direct mode)                                |
 | `sleep.enabled`         | `true` / `false`        | Presence-based display sleep (default `true`)                                  |
 | `sleep.wakeConfidence`  | `0..1`                  | Smoothed pose confidence needed to wake (default `0.6`)                        |
-| `sleep.sleepConfidence` | `0..1`                  | Below this the user counts as absent (default `0.35`)                         |
-| `sleep.sleepDelaySec`   | seconds                 | Continuous absence before falling asleep (default `12`)                       |
+| `sleep.sleepConfidence` | `0..1`                  | Below this the user counts as absent (default `0.35`)                          |
+| `sleep.sleepDelaySec`   | seconds                 | Continuous absence before falling asleep (default `12`)                        |
 
 When nobody is detected in front of the mirror for `sleepDelaySec`, the display
 falls completely dark with a "magic veil" animation (a glowing iris ring closes
@@ -129,7 +129,7 @@ Everything else adapts by itself:
   `1080x1920` reference space that is aspect-preserving (`contain`) fit onto the
   window — any 9:16 display (1080x1920, WQHD 1440x2560, 4K portrait) fills
   edge-to-edge, other aspects letterbox without distortion.
-- **Mirror projection** (reflection mode) is *fitted*, not typed in — see below.
+- **Mirror projection** (reflection mode) is _fitted_, not typed in — see below.
 
 ## Setting up a physical mirror rig
 
@@ -141,12 +141,12 @@ Everything else adapts by itself:
 3. **Calibrate on the mirror**: on the next launch, if no calibration profile
    exists the app walks straight into the wizard (it is also always available
    from the gesture menu as **Calibrate**). You point your index finger so its
-   *reflection* covers each target dot and hold still (~8 dots, one round near
-   + one round a step back, ~90 seconds total). The `pose_to_mirror` driver
-   fits the camera tilt, the distance scale and the mm→pixel affine from the
-   samples (`solve_calibration`), shows the residual error, and overlays the
-   now-calibrated skeleton on your reflection for a dwell-to-confirm
-   **Save / Redo**.
+   _reflection_ covers each target dot and hold still (~8 dots, one round near
+   - one round a step back, ~90 seconds total). The `pose_to_mirror` driver
+     fits the camera tilt, the distance scale and the mm→pixel affine from the
+     samples (`solve_calibration`), shows the residual error, and overlays the
+     now-calibrated skeleton on your reflection for a dwell-to-confirm
+     **Save / Redo**.
 4. The fitted profile persists in app storage under `mirror_calibration` and is
    pushed to the driver on every start. Re-run the wizard whenever the camera
    or display moves.

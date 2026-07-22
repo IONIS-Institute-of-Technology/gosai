@@ -8,8 +8,8 @@ the **second-self** app; the rest are documented by their module docstrings.
 ## `pose` hand-key convention (important)
 
 `pose.raw_data` emits the hand keys **swapped** relative to the MediaPipe model
-output: `right_hand_pose` holds the model's *left*-hand landmarks and
-`left_hand_pose` holds the model's *right*-hand landmarks. This preserves the
+output: `right_hand_pose` holds the model's _left_-hand landmarks and
+`left_hand_pose` holds the model's _right_-hand landmarks. This preserves the
 legacy platform convention (`gosai-old` did the swap in its pose driver): the
 SLR models were trained on that layout, the `slr_samples` correction files were
 recorded under it, and `pose_to_mirror` anchors each hand to the matching wrist
@@ -42,7 +42,7 @@ space.
     `tests/test_pose_to_mirror_calibration.py` for a synthetic round trip.
   - `clear_calibration_samples` — drop captured samples.
 
-Reflection-mode geometry is therefore *fitted* by the second-self in-app
+Reflection-mode geometry is therefore _fitted_ by the second-self in-app
 wizard, never measured by hand; the legacy mm config keys remain only as the
 fallback used to derive the affine when no fit has been applied.
 
