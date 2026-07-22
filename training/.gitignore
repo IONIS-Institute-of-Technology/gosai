@@ -18,9 +18,8 @@ models/*/exports/
 # Downloaded base weights (auto-fetched by ultralytics)
 *.pt
 
-# Drop-in user content (keep the folders, ignore the content)
-models/*/data/custom/images/*
-models/*/data/custom/labels/*
+# Reviewed custom frames and YOLO labels are source training data and tracked.
+# Keep raw source videos and other drop-in/generated data out of Git.
 models/*/data/custom/videos/*
 models/*/data/negatives/*
 models/*/data/golden/images/*
