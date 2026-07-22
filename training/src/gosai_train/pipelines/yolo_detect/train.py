@@ -23,6 +23,14 @@ def run(ctx: ModelContext, args: Any = None) -> None:
 
     cfg = load_yaml(ctx.train_config)
     device = resolve_device(cfg.get("device", "auto"))
+    if device == "cpu":
+        # Usually means a broken CUDA install rather than an intentional choice
+        # (e.g. CPU-only torch wheels, or an NVIDIA driver too old for the GPU).
+        console.print(
+            "[bold red]warning[/] no GPU detected -- training on CPU will be 20-100x slower.\n"
+            "  Check: uv run python -c \"import torch; print(torch.__version__, torch.cuda.is_available())\"\n"
+            "  A '+cpu' torch on a CUDA machine means the wrong wheel is installed; re-run `uv sync`."
+        )
     imgsz = int(cfg.get("imgsz", 640))
     batch = cfg.get("batch", -1)
     # AutoBatch (batch=-1) only works on CUDA; pick a safe default elsewhere,

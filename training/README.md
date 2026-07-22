@@ -5,7 +5,10 @@ A multi-model training workspace for GOSAI driver models. Each model lives under
 **`ball`** — the single-class billiard-ball detector for the `ball` driver.
 
 It is optimized for both Apple Silicon (MPS/Metal training, CoreML export) and
-NVIDIA (CUDA training, TensorRT export), with device auto-detection.
+NVIDIA (CUDA training, TensorRT export), with device auto-detection. It runs
+natively on macOS, Linux, and Windows: `uv sync` installs the right PyTorch
+build per platform (on Windows the CUDA 12.8 wheels are pulled automatically —
+PyPI only ships CPU-only torch there).
 
 ## Quick start (ball model)
 
@@ -31,6 +34,28 @@ git add python/src/gosai_py/drivers/ball_models/ball.onnx
 
 > Requirements: [uv](https://docs.astral.sh/uv/) and Python 3.12. Training needs
 > a GPU (NVIDIA) or Apple Silicon for reasonable speed; CPU works but is slow.
+
+### Windows
+
+The pipeline runs natively on Windows (no WSL needed). `make.bat` mirrors the
+Makefile, so from cmd or PowerShell:
+
+```bat
+make setup
+make all
+make train ball        :: model as optional second argument
+```
+
+`uv sync` installs the CUDA 12.8 torch build automatically (supports RTX 50xx).
+Before a long run, confirm the GPU is seen — `train` also warns if it falls
+back to CPU:
+
+```bat
+uv run python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+```
+
+Everything works except the native CoreML export (`--formats coreml`), which
+requires macOS; the ONNX artifact the driver uses exports on any platform.
 
 ## Choosing a model
 
