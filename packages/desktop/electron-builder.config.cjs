@@ -59,7 +59,9 @@ module.exports = {
     {
       from: path.resolve(__dirname, '..', '..', 'apps'),
       to: 'apps',
-      filter: ['**/*', '!**/node_modules/**'],
+      // `_data` / `_config` are per-install server state (app storage, device
+      // assignments); they must never ship in a package.
+      filter: ['**/*', '!**/node_modules/**', '!**/_data/**', '!**/_config/**'],
     },
   ],
   mac: {

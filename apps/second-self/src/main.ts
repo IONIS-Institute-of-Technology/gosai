@@ -267,13 +267,15 @@ function buildLayerDefs(deps: LayerDeps): LayerDef[] {
       create: () => createFaceLayer(deps),
     },
 
-    // Mirror calibration wizard: reflection rigs only. Exclusive so the
+    // Mirror calibration wizard. Always in the menu (a kiosk has no dashboard
+    // to switch modes, so the wizard is the entry point to reflection mode:
+    // saving a calibration switches the app to it). Exclusive so the
     // (mis)calibrated skeleton overlays don't confuse the capture flow.
     {
       slug: 'calibrate',
       label: 'Calibrate',
       zIndex: 90,
-      inMenu: deps.config.projection.mode === 'reflection',
+      inMenu: true,
       exclusive: true,
       allowed: ['menu'],
       create: () => createCalibrateLayer(deps),

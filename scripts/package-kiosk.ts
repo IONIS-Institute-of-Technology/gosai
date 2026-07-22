@@ -185,14 +185,17 @@ const stagingDir = join(desktopDir, 'release', 'kiosk-staging', manifest.slug);
 rmSync(stagingDir, { recursive: true, force: true });
 mkdirSync(join(stagingDir, 'apps'), { recursive: true });
 
+// Directories that must never ship with a package: build/dev artifacts, plus
+// the server's per-install app state (`_data` = storage, `_config` = device
+// assignments). State belongs to each machine — a kiosk creates its own on
+// first boot; bundling the dev computer's would override the kiosk's config.
+const STAGE_EXCLUDES = new Set(['node_modules', '.git', '_data', '_config']);
+
 const stageApp = (from: string, slug: string): void => {
   cpSync(from, join(stagingDir, 'apps', slug), {
     recursive: true,
     dereference: true,
-    filter: (src) => {
-      const name = basename(src);
-      return name !== 'node_modules' && name !== '.git';
-    },
+    filter: (src) => !STAGE_EXCLUDES.has(basename(src)),
   });
 };
 stageApp(appDir, manifest.slug);

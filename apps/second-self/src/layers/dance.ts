@@ -7,9 +7,13 @@
  * only by matching each target pose: the mean keypoint distance over a set of
  * studied joints must drop below a threshold. A countdown limits each attempt.
  *
- * Unlike the legacy version, the pass threshold is proportional to the user's
- * on-screen body size (nose-hip distance) instead of a fixed pixel count, so
- * it works at any distance / screen size / calibration; the anchor re-fits
+ * Unlike the legacy version, scoring is **translation-invariant**: each target
+ * pose is compared relative to the current move's nose, anchored at the user's
+ * nose, so only the pose *shape* must match (the legacy absolute comparison
+ * required the user to also travel across the room exactly like the reference
+ * dancer). The pass threshold is proportional to the user's on-screen body
+ * size (nose-hip distance) instead of a fixed pixel count, so it works at any
+ * distance / screen size / calibration; the drawing anchor re-fits
  * continuously (smoothed) instead of freezing on the first pose frame; and
  * low-visibility joints are excluded from the score rather than silently
  * contributing zero distance.
@@ -23,7 +27,12 @@ import type { LayerDeps } from '../shared/deps.js';
 import { isValid } from '../shared/mirror.js';
 import { REF_HEIGHT, type FrameContext, type Layer } from '../shared/types.js';
 
-const STUDIED = [0, 11, 12, 15, 16, 23, 24];
+/**
+ * Joints scored against the reference pose (shoulders, wrists, hips). The
+ * nose is the alignment anchor, so it is not scored (its error is 0 by
+ * construction).
+ */
+const SCORED = [11, 12, 15, 16, 23, 24];
 /** Pass threshold as a fraction of the user's nose-hip distance, clamped. */
 const THRESHOLD_RATIO = 0.3;
 const THRESHOLD_MIN_PX = 60;
@@ -141,21 +150,33 @@ export function createDanceLayer(deps: LayerDeps): Layer {
 
     const move = moves[String(movesIndex)];
     if (move) {
-      let sum = 0;
-      let count = 0;
-      for (const idx of STUDIED) {
-        const v = move[idx];
-        const b = body[idx];
-        if (!v || !isValid(b)) continue;
-        if ((b[3] ?? 1) < MIN_JOINT_VISIBILITY) continue;
-        sum += dist(offset[0] + v[1] * ratio, offset[1] + v[2] * ratio, b[0]!, b[1]!);
-        count++;
-      }
-      if (count >= MIN_SCORED_JOINTS) {
-        diff = sum / count;
-        if (diff < threshold) {
-          movesIndex++;
-          elapsedMs = Math.max(0, elapsedMs - MATCH_REFUND_MS);
+      // Translation-invariant pose comparison: expected joint positions are
+      // the current move's joints *relative to the current move's nose*,
+      // scaled to the user and anchored at the user's nose. Where the user
+      // stands is irrelevant; only the pose shape must match. (Anchoring at
+      // the choreography's frame-0 nose instead makes the reference dancer's
+      // own travel an error the user can never cancel out.)
+      const userNose = body[0];
+      const moveNose = move[0];
+      if (moveNose && isValid(userNose) && (userNose[3] ?? 1) >= MIN_JOINT_VISIBILITY) {
+        let sum = 0;
+        let count = 0;
+        for (const idx of SCORED) {
+          const v = move[idx];
+          const b = body[idx];
+          if (!v || !isValid(b)) continue;
+          if ((b[3] ?? 1) < MIN_JOINT_VISIBILITY) continue;
+          const ex = userNose[0]! + (v[1] - moveNose[1]) * ratio;
+          const ey = userNose[1]! + (v[2] - moveNose[2]) * ratio;
+          sum += dist(ex, ey, b[0]!, b[1]!);
+          count++;
+        }
+        if (count >= MIN_SCORED_JOINTS) {
+          diff = sum / count;
+          if (diff < threshold) {
+            movesIndex++;
+            elapsedMs = Math.max(0, elapsedMs - MATCH_REFUND_MS);
+          }
         }
       }
     } else {

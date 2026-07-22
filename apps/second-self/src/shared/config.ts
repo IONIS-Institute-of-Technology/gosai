@@ -110,6 +110,14 @@ export async function saveMirrorProfile(
   await rt.storage.set(MIRROR_PROFILE_STORAGE_KEY, profile);
 }
 
+/** Persist the projection config (used by the wizard to switch modes). */
+export async function saveConfig(
+  rt: ExperienceRuntimeContext,
+  cfg: SecondSelfConfig,
+): Promise<void> {
+  await rt.storage.set(CONFIG_STORAGE_KEY, cfg);
+}
+
 /**
  * Build the `set_mirror_config` action payload for the `pose_to_mirror` driver
  * from the projection config plus the fitted profile (when present).

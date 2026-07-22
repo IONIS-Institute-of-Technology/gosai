@@ -22,7 +22,7 @@
  */
 
 import { drawText, fillCircle, strokeCircle } from '../shared/canvas.js';
-import { saveMirrorProfile, type MirrorProfile } from '../shared/config.js';
+import { saveConfig, saveMirrorProfile, type MirrorProfile } from '../shared/config.js';
 import type { LayerDeps } from '../shared/deps.js';
 import { drawBody, isValid } from '../shared/mirror.js';
 import { REF_HEIGHT, REF_WIDTH, type FrameContext, type Layer } from '../shared/types.js';
@@ -92,6 +92,7 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
   let stepbackStableSince = 0;
 
   let fit: SolveResult | null = null;
+  let saved = false;
 
   // Verify-screen dwell state.
   let cursorLast: { x: number; y: number } | null = null;
@@ -249,13 +250,18 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
   function solve(): void {
     void deps.rt.drivers
       .execute('pose_to_mirror', 'solve_calibration', {})
-      .then((res) => {
+      .then(async (res) => {
         const r = res as SolveResult;
         if (!r?.ok) {
           message = r?.error ?? 'calibration failed';
           restartRun();
           return;
         }
+        // The verify overlay must show the *fitted reflection* projection,
+        // even when the wizard was launched from direct mode.
+        await deps.rt.drivers
+          .execute('pose_to_mirror', 'set_mirror_config', { mode: 'reflection' })
+          .catch(() => undefined);
         fit = r;
         phase = 'verify';
         verifyDwell.clear();
@@ -288,16 +294,22 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
         : {}),
       updatedAt: Date.now(),
     };
-    void saveMirrorProfile(deps.rt, profile)
-      .then(() => {
-        deps.rt.log.info('calibrate: profile saved', { ...profile });
-        finish();
-      })
-      .catch((err) => {
-        deps.rt.log.warn('calibrate: profile save failed', { err: String(err) });
-        message = 'save failed, try again';
-        phase = 'verify';
-      });
+    void (async () => {
+      await saveMirrorProfile(deps.rt, profile);
+      // Calibrating implies a physical mirror rig: switch (and persist) the
+      // projection mode so kiosks never need the dashboard to get there.
+      if (deps.config.projection.mode !== 'reflection') {
+        deps.config.projection.mode = 'reflection';
+        await saveConfig(deps.rt, deps.config);
+      }
+      saved = true;
+      deps.rt.log.info('calibrate: profile saved', { ...profile });
+      finish();
+    })().catch((err) => {
+      deps.rt.log.warn('calibrate: profile save failed', { err: String(err) });
+      message = 'save failed, try again';
+      phase = 'verify';
+    });
   }
 
   function finish(): void {
@@ -332,6 +344,7 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
   return {
     start(): void {
       reset();
+      saved = false;
       targetShownAt = performance.now();
       void deps.rt.drivers
         .execute('pose_to_mirror', 'clear_calibration_samples', {})
@@ -366,6 +379,13 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
     },
 
     stop(): void {
+      // Abandoned from direct mode without saving: put the driver back so the
+      // regular experiences keep working with the direct overlay.
+      if (!saved && deps.config.projection.mode === 'direct') {
+        void deps.rt.drivers
+          .execute('pose_to_mirror', 'set_mirror_config', { mode: 'direct' })
+          .catch(() => undefined);
+      }
       reset();
     },
   };

@@ -137,19 +137,19 @@ Everything else adapts by itself:
    if it is mounted in portrait, set its rotation (`90`/`270`) so the frame is
    upright. Mount it as close to the display as practical, roughly centered,
    tilted slightly down is fine — the tilt is calibrated away.
-2. **Mode**: set `projection.mode = "reflection"` in the app settings.
-3. **Calibrate on the mirror**: on the next launch, if no calibration profile
-   exists the app walks straight into the wizard (it is also always available
-   from the gesture menu as **Calibrate**). You point your index finger so its
-   _reflection_ covers each target dot and hold still (~8 dots, one round near
-   - one round a step back, ~90 seconds total). The `pose_to_mirror` driver
-     fits the camera tilt, the distance scale and the mm→pixel affine from the
-     samples (`solve_calibration`), shows the residual error, and overlays the
-     now-calibrated skeleton on your reflection for a dwell-to-confirm
-     **Save / Redo**.
-4. The fitted profile persists in app storage under `mirror_calibration` and is
-   pushed to the driver on every start. Re-run the wizard whenever the camera
-   or display moves.
+2. **Calibrate on the mirror**: open the gesture menu and select **Calibrate**
+   (always available — no dashboard needed, so it works in kiosk mode). You
+   point your index finger so its _reflection_ covers each target dot and hold
+   still (~8 dots, one round near + one round a step back, ~90 seconds total).
+   The `pose_to_mirror` driver fits the camera tilt, the distance scale and
+   the mm→pixel affine from the samples (`solve_calibration`), shows the
+   residual error, and overlays the now-calibrated skeleton on your reflection
+   for a dwell-to-confirm **Save / Redo**.
+3. **Saving switches the app to reflection mode** automatically and persists
+   both the mode and the fitted profile (`mirror_calibration` in app storage);
+   the profile is pushed to the driver on every start. An app already in
+   reflection mode with no profile walks straight into the wizard on launch.
+   Re-run the wizard whenever the camera or display moves.
 
 No millimetres, offsets, FOVs or tilt angles are ever entered by hand.
 
