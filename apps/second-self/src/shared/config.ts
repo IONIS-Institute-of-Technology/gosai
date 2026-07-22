@@ -1,95 +1,65 @@
 /**
  * Second Self runtime configuration.
  *
- * One persisted, JSON-serializable config object drives how the app adapts to
- * different hardware. It is read from the app's key/value storage (key
- * {@link CONFIG_STORAGE_KEY}) on start and deep-merged over {@link DEFAULT_CONFIG},
- * so installs can reconfigure without rebuilding. The three concerns are
- * independent:
+ * Configuration is deliberately minimal: the only user-facing choices are the
+ * projection mode (webcam overlay vs. physical mirror rig) and the selfie
+ * flip. Everything else is automatic:
  *
- * - `projection` — how the **camera frame** maps into the reference space
- *   (handles any webcam resolution/aspect; mirror vs. no-mirror).
- * - `display` — how the **reference space** maps onto the **physical screen**
- *   (handles any screen size/orientation, distortion-free).
- * - `mirror` — physical augmented-mirror calibration, used only when
- *   `projection.mode === 'reflection'`.
+ * - The reference space is fixed at 1080x1920 and `contain`-fit onto the
+ *   screen, so any portrait display (including 9:16 WQHD) fills exactly and
+ *   other aspects letterbox without distortion.
+ * - The physical-mirror projection parameters are not typed in by hand; they
+ *   are *fitted* by the in-app calibration wizard (`calibrate` layer) and
+ *   persisted as a {@link MirrorProfile} under {@link MIRROR_PROFILE_STORAGE_KEY}.
  *
- * Set it from any GOSAI storage tool, e.g.:
- * `POST /v1/apps/second-self/storage/config` with the JSON body.
+ * The projection config is read from the app's key/value storage (key
+ * {@link CONFIG_STORAGE_KEY}) on start and merged over {@link DEFAULT_CONFIG}.
  */
 
 import type { ExperienceRuntimeContext } from '@gosai/sdk';
-import type { DisplayFit } from './canvas.js';
 import { REF_HEIGHT, REF_WIDTH } from './types.js';
 
 export const CONFIG_STORAGE_KEY = 'config';
+export const MIRROR_PROFILE_STORAGE_KEY = 'mirror_calibration';
 
 export type ProjectionMode = 'direct' | 'reflection';
-export type CameraFit = 'contain' | 'cover';
 
 export interface ProjectionConfig {
   /** `direct` = webcam selfie overlay; `reflection` = physical mirror rig. */
   mode: ProjectionMode;
   /** Horizontal flip for a selfie view (direct mode). */
   mirror: boolean;
-  /** How the camera frame fills the reference space (direct mode). */
-  cameraFit: CameraFit;
-  /** Extra zoom (>1 crops in for a fuller portrait fill). */
-  zoom: number;
-}
-
-export interface DisplayConfig {
-  /** Logical design space width (experiences are authored portrait). */
-  referenceWidth: number;
-  referenceHeight: number;
-  /** How the reference space maps onto the physical screen. */
-  fit: DisplayFit;
-}
-
-/** Physical augmented-mirror calibration (reflection mode only; mm). */
-export interface MirrorCalibration {
-  x_offset: number;
-  y_offset: number;
-  screen_width_mm: number;
-  screen_height_mm: number;
-  tilt_deg: number;
-  hfov_deg: number;
-  scale: number;
-  default_distance_mm: number;
 }
 
 export interface SecondSelfConfig {
   projection: ProjectionConfig;
-  display: DisplayConfig;
-  mirror: MirrorCalibration;
+}
+
+/**
+ * Fitted mirror calibration, produced by the calibration wizard and applied
+ * to the `pose_to_mirror` driver on start (reflection mode only).
+ */
+export interface MirrorProfile {
+  /** Camera tilt in degrees (fitted). */
+  tilt_deg: number;
+  /** Distance-estimate correction factor (fitted). */
+  scale: number;
+  /** mm -> mirror-pixel affine `[ax, bx, ay, by]` (fitted). */
+  affine: [number, number, number, number];
+  /** Mean residual of the fit in reference pixels (informational). */
+  residual_px_mean?: number;
+  /** Epoch ms of the calibration run (informational). */
+  updatedAt?: number;
 }
 
 export const DEFAULT_CONFIG: SecondSelfConfig = {
   projection: {
     mode: 'direct',
     mirror: true,
-    cameraFit: 'contain',
-    zoom: 1.0,
-  },
-  display: {
-    referenceWidth: REF_WIDTH,
-    referenceHeight: REF_HEIGHT,
-    fit: 'contain',
-  },
-  // Defaults from the legacy second-self config.json (physical rig).
-  mirror: {
-    x_offset: -230,
-    y_offset: 100,
-    screen_width_mm: 392.85,
-    screen_height_mm: 698.4,
-    tilt_deg: 17,
-    hfov_deg: 60,
-    scale: 1.0,
-    default_distance_mm: 1500,
   },
 };
 
-/** Read + validate the stored config, deep-merged over the defaults. */
+/** Read + validate the stored config, merged over the defaults. */
 export async function loadConfig(rt: ExperienceRuntimeContext): Promise<SecondSelfConfig> {
   let stored: unknown = null;
   try {
@@ -100,26 +70,48 @@ export async function loadConfig(rt: ExperienceRuntimeContext): Promise<SecondSe
   return mergeConfig(DEFAULT_CONFIG, stored);
 }
 
+/** Read + validate the stored mirror calibration profile, if any. */
+export async function loadMirrorProfile(
+  rt: ExperienceRuntimeContext,
+): Promise<MirrorProfile | null> {
+  let stored: unknown = null;
+  try {
+    stored = await rt.storage.get<unknown>(MIRROR_PROFILE_STORAGE_KEY, null);
+  } catch (err) {
+    rt.log.warn('second-self: failed to read mirror profile', { err: String(err) });
+    return null;
+  }
+  return parseMirrorProfile(stored);
+}
+
+/** Persist the mirror calibration profile produced by the wizard. */
+export async function saveMirrorProfile(
+  rt: ExperienceRuntimeContext,
+  profile: MirrorProfile,
+): Promise<void> {
+  await rt.storage.set(MIRROR_PROFILE_STORAGE_KEY, profile);
+}
+
 /**
  * Build the `set_mirror_config` action payload for the `pose_to_mirror` driver
- * from a config object (flattens projection + mirror calibration).
+ * from the projection config plus the fitted profile (when present).
  */
-export function toMirrorDriverConfig(cfg: SecondSelfConfig): Record<string, unknown> {
+export function toMirrorDriverConfig(
+  cfg: SecondSelfConfig,
+  profile: MirrorProfile | null,
+): Record<string, unknown> {
   return {
     mode: cfg.projection.mode,
     mirror: cfg.projection.mirror,
-    fit: cfg.projection.cameraFit,
-    zoom: cfg.projection.zoom,
-    width: cfg.display.referenceWidth,
-    height: cfg.display.referenceHeight,
-    x_offset: cfg.mirror.x_offset,
-    y_offset: cfg.mirror.y_offset,
-    screen_width_mm: cfg.mirror.screen_width_mm,
-    screen_height_mm: cfg.mirror.screen_height_mm,
-    tilt_deg: cfg.mirror.tilt_deg,
-    hfov_deg: cfg.mirror.hfov_deg,
-    scale: cfg.mirror.scale,
-    default_distance_mm: cfg.mirror.default_distance_mm,
+    width: REF_WIDTH,
+    height: REF_HEIGHT,
+    ...(profile
+      ? {
+          tilt_deg: profile.tilt_deg,
+          scale: profile.scale,
+          affine: profile.affine,
+        }
+      : {}),
   };
 }
 
@@ -127,37 +119,34 @@ export function toMirrorDriverConfig(cfg: SecondSelfConfig): Record<string, unkn
 
 function mergeConfig(base: SecondSelfConfig, override: unknown): SecondSelfConfig {
   if (typeof override !== 'object' || override === null) return base;
-  const o = override as Partial<SecondSelfConfig>;
+  const o = override as { projection?: Partial<ProjectionConfig> };
   return {
     projection: {
       mode: pickEnum(o.projection?.mode, ['direct', 'reflection'], base.projection.mode),
       mirror: pickBool(o.projection?.mirror, base.projection.mirror),
-      cameraFit: pickEnum(o.projection?.cameraFit, ['contain', 'cover'], base.projection.cameraFit),
-      zoom: pickNumber(o.projection?.zoom, base.projection.zoom),
-    },
-    display: {
-      referenceWidth: pickNumber(o.display?.referenceWidth, base.display.referenceWidth),
-      referenceHeight: pickNumber(o.display?.referenceHeight, base.display.referenceHeight),
-      fit: pickEnum(o.display?.fit, ['contain', 'cover', 'stretch'], base.display.fit),
-    },
-    mirror: {
-      x_offset: pickNumber(o.mirror?.x_offset, base.mirror.x_offset),
-      y_offset: pickNumber(o.mirror?.y_offset, base.mirror.y_offset),
-      screen_width_mm: pickNumber(o.mirror?.screen_width_mm, base.mirror.screen_width_mm),
-      screen_height_mm: pickNumber(o.mirror?.screen_height_mm, base.mirror.screen_height_mm),
-      tilt_deg: pickNumber(o.mirror?.tilt_deg, base.mirror.tilt_deg),
-      hfov_deg: pickNumber(o.mirror?.hfov_deg, base.mirror.hfov_deg),
-      scale: pickNumber(o.mirror?.scale, base.mirror.scale),
-      default_distance_mm: pickNumber(
-        o.mirror?.default_distance_mm,
-        base.mirror.default_distance_mm,
-      ),
     },
   };
 }
 
-function pickNumber(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+function parseMirrorProfile(value: unknown): MirrorProfile | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const v = value as Record<string, unknown>;
+  const affine = v.affine;
+  if (
+    !Array.isArray(affine) ||
+    affine.length !== 4 ||
+    !affine.every((n) => typeof n === 'number' && Number.isFinite(n))
+  ) {
+    return null;
+  }
+  if (typeof v.tilt_deg !== 'number' || typeof v.scale !== 'number') return null;
+  return {
+    tilt_deg: v.tilt_deg,
+    scale: v.scale,
+    affine: affine as [number, number, number, number],
+    ...(typeof v.residual_px_mean === 'number' ? { residual_px_mean: v.residual_px_mean } : {}),
+    ...(typeof v.updatedAt === 'number' ? { updatedAt: v.updatedAt } : {}),
+  };
 }
 
 function pickBool(value: unknown, fallback: boolean): boolean {

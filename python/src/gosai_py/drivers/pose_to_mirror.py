@@ -35,18 +35,46 @@ Two modes (selected via ``set_mirror_config`` ``{"mode": ...}``):
   are normalized by the camera frame, mirrored horizontally, and "cover"-fit to
   the portrait canvas. Works on any laptop/webcam with no calibration.
 - ``reflection`` - the calibrated projection for the physical augmented-mirror
-  rig (uses the screen size / offsets / tilt / distance in ``DEFAULT_CONFIG``).
+  rig.
+
+Reflection-mode calibration
+---------------------------
+
+The reflection model has two kinds of parameters:
+
+- the geometric ones (``tilt_deg`` camera tilt, ``scale`` distance correction),
+  which feed the eye-line reflection math, and
+- a 2D affine output stage mapping reflected millimeters to mirror pixels
+  (``x_px = ax * x_mm + bx``; ``y_px = ay * y_mm + by``), which absorbs the
+  legacy ``x_offset`` / ``y_offset`` / ``screen_*_mm`` measurements.
+
+Instead of hand-measuring those, the driver can *fit* all of them from guided
+samples: the user aligns their index fingertip's reflection with a target dot
+drawn at a known pixel position, the app calls ``capture_calibration_sample``,
+and once enough targets were captured ``solve_calibration`` grid-searches
+``tilt_deg`` x ``scale`` and solves the affine per axis in closed form,
+returning the residual error in pixels. The legacy mm parameters remain as the
+fallback used to derive the affine when no fit has been applied.
 
 Actions:
 
 - ``set_mirror_config`` - merge a partial config dict (see ``DEFAULT_CONFIG``)
-  and/or switch ``mode`` (``"direct"`` | ``"reflection"``).
+  and/or switch ``mode`` (``"direct"`` | ``"reflection"``); also accepts
+  ``affine`` (``[ax, bx, ay, by]`` or ``None`` to fall back to the mm config).
+- ``capture_calibration_sample`` - ``{ target: [x_px, y_px], landmark? }``:
+  snapshot the recent raw-pose frames for one calibration target.
+- ``solve_calibration`` - fit ``tilt_deg``/``scale``/``affine`` from the
+  captured samples; applies the fit (unless ``{"apply": false}``) and returns
+  it with per-target residuals.
+- ``clear_calibration_samples`` - drop all captured samples.
 """
 
 from __future__ import annotations
 
 import math
 import time
+from collections import deque
+from statistics import median
 from typing import Any, ClassVar
 
 from gosai_py.driver import DriverContext
@@ -59,6 +87,15 @@ LEFT_SHOULDER = 11
 RIGHT_SHOULDER = 12
 RIGHT_HAND_ANCHOR = 15  # left wrist (legacy swaps handedness upstream).
 LEFT_HAND_ANCHOR = 16  # right wrist.
+LEFT_INDEX = 19  # body-pose index fingertips used for calibration samples.
+RIGHT_INDEX = 20
+
+# Calibration capture/solve tuning.
+RAW_HISTORY = 24  # recent raw-pose frames kept for sample capture.
+SAMPLE_MAX_AGE_S = 2.0  # only frames this fresh enter a captured sample.
+SAMPLE_MIN_FRAMES = 5
+SOLVE_MIN_SAMPLES = 4
+MIN_FINGERTIP_VISIBILITY = 0.35
 
 # Parts that get reflected + pixel-mapped. Other keys pass through untouched.
 PARTS: tuple[str, ...] = ("body_pose", "right_hand_pose", "left_hand_pose", "face_mesh")
@@ -72,7 +109,8 @@ INTER_RATES: dict[str, float] = {
 }
 
 # Defaults taken from the legacy second-self config.json + mirror.py. Distances
-# are in millimeters; the screen is portrait 1080x1920.
+# are in millimeters; the screen is portrait 1080x1920. The mm entries only
+# serve to derive a fallback affine when no fitted calibration is applied.
 DEFAULT_CONFIG: dict[str, float] = {
     "x_offset": -230.0,  # mm; increase to move the skeleton left.
     "y_offset": 100.0,  # mm; increase to move it down.
@@ -87,9 +125,62 @@ DEFAULT_CONFIG: dict[str, float] = {
     "zoom": 1.0,  # direct mode: >1 crops in for a fuller portrait fill.
 }
 
+# Solver grid. Coarse pass over the full plausible range, then one refinement
+# pass around the best coarse candidate.
+TILT_COARSE = [t * 2.5 for t in range(0, 17)]  # 0..40 deg
+SCALE_COARSE = [0.5 + 0.1 * s for s in range(0, 14)]  # 0.5..1.8
+TILT_REFINE_STEP = 0.5
+SCALE_REFINE_STEP = 0.02
+
 
 def _lerp(a: float, b: float, t: float) -> float:
     return (1.0 - t) * a + t * b
+
+
+def _parse_affine(value: Any) -> list[float] | None:
+    """Validate an ``[ax, bx, ay, by]`` payload; ``None``/invalid clears the fit."""
+    if isinstance(value, (list, tuple)) and len(value) == 4:
+        try:
+            return [float(v) for v in value]
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _median_visibility(frames: list[dict[str, Any]], index: int) -> float:
+    vals: list[float] = []
+    for raw in frames:
+        body = raw.get("body_pose") or []
+        if len(body) > index and body[index] and len(body[index]) > 2:
+            vals.append(float(body[index][2]))
+    return median(vals) if vals else 0.0
+
+
+def _pick_fingertip(frames: list[dict[str, Any]]) -> int | None:
+    """Choose the more visible body index fingertip (19/20) over the frames."""
+    left = _median_visibility(frames, LEFT_INDEX)
+    right = _median_visibility(frames, RIGHT_INDEX)
+    if max(left, right) < MIN_FINGERTIP_VISIBILITY:
+        return None
+    return RIGHT_INDEX if right >= left else LEFT_INDEX
+
+
+def _fit_axis(xs: list[float], ts: list[float]) -> tuple[float, float] | None:
+    """Closed-form 1D least squares for t = a*x + b."""
+    n = len(xs)
+    if n < 2:
+        return None
+    mean_x = sum(xs) / n
+    mean_t = sum(ts) / n
+    var = sum((x - mean_x) ** 2 for x in xs)
+    if var < 1e-9:
+        return None
+    a = sum((x - mean_x) * (t - mean_t) for x, t in zip(xs, ts, strict=True)) / var
+    return a, mean_t - a * mean_x
+
+
+def _grid(tilts: list[float], scales: list[float]) -> list[tuple[float, float]]:
+    return [(t, s) for t in tilts for s in scales]
 
 
 def _deproject(u: float, v: float, depth: float, fx: float, fy: float, ppx: float, ppy: float) -> tuple[float, float, float]:
@@ -138,7 +229,12 @@ class PoseToMirrorDriver(BaseProcessor):
     name: ClassVar[str] = "pose_to_mirror"
     description: ClassVar[str] = "Reflect MediaPipe landmarks onto an augmented mirror (webcam-only)."
     events: ClassVar[tuple[str, ...]] = ("mirrored_data", "projected_data")
-    actions: ClassVar[tuple[str, ...]] = ("set_mirror_config",)
+    actions: ClassVar[tuple[str, ...]] = (
+        "set_mirror_config",
+        "capture_calibration_sample",
+        "solve_calibration",
+        "clear_calibration_samples",
+    )
     dependencies: ClassVar[tuple[str, ...]] = ("pose",)
     subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("pose", "raw_data"),)
     loop_interval_s: ClassVar[float | None] = None
@@ -153,6 +249,11 @@ class PoseToMirrorDriver(BaseProcessor):
         self._mirror_flip: bool = True  # horizontal flip (selfie view).
         self._fit: str = "contain"  # "contain" (letterbox) | "cover" (fill+crop).
         self._mirrored: dict[str, Any] = {}
+        # Fitted mm->px affine [ax, bx, ay, by]; None falls back to the mm config.
+        self._affine: list[float] | None = None
+        # Recent raw pose payloads + calibration samples (capture/solve actions).
+        self._raw_history: deque[dict[str, Any]] = deque(maxlen=RAW_HISTORY)
+        self._samples: list[dict[str, Any]] = []
 
     def execute(self, action: str, data: Any) -> Any:
         if action == "set_mirror_config":
@@ -165,13 +266,28 @@ class PoseToMirrorDriver(BaseProcessor):
                     self._fit = fit
                 if "mirror" in data:
                     self._mirror_flip = bool(data["mirror"])
+                if "affine" in data:
+                    self._affine = _parse_affine(data["affine"])
                 for key, value in data.items():
                     if key in self._config:
                         try:
                             self._config[key] = float(value)
                         except (TypeError, ValueError):
                             self.log("warn", f"set_mirror_config: bad value for {key!r}")
-            return {"mode": self._mode, "fit": self._fit, "mirror": self._mirror_flip, **self._config}
+            return {
+                "mode": self._mode,
+                "fit": self._fit,
+                "mirror": self._mirror_flip,
+                "affine": self._affine,
+                **self._config,
+            }
+        if action == "capture_calibration_sample":
+            return self._capture_calibration_sample(data)
+        if action == "solve_calibration":
+            return self._solve_calibration(data)
+        if action == "clear_calibration_samples":
+            self._samples.clear()
+            return {"ok": True, "samples": 0}
         return super().execute(action, data)
 
     # ------------------------------------------------------------------
@@ -188,9 +304,12 @@ class PoseToMirrorDriver(BaseProcessor):
         body_pose: list[list[float]],
         body_world: list[list[float]],
         fx: float,
+        scale: float | None = None,
     ) -> float:
         """Weak-perspective distance (mm) from shoulder span; fallback to default."""
         default = self._config["default_distance_mm"]
+        if scale is None:
+            scale = self._config["scale"]
         if len(body_pose) <= RIGHT_SHOULDER or len(body_world) <= RIGHT_SHOULDER:
             return default
         try:
@@ -199,10 +318,53 @@ class PoseToMirrorDriver(BaseProcessor):
             px = math.hypot(lp[0] - rp[0], lp[1] - rp[1])
             meters = math.hypot(lw[0] - rw[0], lw[1] - rw[1])
             if px > 1.0 and meters > 0.05:
-                return fx * (meters * 1000.0) / px * self._config["scale"]
+                return fx * (meters * 1000.0) / px * scale
         except (IndexError, TypeError):
             pass
         return default
+
+    def _reflect_body_landmark(
+        self,
+        raw: dict[str, Any],
+        index: int,
+        tilt_deg: float,
+        scale: float,
+    ) -> list[float] | None:
+        """Reflect one body landmark of a raw pose payload onto the mirror plane.
+
+        Returns the point in millimeters (pre affine/pixel mapping), or ``None``
+        when the payload lacks the landmark. Used by the calibration solver so
+        candidate ``tilt``/``scale`` values run through the exact runtime math.
+        """
+        body_pose = raw.get("body_pose") or []
+        body_world = raw.get("body_world_pose") or []
+        if len(body_pose) <= index or not body_pose[index]:
+            return None
+        frame_w = float(raw.get("frame_width") or 1280.0)
+        frame_h = float(raw.get("frame_height") or 720.0)
+        fx, fy, ppx, ppy = self._intrinsics(frame_w, frame_h)
+        theta = math.radians(tilt_deg)
+        distance = self._estimate_distance(body_pose, body_world, fx, scale=scale)
+
+        def world_z_mm(i: int) -> float:
+            if i < len(body_world) and body_world[i] and len(body_world[i]) > 2:
+                return body_world[i][2] * 1000.0
+            return 0.0
+
+        eyes_depth = max(distance + world_z_mm(NOSE), 1.0)
+        eyes_px = (
+            body_pose[NOSE][:2]
+            if len(body_pose) > NOSE and body_pose[NOSE]
+            else [frame_w / 2.0, frame_h / 2.0]
+        )
+        eyes_coords = _deproject(eyes_px[0], eyes_px[1], eyes_depth, fx, fy, ppx, ppy)
+        point_depth = max(distance + world_z_mm(index), 1.0)
+        loc = _map_location(
+            body_pose[index][:2], eyes_depth, eyes_coords, point_depth, fx, fy, ppx, ppy, theta
+        )
+        if loc[0] == -1.0 and loc[1] == -1.0:
+            return None
+        return loc
 
     def _project(
         self,
@@ -251,17 +413,25 @@ class PoseToMirrorDriver(BaseProcessor):
             out.append([x, y, *point[2:]])
         return out
 
+    def _current_affine(self) -> tuple[float, float, float, float]:
+        """Active mm->px affine: the fitted one, else derived from the mm config."""
+        if self._affine is not None:
+            ax, bx, ay, by = self._affine
+            return ax, bx, ay, by
+        cfg = self._config
+        ax = cfg["width"] / cfg["screen_width_mm"]
+        ay = cfg["height"] / cfg["screen_height_mm"]
+        return ax, -ax * cfg["x_offset"], ay, -ay * cfg["y_offset"]
+
     def _mirror_part(self, name: str, points: list[list[float]]) -> list[list[float]]:
         """Map reflected millimeters into mirror pixel space, then smooth."""
-        cfg = self._config
+        ax, bx, ay, by = self._current_affine()
         mapped: list[list[float]] = []
         for point in points:
             if not point:
                 mapped.append([])
                 continue
-            x = cfg["width"] * (point[0] - cfg["x_offset"]) / cfg["screen_width_mm"]
-            y = cfg["height"] * (point[1] - cfg["y_offset"]) / cfg["screen_height_mm"]
-            mapped.append([x, y, *point[2:]])
+            mapped.append([ax * point[0] + bx, ay * point[1] + by, *point[2:]])
         return self._smooth(name, mapped)
 
     def _direct_part(
@@ -352,6 +522,19 @@ class PoseToMirrorDriver(BaseProcessor):
         frame_w = float(data.get("frame_width") or 1280.0)
         frame_h = float(data.get("frame_height") or 720.0)
 
+        # Keep a short raw history so calibration captures can median-filter
+        # over the frames of a dwell (the pose driver allocates fresh lists per
+        # frame, so storing references is safe).
+        self._raw_history.append(
+            {
+                "body_pose": body_pose,
+                "body_world_pose": body_world,
+                "frame_width": frame_w,
+                "frame_height": frame_h,
+                "ts": float(data.get("ts") or time.time()),
+            }
+        )
+
         if self._mode == "direct":
             self._project_direct(
                 frame_w, frame_h, body_pose, body_world, face_mesh, right_hand, left_hand
@@ -405,3 +588,169 @@ class PoseToMirrorDriver(BaseProcessor):
             mirrored[part] = self._mirror_part(part, projected.get(part) or [])
         self._mirrored = mirrored
         self.emit("mirrored_data", mirrored)
+
+    # ------------------------------------------------------------------
+    # Calibration: sample capture + solver
+    # ------------------------------------------------------------------
+
+    def _capture_calibration_sample(self, data: Any) -> dict[str, Any]:
+        """Snapshot the recent raw frames for one calibration target.
+
+        ``data``: ``{ target: [x_px, y_px], landmark?: int }``. When ``landmark``
+        is omitted the more visible body index fingertip (19/20) is chosen.
+        """
+        if not isinstance(data, dict):
+            return {"ok": False, "error": "expected { target: [x, y], landmark? }"}
+        target = data.get("target")
+        if not (isinstance(target, (list, tuple)) and len(target) >= 2):
+            return {"ok": False, "error": "target must be [x_px, y_px]"}
+        try:
+            target_px = [float(target[0]), float(target[1])]
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "target must be numeric"}
+
+        now = time.time()
+        frames = [
+            raw
+            for raw in self._raw_history
+            if now - raw["ts"] <= SAMPLE_MAX_AGE_S and raw.get("body_pose")
+        ]
+        if len(frames) < SAMPLE_MIN_FRAMES:
+            return {
+                "ok": False,
+                "error": f"need {SAMPLE_MIN_FRAMES} recent pose frames, have {len(frames)}",
+            }
+
+        raw_landmark = data.get("landmark")
+        landmark = (
+            int(raw_landmark)
+            if isinstance(raw_landmark, (int, float))
+            else _pick_fingertip(frames)
+        )
+        if landmark is None:
+            return {"ok": False, "error": "no visible index fingertip (raise a hand)"}
+
+        vis = _median_visibility(frames, landmark)
+        if vis < MIN_FINGERTIP_VISIBILITY:
+            return {
+                "ok": False,
+                "error": f"fingertip landmark {landmark} barely visible ({vis:.2f})",
+            }
+
+        self._samples.append({"target": target_px, "landmark": landmark, "frames": frames})
+        # Frames must not leak into the next target's sample; the history
+        # refills within a second from the live pose stream.
+        self._raw_history.clear()
+        return {
+            "ok": True,
+            "samples": len(self._samples),
+            "landmark": landmark,
+            "visibility": round(vis, 2),
+        }
+
+    def _solve_calibration(self, data: Any) -> dict[str, Any]:
+        """Fit tilt/scale (grid search) + mm->px affine (least squares).
+
+        Returns the fitted parameters and residuals, and applies them to the
+        live config unless called with ``{"apply": false}``.
+        """
+        if len(self._samples) < SOLVE_MIN_SAMPLES:
+            return {
+                "ok": False,
+                "error": f"need at least {SOLVE_MIN_SAMPLES} samples, have {len(self._samples)}",
+            }
+        apply_fit = True
+        if isinstance(data, dict) and "apply" in data:
+            apply_fit = bool(data["apply"])
+
+        best: dict[str, Any] | None = None
+        for tilt, scale in _grid(TILT_COARSE, SCALE_COARSE):
+            fit = self._evaluate_candidate(tilt, scale)
+            if fit is not None and (best is None or fit["rmse"] < best["rmse"]):
+                best = fit
+        if best is None:
+            return {"ok": False, "error": "could not project samples (poses unusable)"}
+
+        # Two refinement passes, each covering +-1 coarse cell around the
+        # running optimum (the second pass recenters, so a coarse pick one cell
+        # off the true optimum still converges).
+        for _ in range(2):
+            tilts = [best["tilt_deg"] + TILT_REFINE_STEP * i for i in range(-5, 6)]
+            scales = [max(best["scale"] + SCALE_REFINE_STEP * i, 0.05) for i in range(-5, 6)]
+            for tilt, scale in _grid(tilts, scales):
+                fit = self._evaluate_candidate(tilt, scale)
+                if fit is not None and fit["rmse"] < best["rmse"]:
+                    best = fit
+
+        result = {
+            "ok": True,
+            "tilt_deg": round(best["tilt_deg"], 2),
+            "scale": round(best["scale"], 3),
+            "affine": [round(v, 5) for v in best["affine"]],
+            "residual_px_mean": round(best["mean_err"], 1),
+            "residual_px_max": round(best["max_err"], 1),
+            "residuals_px": [round(e, 1) for e in best["errors"]],
+            "samples": len(self._samples),
+            "applied": apply_fit,
+        }
+        if apply_fit:
+            self._config["tilt_deg"] = float(result["tilt_deg"])
+            self._config["scale"] = float(result["scale"])
+            self._affine = [float(v) for v in result["affine"]]
+        self.log(
+            "info",
+            "calibration solved: "
+            f"tilt={result['tilt_deg']} scale={result['scale']} "
+            f"residual={result['residual_px_mean']}px mean / {result['residual_px_max']}px max "
+            f"({len(self._samples)} samples, applied={apply_fit})",
+        )
+        return result
+
+    def _evaluate_candidate(self, tilt_deg: float, scale: float) -> dict[str, Any] | None:
+        """Project all samples under one (tilt, scale) and fit the affine.
+
+        Per-axis closed-form least squares: minimize sum((a*x + b - t)^2).
+        Returns None when fewer than SOLVE_MIN_SAMPLES samples project cleanly.
+        """
+        pts: list[tuple[float, float]] = []  # reflected mm
+        targets: list[tuple[float, float]] = []  # target px
+        for sample in self._samples:
+            xs: list[float] = []
+            ys: list[float] = []
+            for raw in sample["frames"]:
+                loc = self._reflect_body_landmark(raw, sample["landmark"], tilt_deg, scale)
+                if loc is not None:
+                    xs.append(loc[0])
+                    ys.append(loc[1])
+            if len(xs) < SAMPLE_MIN_FRAMES:
+                continue
+            pts.append((median(xs), median(ys)))
+            targets.append((sample["target"][0], sample["target"][1]))
+        if len(pts) < SOLVE_MIN_SAMPLES:
+            return None
+
+        fit_x = _fit_axis([p[0] for p in pts], [t[0] for t in targets])
+        fit_y = _fit_axis([p[1] for p in pts], [t[1] for t in targets])
+        if fit_x is None or fit_y is None:
+            return None
+        ax, bx = fit_x
+        ay, by = fit_y
+        # A physical mirror cannot flip or collapse an axis; reject degenerate
+        # fits (they only appear when the samples are bad).
+        if ax <= 0 or ay <= 0:
+            return None
+
+        errors = [
+            math.hypot(ax * p[0] + bx - t[0], ay * p[1] + by - t[1])
+            for p, t in zip(pts, targets, strict=True)
+        ]
+        rmse = math.sqrt(sum(e * e for e in errors) / len(errors))
+        return {
+            "tilt_deg": tilt_deg,
+            "scale": scale,
+            "affine": [ax, bx, ay, by],
+            "errors": errors,
+            "rmse": rmse,
+            "mean_err": sum(errors) / len(errors),
+            "max_err": max(errors),
+        }

@@ -20,9 +20,26 @@ import { REF_WIDTH, type FrameContext, type Layer } from '../shared/types.js';
 const BUTTON_X = REF_WIDTH / 2;
 const BUTTON_Y = 130;
 const BUTTON_R = 80;
-const OPEN_FRAMES = 36;
-const SELECT_FRAMES = 45;
+/**
+ * Dwell timing is wall-clock so it is independent of the display refresh rate
+ * (the legacy frame counters selected ~2x faster on a 60 Hz kiosk than at the
+ * ~30 fps the pose feed runs at).
+ */
+const OPEN_DWELL_MS = 900;
+const SELECT_DWELL_MS = 1100;
 const COOLDOWN_MS = 900;
+/**
+ * Hand tracking flickers: single dropped frames must not reset a dwell. The
+ * cursor survives brief dropouts (grace), dwell progress decays instead of
+ * hard-resetting on hover exit, and an in-progress dwell enlarges its hitbox
+ * (hysteresis) so boundary jitter doesn't cancel it.
+ */
+const CURSOR_GRACE_MS = 300;
+const DECAY_FACTOR = 2;
+const HYSTERESIS_PX = 18;
+/** Switch cursor hands only when the other hand is clearly higher for a while. */
+const HAND_SWITCH_MARGIN_PX = 80;
+const HAND_SWITCH_MS = 400;
 
 const ROW_W = 560;
 const ROW_H = 84;
@@ -43,10 +60,81 @@ interface Row {
 
 export function createMenuLayer(deps: LayerDeps): Layer {
   const controller = deps.controller;
+  /** Per-row dwell progress in milliseconds. */
   const dwell = new Map<string, number>();
   const cooldownUntil = new Map<string, number>();
-  let buttonCount = 0;
+  let buttonMs = 0;
+  let buttonCooldownUntil = 0;
   let open = false;
+
+  // Sticky-hand cursor state.
+  let activeHand: 'right' | 'left' | null = null;
+  let otherHigherSince = 0;
+  let lastCursor: { x: number; y: number } | null = null;
+  let lastCursorTs = 0;
+
+  function resetCursorState(): void {
+    activeHand = null;
+    otherHigherSince = 0;
+    lastCursor = null;
+    lastCursorTs = 0;
+  }
+
+  /**
+   * Index-fingertip cursor with sticky hand selection and a dropout grace
+   * period. The active hand keeps the cursor while it is tracked; the other
+   * hand takes over only when it is clearly higher for a sustained interval
+   * (or the active hand is lost). On full loss the last position survives
+   * {@link CURSOR_GRACE_MS} so momentary tracking flicker doesn't reset dwells.
+   */
+  function pickCursor(now: number): { x: number; y: number } | null {
+    const m = deps.feed.mirror.data;
+    const hands = {
+      right: m.right_hand_pose[8],
+      left: m.left_hand_pose[8],
+    } as const;
+    const rightValid = isValid(hands.right);
+    const leftValid = isValid(hands.left);
+
+    if (activeHand && !(activeHand === 'right' ? rightValid : leftValid)) {
+      activeHand = null;
+      otherHigherSince = 0;
+    }
+    if (!activeHand) {
+      if (rightValid && leftValid) {
+        activeHand = hands.right![1]! <= hands.left![1]! ? 'right' : 'left';
+      } else if (rightValid) {
+        activeHand = 'right';
+      } else if (leftValid) {
+        activeHand = 'left';
+      }
+      otherHigherSince = 0;
+    } else if (rightValid && leftValid) {
+      const active = activeHand === 'right' ? hands.right! : hands.left!;
+      const other = activeHand === 'right' ? hands.left! : hands.right!;
+      if (other[1]! < active[1]! - HAND_SWITCH_MARGIN_PX) {
+        if (otherHigherSince === 0) otherHigherSince = now;
+        if (now - otherHigherSince >= HAND_SWITCH_MS) {
+          activeHand = activeHand === 'right' ? 'left' : 'right';
+          otherHigherSince = 0;
+        }
+      } else {
+        otherHigherSince = 0;
+      }
+    } else {
+      otherHigherSince = 0;
+    }
+
+    if (activeHand) {
+      const lm = activeHand === 'right' ? hands.right! : hands.left!;
+      lastCursor = { x: lm[0]!, y: lm[1]! };
+      lastCursorTs = now;
+      return lastCursor;
+    }
+    if (lastCursor && now - lastCursorTs < CURSOR_GRACE_MS) return lastCursor;
+    lastCursor = null;
+    return null;
+  }
 
   function buildRows(): Row[] {
     const rows: Row[] = [];
@@ -72,31 +160,33 @@ export function createMenuLayer(deps: LayerDeps): Layer {
     start(): void {
       dwell.clear();
       cooldownUntil.clear();
-      buttonCount = 0;
+      buttonMs = 0;
+      buttonCooldownUntil = 0;
       open = false;
+      resetCursorState();
     },
 
     render(frame: FrameContext): void {
-      const { ctx, timestamp } = frame;
-      // Either index fingertip drives the menu (legacy only tracked one hand,
-      // whose side depended on the driver's handedness convention). When both
-      // hands are up, the higher one wins: that's the pointing hand.
-      const m = deps.feed.mirror.data;
-      const cursor = pickCursor(m.right_hand_pose[8], m.left_hand_pose[8]);
+      const { ctx, timestamp, deltaMs } = frame;
+      const cursor = pickCursor(timestamp);
 
-      // Central toggle button dwell.
-      if (cursor && dist(cursor.x, cursor.y, BUTTON_X, BUTTON_Y) < BUTTON_R) {
-        buttonCount += 1;
-        if (buttonCount >= OPEN_FRAMES) {
+      // Central toggle button dwell (hysteresis widens the hit radius while a
+      // dwell is in progress).
+      const buttonRadius = BUTTON_R + (buttonMs > 0 ? HYSTERESIS_PX : 0);
+      const overButton =
+        cursor !== null && dist(cursor.x, cursor.y, BUTTON_X, BUTTON_Y) < buttonRadius;
+      if (overButton && timestamp >= buttonCooldownUntil) {
+        buttonMs += deltaMs;
+        if (buttonMs >= OPEN_DWELL_MS) {
           open = !open;
-          buttonCount = -OPEN_FRAMES; // brief debounce before re-trigger.
+          buttonMs = 0;
+          buttonCooldownUntil = timestamp + COOLDOWN_MS;
         }
       } else {
-        buttonCount = Math.max(0, buttonCount);
-        if (buttonCount > 0) buttonCount -= 2;
+        buttonMs = Math.max(0, buttonMs - deltaMs * DECAY_FACTOR);
       }
 
-      drawButton(ctx, open, Math.max(0, buttonCount) / OPEN_FRAMES);
+      drawButton(ctx, open, Math.min(1, buttonMs / OPEN_DWELL_MS));
 
       if (!open) {
         if (controller.runningSlugs().every(isPassive)) {
@@ -112,27 +202,24 @@ export function createMenuLayer(deps: LayerDeps): Layer {
         seen.add(row.id);
         const x = BUTTON_X - ROW_W / 2 + (row.indent ? OPTION_INDENT : 0);
         const w = ROW_W - (row.indent ? OPTION_INDENT : 0);
+        const ms = dwell.get(row.id) ?? 0;
+        const pad = ms > 0 ? HYSTERESIS_PX : 0;
         const hovered =
           cursor !== null &&
-          cursor.x > x &&
-          cursor.x < x + w &&
-          cursor.y > y &&
-          cursor.y < y + ROW_H;
+          cursor.x > x - pad &&
+          cursor.x < x + w + pad &&
+          cursor.y > y - pad &&
+          cursor.y < y + ROW_H + pad;
 
-        let progress = 0;
         const onCooldown = (cooldownUntil.get(row.id) ?? 0) > timestamp;
-        if (hovered && !onCooldown) {
-          const c = (dwell.get(row.id) ?? 0) + 1;
-          dwell.set(row.id, c);
-          progress = Math.min(1, c / SELECT_FRAMES);
-          if (c >= SELECT_FRAMES) {
-            row.fire();
-            dwell.set(row.id, 0);
-            cooldownUntil.set(row.id, timestamp + COOLDOWN_MS);
-          }
-        } else {
-          dwell.set(row.id, 0);
+        let next = hovered && !onCooldown ? ms + deltaMs : Math.max(0, ms - deltaMs * DECAY_FACTOR);
+        const progress = Math.min(1, next / SELECT_DWELL_MS);
+        if (next >= SELECT_DWELL_MS) {
+          row.fire();
+          next = 0;
+          cooldownUntil.set(row.id, timestamp + COOLDOWN_MS);
         }
+        dwell.set(row.id, next);
 
         drawRow(ctx, x, y, w, row, progress);
         y += ROW_H + ROW_GAP;
@@ -147,22 +234,9 @@ export function createMenuLayer(deps: LayerDeps): Layer {
     stop(): void {
       dwell.clear();
       cooldownUntil.clear();
+      resetCursorState();
     },
   };
-}
-
-function pickCursor(
-  a: number[] | undefined,
-  b: number[] | undefined,
-): { x: number; y: number } | null {
-  const va = isValid(a);
-  const vb = isValid(b);
-  if (va && vb) {
-    return a![1]! <= b![1]! ? { x: a![0]!, y: a![1]! } : { x: b![0]!, y: b![1]! };
-  }
-  if (va) return { x: a![0]!, y: a![1]! };
-  if (vb) return { x: b![0]!, y: b![1]! };
-  return null;
 }
 
 function makeOptionRow(controller: MenuController, slug: string, opt: MenuOption): Row {

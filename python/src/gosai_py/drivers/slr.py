@@ -36,43 +36,64 @@ FACE_LM_IND = (10, 152, 234, 454)
 
 # The ONNX models were trained on raw pixel coordinates from the legacy
 # 640x480 RealSense camera. Live landmarks (which arrive in the actual camera
-# frame's pixel space) must be rescaled to this space or the input distribution
-# is off by the resolution ratio and recognition fails.
+# frame's pixel space) must be mapped into this space or the input distribution
+# is off and recognition fails. The mapping is aspect-preserving (uniform
+# scale, letterboxed/centered): stretching each axis independently squashes
+# body proportions on any camera whose aspect differs from 4:3 -- a portrait
+# camera would compress y by ~2.7x relative to x, which the models classify as
+# noise. On a 640x480 camera the mapping is the identity, matching the legacy
+# behaviour exactly.
 TRAIN_WIDTH = 640.0
 TRAIN_HEIGHT = 480.0
 
 
+def _train_space_transform(frame_w: float, frame_h: float) -> tuple[float, float, float]:
+    """Uniform scale + centering offsets mapping a frame into 640x480."""
+    scale = min(TRAIN_WIDTH / max(frame_w, 1.0), TRAIN_HEIGHT / max(frame_h, 1.0))
+    ox = (TRAIN_WIDTH - frame_w * scale) / 2.0
+    oy = (TRAIN_HEIGHT - frame_h * scale) / 2.0
+    return scale, ox, oy
+
+
 def _flatten_xy(
-    landmarks: list[list[float]] | None, count: int, sx: float, sy: float
+    landmarks: list[list[float]] | None, count: int, s: float, ox: float, oy: float
 ) -> list[float]:
-    """Flatten landmarks to ``[x0, y0, x1, y1, ...]`` scaled, zero-padded to ``count``."""
+    """Flatten landmarks to ``[x0, y0, x1, y1, ...]`` mapped, zero-padded to ``count``.
+
+    Absent parts stay all-zero (the models were trained with zero padding for
+    missing hands), so the offsets apply only to present landmarks.
+    """
     if landmarks:
-        return [coord for lm in landmarks for coord in (float(lm[0]) * sx, float(lm[1]) * sy)]
+        return [
+            coord
+            for lm in landmarks
+            for coord in (float(lm[0]) * s + ox, float(lm[1]) * s + oy)
+        ]
     return [0.0] * (count * 2)
 
 
 def _adapt_frame(frame: dict[str, Any], include_face: bool) -> list[float]:
     """Build one model input frame from a pose ``raw_data`` payload.
 
-    Landmarks are rescaled from the live camera frame's pixel space to the
-    legacy 640x480 training space.
+    Landmarks are mapped from the live camera frame's pixel space into the
+    legacy 640x480 training space, preserving aspect ratio (uniform scale,
+    centered).
     """
     frame_w = float(frame.get("frame_width") or TRAIN_WIDTH)
     frame_h = float(frame.get("frame_height") or TRAIN_HEIGHT)
-    sx = TRAIN_WIDTH / max(frame_w, 1.0)
-    sy = TRAIN_HEIGHT / max(frame_h, 1.0)
+    s, ox, oy = _train_space_transform(frame_w, frame_h)
 
     feats: list[float] = []
     if include_face:
         face = frame.get("face_mesh") or []
         for idx in FACE_LM_IND:
             if idx < len(face) and face[idx]:
-                feats.extend((float(face[idx][0]) * sx, float(face[idx][1]) * sy))
+                feats.extend((float(face[idx][0]) * s + ox, float(face[idx][1]) * s + oy))
             else:
                 feats.extend((0.0, 0.0))
-    feats.extend(_flatten_xy(frame.get("body_pose"), 33, sx, sy))
-    feats.extend(_flatten_xy(frame.get("right_hand_pose"), 21, sx, sy))
-    feats.extend(_flatten_xy(frame.get("left_hand_pose"), 21, sx, sy))
+    feats.extend(_flatten_xy(frame.get("body_pose"), 33, s, ox, oy))
+    feats.extend(_flatten_xy(frame.get("right_hand_pose"), 21, s, ox, oy))
+    feats.extend(_flatten_xy(frame.get("left_hand_pose"), 21, s, ox, oy))
     return feats
 
 

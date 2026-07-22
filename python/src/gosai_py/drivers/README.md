@@ -30,9 +30,21 @@ space.
     each landmark `[x, y, depth_mm, visibility]`.
   - `projected_data` — same reflection but still in millimeters (pre
     pixel-mapping); useful for calibration/debugging.
-- **Actions:** `set_mirror_config` — merge a partial config dict (see
-  `DEFAULT_CONFIG`: offsets, screen size mm, resolution, camera tilt, hfov,
-  per-install `scale`, fallback distance).
+- **Actions:**
+  - `set_mirror_config` — merge a partial config dict (see `DEFAULT_CONFIG`)
+    and/or the fitted `affine` (`[ax, bx, ay, by]` mm→px mapping).
+  - `capture_calibration_sample` — `{ target: [x_px, y_px], landmark? }`:
+    snapshot the recent raw-pose frames for one calibration target (the user's
+    index fingertip reflection aligned with a dot at `target`).
+  - `solve_calibration` — grid-search `tilt_deg` × `scale` and least-squares
+    the affine from the captured samples; applies the fit (unless
+    `{"apply": false}`) and returns it with residuals in pixels. See
+    `tests/test_pose_to_mirror_calibration.py` for a synthetic round trip.
+  - `clear_calibration_samples` — drop captured samples.
+
+Reflection-mode geometry is therefore *fitted* by the second-self in-app
+wizard, never measured by hand; the legacy mm config keys remain only as the
+fallback used to derive the affine when no fit has been applied.
 
 **Webcam-only (no RealSense).** The legacy driver needed an Intel RealSense
 depth camera. We drop that hardware: MediaPipe Holistic already produces metric
@@ -62,3 +74,9 @@ ONNX models.
 The model is chosen by `len(actions)`; logits are softmaxed and the argmax label
 is emitted. Models are bundled as package data (`slr_models/*.onnx`, declared in
 `python/pyproject.toml`) since they are not on a public CDN.
+
+The models were trained on raw pixel landmarks from the legacy 640x480
+camera. Live landmarks are mapped into that space **aspect-preserving**
+(uniform scale, letterboxed/centered): per-axis stretching would squash body
+proportions on any non-4:3 camera (a portrait-rotated camera compresses y by
+~2.7x relative to x) and recognition degrades to noise.

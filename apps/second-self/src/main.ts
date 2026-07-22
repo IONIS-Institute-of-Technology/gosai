@@ -32,6 +32,7 @@ import { applyReferenceTransform, createCompositorCanvas, fitCanvas } from './sh
 import {
   DEFAULT_CONFIG,
   loadConfig,
+  loadMirrorProfile,
   toMirrorDriverConfig,
   type SecondSelfConfig,
 } from './shared/config.js';
@@ -52,6 +53,7 @@ import {
 import { createAriaLayer } from './layers/aria.js';
 import { createBodyLayer } from './layers/body.js';
 import { createBounceLayer } from './layers/bounce.js';
+import { createCalibrateLayer } from './layers/calibrate.js';
 import { createClockLayer } from './layers/clock.js';
 import { createDanceLayer } from './layers/dance.js';
 import { createFaceLayer } from './layers/face.js';
@@ -129,15 +131,17 @@ export default defineExperience<State>({
     rt.log.info('second-self: starting compositor');
 
     state.config = await loadConfig(rt);
+    const profile = await loadMirrorProfile(rt);
     rt.log.info('second-self: config loaded', {
       mode: state.config.projection.mode,
-      displayFit: state.config.display.fit,
+      calibrated: profile !== null,
     });
 
     const deps: LayerDeps = {
       feed: state.feed,
       synth: state.synth,
       rt,
+      config: state.config,
       assetUrl,
       // Replaced just below with the real manager (layers capture `deps`).
       controller: undefined as unknown as LayerManager,
@@ -151,7 +155,7 @@ export default defineExperience<State>({
 
     // Configure the mirror projection + SLR action set (best-effort).
     void rt.drivers
-      .execute('pose_to_mirror', 'set_mirror_config', toMirrorDriverConfig(state.config))
+      .execute('pose_to_mirror', 'set_mirror_config', toMirrorDriverConfig(state.config, profile))
       .catch((err) => rt.log.warn('set_mirror_config failed', { err: String(err) }));
     void rt.drivers
       .execute('slr', 'set_actions', SIGN_ACTIONS)
@@ -164,6 +168,13 @@ export default defineExperience<State>({
     window.addEventListener('pointerdown', resumeAudio, { once: true });
 
     for (const slug of STARTUP) state.manager.start(slug);
+
+    // A reflection rig without a fitted profile cannot align the skeleton to
+    // the reflection; walk straight into the calibration wizard.
+    if (state.config.projection.mode === 'reflection' && profile === null) {
+      rt.log.info('second-self: no mirror calibration profile, starting wizard');
+      state.manager.start('calibrate');
+    }
   },
 
   render(_rt: ExperienceRuntimeContext, state: State, frame: FrameInfo): void {
@@ -173,13 +184,14 @@ export default defineExperience<State>({
     state.ctx.fillStyle = '#000000';
     state.ctx.fillRect(0, 0, state.canvas.width, state.canvas.height);
 
-    const { referenceWidth, referenceHeight, fit } = state.config.display;
-    applyReferenceTransform(state.ctx, fit, referenceWidth, referenceHeight);
+    // Fixed portrait reference space, aspect-preserving fit: fills any 9:16
+    // screen exactly and letterboxes others without distortion.
+    applyReferenceTransform(state.ctx, 'contain', REF_WIDTH, REF_HEIGHT);
 
     const frameCtx: FrameContext = {
       ctx: state.ctx,
-      refWidth: referenceWidth,
-      refHeight: referenceHeight,
+      refWidth: REF_WIDTH,
+      refHeight: REF_HEIGHT,
       timestamp: frame.timestamp,
       deltaMs: frame.deltaMs > 0 ? frame.deltaMs : 16.6,
       frameCount: frame.frameCount,
@@ -242,6 +254,18 @@ function buildLayerDefs(deps: LayerDeps): LayerDef[] {
       zIndex: 55,
       inMenu: true,
       create: () => createFaceLayer(deps),
+    },
+
+    // Mirror calibration wizard: reflection rigs only. Exclusive so the
+    // (mis)calibrated skeleton overlays don't confuse the capture flow.
+    {
+      slug: 'calibrate',
+      label: 'Calibrate',
+      zIndex: 90,
+      inMenu: deps.config.projection.mode === 'reflection',
+      exclusive: true,
+      allowed: ['menu'],
+      create: () => createCalibrateLayer(deps),
     },
 
     // Exclusive experiences (allowed lists ported from legacy processing.py).

@@ -39,13 +39,36 @@ def test_no_face_layout() -> None:
     assert feats[0:2] == [0.0, 0.0]  # body landmark 0.
 
 
-def test_rescales_to_training_space() -> None:
-    # A 1280x720 frame must be rescaled by (0.5, 2/3) into 640x480.
+def test_rescales_to_training_space_uniformly() -> None:
+    # A 1280x720 frame letterboxes into 640x480: uniform scale 0.5 with a
+    # vertical centering offset of (480 - 720*0.5) / 2 = 60.
     feats = _adapt_frame(_payload(1280.0, 720.0), include_face=False)
 
     body_lm1_x, body_lm1_y = feats[2], feats[3]
     assert body_lm1_x == 10.0 * 0.5
-    assert abs(body_lm1_y - 5.0 * (480.0 / 720.0)) < 1e-9
+    assert abs(body_lm1_y - (5.0 * 0.5 + 60.0)) < 1e-9
+
+
+def test_portrait_frame_preserves_aspect() -> None:
+    # A portrait 720x1280 frame (rotated camera) letterboxes with uniform
+    # scale 480/1280 = 0.375 and a horizontal centering offset of
+    # (640 - 720*0.375) / 2 = 185; body proportions must not be squashed.
+    feats = _adapt_frame(_payload(720.0, 1280.0), include_face=False)
+
+    body_lm1_x, body_lm1_y = feats[2], feats[3]
+    assert abs(body_lm1_x - (10.0 * 0.375 + 185.0)) < 1e-9
+    assert abs(body_lm1_y - 5.0 * 0.375) < 1e-9
+
+
+def test_missing_hand_stays_zero_despite_offsets() -> None:
+    # Zero padding is the "absent part" sentinel the models were trained with;
+    # the letterbox offsets must not shift it.
+    payload = _payload(720.0, 1280.0)
+    payload["left_hand_pose"] = []
+    feats = _adapt_frame(payload, include_face=False)
+
+    left_start = (33 + 21) * 2
+    assert feats[left_start : left_start + 42] == [0.0] * 42
 
 
 def test_missing_parts_are_zero_padded() -> None:

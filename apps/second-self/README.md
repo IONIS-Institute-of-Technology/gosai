@@ -30,6 +30,7 @@ controller (mirrors the [interactive-pool](../interactive-pool) architecture).
 | `sign-game`      | Sign-language visual novel (script-driven, choices made by signing)      |
 | `sign-training`  | Guided sign tutor: mimic a reference video, then trace a correction pose |
 | `aria`           | VRM avatar puppeted by your pose/hands/face (three.js + Kalidokit)       |
+| `calibrate`      | Guided mirror-calibration wizard (reflection mode only)                  |
 
 The menu controller enforces per-layer `exclusive` / `allowed` / `required`
 relationships (ported from the legacy `processing.py` app-manager rules) and
@@ -95,71 +96,50 @@ The app is registered in the repo root `build:apps` script.
 
 ## Configuration
 
-All hardware adaptation is driven by a single persisted config object so the app
-works on any screen, any webcam, and with or without a physical mirror — **no
-rebuild required**. It lives in the app's key/value storage under `config` and is
-deep-merged over the defaults on start (`src/shared/config.ts`).
+Configuration is intentionally minimal — two fields, everything else automatic
+or produced by the in-app calibration wizard:
 
-The easiest way to edit it is the **Settings** button on the app's row in the
-GOSAI dashboard, which renders a form from the declarative `settings` schema in
-`gosai.app.json`. Changes apply on the next launch of the experience. You can
-also set it directly via any GOSAI storage tool:
+| Field               | Values                  | Meaning                                                                        |
+| ------------------- | ----------------------- | ------------------------------------------------------------------------------ |
+| `projection.mode`   | `direct` / `reflection` | `direct` = webcam selfie overlay (default); `reflection` = physical mirror rig |
+| `projection.mirror` | `true` / `false`        | Horizontal flip for a selfie view (direct mode)                                |
 
-```
-POST /v1/apps/second-self/storage/config
-{
-  "projection": { "mode": "direct", "mirror": true, "cameraFit": "contain", "zoom": 1.0 },
-  "display":    { "fit": "contain" },
-  "mirror":     { "x_offset": -230, "y_offset": 100, "screen_width_mm": 392.85,
-                  "screen_height_mm": 698.4, "tilt_deg": 17 }
-}
-```
+It lives in the app's key/value storage under `config` (edit via the app's
+**Settings** button in the dashboard, or `POST
+/v1/apps/second-self/storage/config` with
+`{ "projection": { "mode": "reflection" } }`).
 
-The three concerns are independent:
+Everything else adapts by itself:
 
-### `projection` — camera frame to reference space (any webcam)
+- **Webcam resolution/aspect** is detected automatically (the `pose` driver
+  reports the frame size).
+- **Screen size/orientation**: experiences are authored in a fixed portrait
+  `1080x1920` reference space that is aspect-preserving (`contain`) fit onto the
+  window — any 9:16 display (1080x1920, WQHD 1440x2560, 4K portrait) fills
+  edge-to-edge, other aspects letterbox without distortion.
+- **Mirror projection** (reflection mode) is *fitted*, not typed in — see below.
 
-| Field       | Values                  | Meaning                                                                        |
-| ----------- | ----------------------- | ------------------------------------------------------------------------------ |
-| `mode`      | `direct` / `reflection` | `direct` = webcam selfie overlay (default); `reflection` = physical mirror rig |
-| `mirror`    | `true` / `false`        | Horizontal flip for a selfie view                                              |
-| `cameraFit` | `contain` / `cover`     | `contain` shows the whole camera frame; `cover` fills + crops                  |
-| `zoom`      | number (>=0.1)          | `>1` crops in for a fuller portrait fill                                       |
+## Setting up a physical mirror rig
 
-Webcam resolution/aspect is detected automatically (the `pose` driver reports
-the frame size), so no per-camera setup is needed.
+1. **Camera**: in the dashboard's per-app device panel assign the camera and,
+   if it is mounted in portrait, set its rotation (`90`/`270`) so the frame is
+   upright. Mount it as close to the display as practical, roughly centered,
+   tilted slightly down is fine — the tilt is calibrated away.
+2. **Mode**: set `projection.mode = "reflection"` in the app settings.
+3. **Calibrate on the mirror**: on the next launch, if no calibration profile
+   exists the app walks straight into the wizard (it is also always available
+   from the gesture menu as **Calibrate**). You point your index finger so its
+   *reflection* covers each target dot and hold still (~8 dots, one round near
+   + one round a step back, ~90 seconds total). The `pose_to_mirror` driver
+   fits the camera tilt, the distance scale and the mm→pixel affine from the
+   samples (`solve_calibration`), shows the residual error, and overlays the
+   now-calibrated skeleton on your reflection for a dwell-to-confirm
+   **Save / Redo**.
+4. The fitted profile persists in app storage under `mirror_calibration` and is
+   pushed to the driver on every start. Re-run the wizard whenever the camera
+   or display moves.
 
-### `display` — reference space to physical screen (any size/orientation)
-
-| Field             | Values                          | Meaning                                                                                   |
-| ----------------- | ------------------------------- | ----------------------------------------------------------------------------------------- |
-| `fit`             | `contain` / `cover` / `stretch` | `contain` letterboxes (no distortion, default); `cover` fills + crops; `stretch` distorts |
-| `referenceWidth`  | number (default `1080`)         | Logical design space (experiences are portrait)                                           |
-| `referenceHeight` | number (default `1920`)         | "                                                                                         |
-
-Experiences are authored in the portrait reference space; `display.fit` adapts
-them to any physical screen/orientation distortion-free (e.g. a portrait design
-on a landscape monitor is letterboxed by default).
-
-### `mirror` — physical augmented-mirror calibration (only `reflection` mode)
-
-| Field                 | Default  | Meaning                      |
-| --------------------- | -------- | ---------------------------- |
-| `x_offset`            | `-230`   | Horizontal offset (mm)       |
-| `y_offset`            | `100`    | Vertical offset (mm)         |
-| `screen_width_mm`     | `392.85` | Physical mirror width        |
-| `screen_height_mm`    | `698.4`  | Physical mirror height       |
-| `tilt_deg`            | `17`     | Camera tilt above the mirror |
-| `hfov_deg`            | `60`     | Camera horizontal FOV        |
-| `scale`               | `1.0`    | Per-install distance scale   |
-| `default_distance_mm` | `1500`   | Fallback subject distance    |
-
-**Quick recipes**
-
-- Laptop / any webcam (default): `projection.mode = "direct"`, `display.fit = "contain"`.
-- Fill a portrait screen edge-to-edge: `projection.cameraFit = "cover"` (or raise `zoom`).
-- Landscape monitor without bars: `display.fit = "cover"`.
-- Physical augmented mirror: `projection.mode = "reflection"` + tune the `mirror` block.
+No millimetres, offsets, FOVs or tilt angles are ever entered by hand.
 
 ## Assets & notes
 
