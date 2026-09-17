@@ -3,7 +3,8 @@
  * an experience needs to interact with the GOSAI server.
  */
 
-import { ServerClient } from './connection.js';
+import { ServerClient } from '@gosai/shared/client';
+import { AppConfigClientImpl } from './app-config.js';
 import { DriverClientImpl } from './driver-client.js';
 import { StorageClientImpl } from './storage.js';
 import { AppLoggerImpl } from './logger.js';
@@ -48,15 +49,17 @@ export async function runExperience<TState>(
 ): Promise<RuntimeHandle> {
   const client = new ServerClient({
     url: options.wsUrl ?? defaultWsUrl(options.serverBaseUrl),
-    ...(options.authToken ? { authToken: options.authToken } : {}),
+    ...(options.authToken ? { token: options.authToken } : {}),
   });
   client.connect();
 
-  await waitForConnection(client);
+  await client.ready(5000);
 
   const drivers = new DriverClientImpl(client, options.driverBinding ?? options.appSlug);
-  const storage = new StorageClientImpl(options.appSlug, client, options.serverBaseUrl);
+  const storage = new StorageClientImpl(options.appSlug, client);
   const log = new AppLoggerImpl(`app:${options.appSlug}:${options.experienceSlug}`, client);
+  // Failed driver subscriptions and throwing listeners end up in the app's log.
+  client.onError((err, context) => log.error(`${context} failed`, { err: String(err) }));
   const router = new ExperienceRouterImpl(options.appSlug, client);
   const events = new AppEventsClientImpl(options.appSlug, client);
   router.setCurrent(options.experienceSlug);
@@ -74,6 +77,7 @@ export async function runExperience<TState>(
     log,
     router,
     events,
+    appConfig: new AppConfigClientImpl(options.appSlug, client),
   };
 
   let state: TState = undefined as unknown as TState;
@@ -128,20 +132,4 @@ function defaultWsUrl(baseUrl: string): string {
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   url.pathname = '/ws';
   return url.toString();
-}
-
-async function waitForConnection(client: ServerClient): Promise<void> {
-  if (client.connected()) return;
-  await new Promise<void>((resolve, reject) => {
-    const off = client.onStatus((s) => {
-      if (s === 'connected') {
-        off();
-        resolve();
-      }
-    });
-    setTimeout(() => {
-      off();
-      reject(new Error('Timed out connecting to GOSAI server'));
-    }, 5000);
-  });
 }

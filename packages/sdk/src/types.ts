@@ -2,7 +2,11 @@
  * Types shared between SDK and apps.
  */
 
+import type { AppDeviceSettings, RunningExperience } from '@gosai/shared';
+import type { ServerClient } from '@gosai/shared/client';
+
 export type {
+  AppDeviceSettings,
   AppManifest,
   AppCalibrationSchema,
   AppRequirements,
@@ -38,14 +42,11 @@ export interface AppContext {
   readonly serverBaseUrl: string;
 }
 
-export interface ServerConnection {
-  /** Token sent with HTTP calls such as storage. */
-  readonly authToken?: string;
-  connected(): boolean;
-  request<T = unknown>(type: string, payload?: unknown): Promise<T>;
-  on(event: string, listener: (payload: unknown) => void): () => void;
-  onStatus(listener: (s: 'connecting' | 'connected' | 'disconnected') => void): () => void;
-}
+/** The typed server connection. Every command and event is in `@gosai/shared/protocol`. */
+export type ServerConnection = Pick<
+  ServerClient,
+  'authToken' | 'connected' | 'request' | 'on' | 'onStatus' | 'onError' | 'retain' | 'serverInfo'
+>;
 
 export interface ExperienceRuntimeContext {
   readonly app: AppContext;
@@ -58,6 +59,14 @@ export interface ExperienceRuntimeContext {
    * (e.g. projector + control window) and they need to coordinate state.
    */
   readonly events: AppEventsClient;
+  /** The app's device assignments (display, camera, microphone, speaker). */
+  readonly appConfig: AppConfigClient;
+}
+
+export interface AppConfigClient {
+  get(): Promise<AppDeviceSettings>;
+  /** Called when the dashboard changes the app's device assignments. */
+  onChange(listener: (settings: AppDeviceSettings) => void): () => void;
 }
 
 export interface AppEventsSubscription {
@@ -72,6 +81,11 @@ export interface AppEventsClient {
 }
 
 export interface DriverSubscription {
+  /**
+   * Settles once the server confirmed the first subscription attempt. A failure
+   * is also logged, and the subscription is tried again after a reconnect.
+   */
+  readonly ready: Promise<void>;
   unsubscribe(): void;
 }
 
@@ -102,6 +116,8 @@ export interface ExperienceRouter {
   switchTo(slug: string): Promise<void>;
   stop(slug?: string): Promise<void>;
   current(): string | null;
+  /** Called when any of the app's experiences changes state. */
+  onStateChange(listener: (state: RunningExperience) => void): () => void;
 }
 
 export type ExperienceLifecycle<TState = void> = {

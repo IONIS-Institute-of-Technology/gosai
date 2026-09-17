@@ -14,8 +14,8 @@ export type { RuntimeHandle, RuntimeOptions } from './runtime.js';
 export { createCanvas, fitCanvas, fullscreenContainer } from './renderer.js';
 export type { CanvasOptions } from './renderer.js';
 
-export { ServerClient } from './connection.js';
-export type { ConnectionStatus } from './connection.js';
+export { ServerClient } from '@gosai/shared/client';
+export type { ConnectionStatus } from '@gosai/shared/client';
 export { createStorageClient } from './storage.js';
 
 export {
@@ -46,6 +46,7 @@ export type {
 } from './calibration.js';
 
 export type {
+  AppConfigClient,
   AppContext,
   AppEventsClient,
   AppEventsSubscription,
@@ -60,6 +61,7 @@ export type {
   ServerConnection,
   StorageClient,
   // re-exports from @gosai/shared
+  AppDeviceSettings,
   AppCalibrationSchema,
   AppManifest,
   ExperienceDescriptor,

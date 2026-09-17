@@ -1,13 +1,14 @@
 /**
  * App-scoped pub/sub used by multi-window experiences. The server's
  * `app:broadcast` handler emits `app:<slug>:<topic>` on the bus and every
- * connected SDK client subscribed to that topic receives the payload.
+ * other connected client subscribed to that topic receives the payload.
  *
  * This is intentionally tiny -- no acknowledgements, no replay. If a window
  * misses an event because it connected late, it must read whatever state
  * matters (e.g. via `rt.storage` or the publisher re-broadcasting).
  */
 
+import { appEventName } from '@gosai/shared/events';
 import type { AppEventsClient, AppEventsSubscription, ServerConnection } from './types.js';
 
 export class AppEventsClientImpl implements AppEventsClient {
@@ -23,14 +24,6 @@ export class AppEventsClientImpl implements AppEventsClient {
   }
 
   on(topic: string, listener: (data: unknown) => void): AppEventsSubscription {
-    const eventName = `app:${this.appSlug}:${topic}`;
-    const unsub = this.server.on(eventName, (payload) => {
-      try {
-        listener(payload);
-      } catch (err) {
-        console.error(`app event listener for ${topic} failed`, err);
-      }
-    });
-    return { unsubscribe: unsub };
+    return { unsubscribe: this.server.on(appEventName(this.appSlug, topic), listener) };
   }
 }
