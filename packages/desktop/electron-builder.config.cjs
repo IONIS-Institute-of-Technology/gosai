@@ -44,7 +44,7 @@ module.exports = {
     {
       from: path.resolve(__dirname, '..', 'sdk', 'dist'),
       to: 'sdk',
-      filter: ['browser.js'],
+      filter: ['*.js'],
     },
     {
       from: path.resolve(__dirname, 'release/server'),

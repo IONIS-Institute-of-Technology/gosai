@@ -32,8 +32,11 @@ export interface ServerAddress {
 
 const READY_PREFIX = 'GOSAI_READY ';
 
-/** Origins of the renderer windows loaded from `file://`. */
-const RENDERER_ORIGINS = ['file://', 'null'];
+/**
+ * Origins of the dashboard window, which loads from `file://`. App windows
+ * run on their own `http://<slug>.localhost` origins, which the server allows.
+ */
+const DASHBOARD_ORIGINS = ['file://', 'null'];
 
 export function shouldAutostartServer(): boolean {
   if (process.env.GOSAI_AUTOSTART_SERVER === '0') return false;
@@ -68,15 +71,15 @@ export class ServerRunner {
       GOSAI_HOST: host,
       GOSAI_PORT: String(this.options.port ?? 7777),
       GOSAI_DASHBOARD_TOKEN: this.options.dashboardToken,
-      GOSAI_ALLOWED_ORIGINS: [process.env.GOSAI_ALLOWED_ORIGINS, ...RENDERER_ORIGINS]
+      GOSAI_ALLOWED_ORIGINS: [process.env.GOSAI_ALLOWED_ORIGINS, ...DASHBOARD_ORIGINS]
         .filter(Boolean)
         .join(','),
     };
     if (this.options.pythonDir) env.GOSAI_PYTHON_DIR = this.options.pythonDir;
     if (this.options.builtinAppsDir) env.GOSAI_BUILTIN_APPS = this.options.builtinAppsDir;
     if (this.options.homeDir) env.GOSAI_HOME = this.options.homeDir;
-    if (app.isPackaged && !env.GOSAI_SDK_RUNTIME) {
-      env.GOSAI_SDK_RUNTIME = resolve(process.resourcesPath, 'sdk', 'browser.js');
+    if (app.isPackaged && !env.GOSAI_SDK_DIR) {
+      env.GOSAI_SDK_DIR = resolve(process.resourcesPath, 'sdk');
     }
 
     const child = spawn(command.bin, command.args, {
