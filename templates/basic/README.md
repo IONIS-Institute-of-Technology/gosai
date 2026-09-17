@@ -7,7 +7,7 @@ driver ticks, keeps the count in storage and reads its color from settings.
 
 ```
 hello-gosai/
-├── gosai.app.json   # manifest: experiences, requirements, settings
+├── gosai.app.json   # manifest: SDK range, experiences, requirements, settings
 ├── package.json     # build script and the @gosai/sdk dependency
 ├── tsconfig.json
 └── src/
@@ -18,11 +18,17 @@ hello-gosai/
 
 ```bash
 bun install
+bun run typecheck
 bun run build
 ```
 
-`build` bundles `src/main.ts` into `dist/main.js`, the `entry` the manifest
-names. `@gosai/sdk` stays external: GOSAI provides it when it runs the app.
+`bun install` gets `@gosai/sdk` from npm for its types. `build` bundles
+`src/main.ts` into `dist/main.js`, the `entry` the manifest names.
+`@gosai/sdk` stays external: GOSAI provides its own copy when it runs the app.
+
+The manifest's `"sdk": "^0.1.0"` says which SDK versions the app works with.
+Keep it in step with the `@gosai/sdk` range in `package.json`: GOSAI refuses to
+install the app when the SDK it serves is outside that range.
 
 ## Run it in GOSAI
 
@@ -41,7 +47,8 @@ by hand to its apps directory.
 - `init(rt)` builds the state: a fullscreen canvas removed automatically when
   the experience stops (`signal: rt.signal`), settings merged with the
   manifest defaults, and a counter read from storage with a typed fallback.
-- `start` subscribes to a driver. The runtime removes the subscription on stop.
+- `start` subscribes to a driver. The runtime removes the subscription on stop,
+  and the tick payload is typed from the driver's schema.
 - `render` scales motion by `frame.deltaMs` and draws in a 1920x1080 reference
   space that `fit()` maps onto the window.
 - `stop` saves the counter.
@@ -58,5 +65,7 @@ network, list its origin in `gosai.app.json`:
 
 Blocked requests appear in the dashboard's Logs panel.
 
-See [`packages/sdk/README.md`](../../packages/sdk/README.md) for the manifest
-reference and the full runtime API.
+See the [SDK README](https://github.com/IONIS-Institute-of-Technology/gosai/blob/master/packages/sdk/README.md)
+for the manifest reference and the full runtime API, and the
+[driver reference](https://github.com/IONIS-Institute-of-Technology/gosai/blob/master/docs/drivers.md)
+for what each driver sends and accepts.

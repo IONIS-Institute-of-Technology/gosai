@@ -7,8 +7,7 @@
   "type": "module",
   "workspaces": [
     "packages/*",
-    "apps/*",
-    "templates/*"
+    "apps/*"
   ],
   "scripts": {
     "dev": "bun scripts/dev.ts",
@@ -20,13 +19,14 @@
     "build:apps": "bun run --filter './apps/*' build",
     "drivers:types": "bun scripts/driver-types.ts",
     "drivers:types:check": "bun scripts/driver-types.ts --check",
+    "sdk:check-package": "bun scripts/check-sdk-package.ts",
     "bundle:prepare": "bun scripts/prepare-bundle.ts",
     "package:linux": "bun run build && bun run build:apps && bun run --filter @gosai/desktop dist:linux",
     "package:mac": "bun run build && bun run build:apps && bun run --filter @gosai/desktop dist:mac",
     "package:win": "bun run build && bun run build:apps && bun run --filter @gosai/desktop dist:win",
     "package:kiosk": "bun scripts/package-kiosk.ts",
     "kiosk": "electron packages/desktop --kiosk",
-    "typecheck": "bun run --filter './packages/*' --filter './apps/*' --filter './templates/*' typecheck && tsc -p scripts",
+    "typecheck": "bun run --filter './packages/*' --filter './apps/*' typecheck && tsc -p scripts",
     "test": "bun run --filter '@gosai/*' test",
     "lint": "oxlint --deny-warnings",
     "format": "prettier --write .",

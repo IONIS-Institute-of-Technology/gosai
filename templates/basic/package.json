@@ -9,6 +9,9 @@
     "typecheck": "tsc"
   },
   "dependencies": {
-    "@gosai/sdk": "workspace:*"
+    "@gosai/sdk": "^0.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
   }
 }

@@ -71,18 +71,25 @@ Settings tab; the next experience start uses it.
 
 The fastest path is to copy [`templates/basic/`](../templates/basic) into a
 new repo, change the manifest slug, push it to a git host, then install
-from the URL. See [`packages/sdk/README.md`](../packages/sdk/README.md) for
-the SDK reference.
+from the URL. The template is a standalone project: it gets `@gosai/sdk` from
+npm, so it builds anywhere, not only inside this repository. See
+[`packages/sdk/README.md`](../packages/sdk/README.md) for the SDK reference
+and [`drivers.md`](drivers.md) for the drivers.
 
 ```bash
 cp -R templates/basic ~/Code/my-gosai-app
 cd ~/Code/my-gosai-app
+bun install
 # edit gosai.app.json (slug, name, description)
 # edit src/main.ts to build your experience
+bun run typecheck
 bun run build
 git init && git add . && git commit -m "initial"
 # push to a host then paste the clone URL into the dashboard
 ```
+
+The manifest's `sdk` range names the SDK versions the app works with. GOSAI
+refuses to install an app whose range doesn't include the SDK it serves.
 
 ## Environment variables
 
