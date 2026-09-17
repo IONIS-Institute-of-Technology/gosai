@@ -104,6 +104,12 @@ When the packaged app launches, desktop and kiosk alike:
    prints the port on its `GOSAI_READY` line.
 4. The dashboard (or, in a kiosk, the app) opens.
 
+Apps that ship Python drivers get an environment of their own under
+`<GOSAI_HOME>/python-envs/`, built with the bundled `uv` when they are
+installed. For an app bundled in a kiosk, the server builds it when it starts,
+which needs internet access once if the app has requirements the runtime
+doesn't already cover. Both use uv's cache in `~/.gosai-runtime/uv-cache`.
+
 If the Python runtime can't be installed, GOSAI still starts and says so: a
 warning dialog on the desktop, a message on the status window for a few
 seconds in a kiosk. Apps without Python drivers keep working. If the server

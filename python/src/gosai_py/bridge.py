@@ -17,6 +17,14 @@ drivers like the speaker) and passes it as `instance` on every request. Drivers,
 subscriptions, and emitted events are all keyed by `(instance, name)` so two
 apps can each bind their own camera without interfering.
 
+Driver discovery
+----------------
+`gosai-bridge` imports every module in `gosai_py.drivers`. An app's drivers run
+in a bridge of their own, started as `gosai-bridge --app-drivers <package dir>`
+inside the app's Python environment; that bridge loads only the app's package
+(see `gosai_py.app_drivers`). Driver names stay unqualified here: the server
+adds the `<app>/` prefix.
+
 Threading
 ---------
 - The main loop reads stdin. It answers `ping`, `shutdown`, `subscribe`,
@@ -34,6 +42,7 @@ Threading
 
 from __future__ import annotations
 
+import argparse
 import os
 import signal
 import sys
@@ -41,13 +50,14 @@ import threading
 import time
 import traceback
 from collections import deque
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from types import FrameType, ModuleType
 from typing import Any
 
 import msgspec
 
+from gosai_py.app_drivers import app_driver_classes
 from gosai_py.driver import BaseDriver, DriverContext
 from gosai_py.drivers import builtin_driver_classes, driver_classes_in
 from gosai_py.schemas import describe_driver
@@ -363,6 +373,7 @@ class Bridge:
         sink: Sink | None = None,
         *,
         drivers: Iterable[type[BaseDriver]] | None = None,
+        app_drivers: str | None = None,
         stop_timeout_s: float = DEFAULT_STOP_TIMEOUT_S,
     ) -> None:
         self._metrics = _Metrics()
@@ -379,6 +390,8 @@ class Bridge:
         self._discovery_thread: threading.Thread | None = None
         self._shutdown_requested = False
         self._closed = False
+        # Package directory of an app's drivers. Replaces the built-in drivers.
+        self._app_drivers = app_drivers
         if drivers is not None:
             for cls in drivers:
                 self._driver_classes[cls.name] = cls
@@ -401,12 +414,27 @@ class Bridge:
             for cls in classes:
                 self._driver_classes[cls.name] = cls
 
+    def discover_app(self, directory: str) -> None:
+        """Import an app's driver package and register the drivers it defines."""
+
+        def on_error(module: str, exc: Exception) -> None:
+            detail = "".join(traceback.format_exception(exc)).rstrip()
+            self._emit_log("error", "bridge", f"failed to load {module}: {exc!r}\n{detail}")
+
+        classes = app_driver_classes(directory, on_error)
+        with self._lock:
+            for cls in classes:
+                self._driver_classes[cls.name] = cls
+
     def start_discovery(self) -> None:
-        """Import the built-in drivers on a background thread."""
+        """Import the built-in drivers, or the app's, on a background thread."""
 
         def discover() -> None:
             try:
-                self.discover_builtin()
+                if self._app_drivers is not None:
+                    self.discover_app(self._app_drivers)
+                else:
+                    self.discover_builtin()
             finally:
                 self._discovered.set()
 
@@ -857,13 +885,20 @@ def _install_sigterm_handler() -> Callable[[int, FrameType | None], Any] | int |
     return signal.signal(signal.SIGTERM, terminate)
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="gosai-bridge", description="Host GOSAI drivers over stdio.")
+    parser.add_argument(
+        "--app-drivers",
+        metavar="DIR",
+        help="run the drivers of this app package instead of the built-in drivers",
+    )
+    args = parser.parse_args(argv)
     # Driver code sometimes writes to fd 1 (native libraries, stray prints).
     # Keep a private copy of the real stdout for the protocol and point fd 1 at
     # stderr so that noise cannot corrupt it.
     protocol_fd = os.dup(1)
     os.dup2(2, 1)
-    return Bridge(fd_sink(protocol_fd)).run()
+    return Bridge(fd_sink(protocol_fd), app_drivers=args.app_drivers).run()
 
 
 if __name__ == "__main__":

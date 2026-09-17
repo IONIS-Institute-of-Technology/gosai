@@ -1,7 +1,7 @@
 /**
  * App manager. Owns the catalogue of installed apps and the set of running
- * experiences. Coordinates with the DriverManager so experiences get the
- * drivers they declared. Designed so app crashes never bring down the server:
+ * experiences. Coordinates with the drivers so experiences get the drivers
+ * they declared, and tells them which apps ship drivers of their own. Designed so app crashes never bring down the server:
  * lifecycle errors are caught, surfaced as state transitions, and logged.
  */
 
@@ -20,13 +20,19 @@ import { ServerEvents } from '@gosai/shared/events';
 import type { EventBus } from '../ipc/bus.js';
 import type { ChildLogger, Logger } from '../logger/logger.js';
 import { appDataDir, type GosaiPaths } from '../paths.js';
-import type { DriverManager } from '../drivers/manager.js';
+import {
+  appDriverSourceKey,
+  type AppDriverHosts,
+  type AppDriverSource,
+  type DriverService,
+} from '../drivers/hub.js';
 import {
   discoverApps,
   type DiscoveredApp,
   type InvalidApp as DiscoveredInvalidApp,
 } from './manifest.js';
 import { installApp, uninstallApp } from './installer.js';
+import type { PythonToolchain } from './python-env.js';
 import { gitOrigin, InstallRecords } from './install-records.js';
 import { SDK_VERSION } from './sdk-version.js';
 
@@ -34,7 +40,11 @@ export interface AppManagerOptions {
   readonly paths: GosaiPaths;
   readonly logger: Logger;
   readonly bus: EventBus;
-  readonly drivers: Pick<DriverManager, 'subscribe' | 'unsubscribe'>;
+  readonly drivers: Pick<DriverService, 'subscribe' | 'unsubscribe'>;
+  /** Runs the drivers apps ship. Kept in step with the catalogue. */
+  readonly appDrivers?: AppDriverHosts;
+  /** Builds the Python environment of apps that ship drivers, at install. */
+  readonly python?: PythonToolchain;
   readonly builtinAppsDir?: string;
   /** Let installs clone `file:` URLs. Only for tests. */
   readonly allowFileInstalls?: boolean;
@@ -80,6 +90,8 @@ interface InvalidAppRecord extends DiscoveredInvalidApp {
 
 interface ExperienceRecord extends RunningExperience {
   readonly driverBinding: string;
+  /** The drivers the experience holds leases on. */
+  readonly drivers: readonly string[];
 }
 
 export class AppManager {
@@ -88,6 +100,12 @@ export class AppManager {
   private readonly running = new Map<string, ExperienceRecord>();
   private readonly records: InstallRecords;
   private readonly invalid = new Map<string, InvalidAppRecord>();
+  /** What the app driver hosts were last told to run, by app slug. */
+  private readonly syncedDrivers = new Map<string, string>();
+  /** Installed apps being uninstalled, whose drivers must not start again. */
+  private readonly uninstalling = new Set<string>();
+  /** Changes to app driver hosts, one at a time. */
+  private driversQueue: Promise<void> = Promise.resolve();
 
   private get sdkVersion(): string {
     return this.options.sdkVersion ?? SDK_VERSION;
@@ -188,6 +206,7 @@ export class AppManager {
       paths: this.options.paths,
       allowFileSources: this.options.allowFileInstalls === true,
       sdkVersion: this.sdkVersion,
+      ...(this.options.python ? { python: this.options.python } : {}),
       checkManifest: (manifest) => {
         if (!options.reuseData) this.checkLeftoverData(manifest.slug, trimmed);
       },
@@ -201,6 +220,8 @@ export class AppManager {
     const installed = this.toPublicApp(this.ingest(result.app, false));
     this.options.bus.emit(ServerEvents.AppInstalled, installed, 'apps');
     this.broadcastList();
+    // Replacing a built-in app with the same slug replaces its drivers too.
+    await this.driversQueue;
     return installed;
   }
 
@@ -226,10 +247,18 @@ export class AppManager {
     const installedPath = join(this.options.paths.apps, slug);
     if (record && !record.builtin) {
       await this.stopAllExperiencesFor(slug);
-      await uninstallApp(slug, this.options.paths);
-      this.catalogue.delete(slug);
-      this.invalid.delete(slug);
-      this.restoreBuiltin(slug);
+      // Its drivers stay released while its files go, even if the catalogue is synced meanwhile.
+      this.uninstalling.add(slug);
+      try {
+        await this.queueDriverChange(() => this.releaseAppDrivers(slug));
+        await uninstallApp(slug, this.options.paths);
+        this.catalogue.delete(slug);
+        this.invalid.delete(slug);
+        this.restoreBuiltin(slug);
+      } finally {
+        this.uninstalling.delete(slug);
+        void this.syncAppDrivers();
+      }
       return this.finishUninstall(slug, options);
     }
     const installedCheckout = existsSync(installedPath) && record?.installPath !== installedPath;
@@ -356,6 +385,7 @@ export class AppManager {
       state: 'starting',
       startedAt: Date.now(),
       driverBinding,
+      drivers: experience.drivers,
     };
     this.running.set(key, starting);
     this.broadcastExperience(starting);
@@ -401,8 +431,8 @@ export class AppManager {
     this.broadcastExperience({ ...current, state: 'stopping' });
 
     const record = this.catalogue.get(appSlug);
-    const drivers = record?.manifest.experiences.find((e) => e.slug === experienceSlug)?.drivers;
-    await this.releaseDrivers(current.driverBinding, drivers ?? [], key);
+    // The drivers it started with: the manifest may have been replaced since.
+    await this.releaseDrivers(current.driverBinding, current.drivers, key);
     this.running.delete(key);
     this.broadcastExperience({ ...current, state: 'idle' });
     // A crash stays visible until the next successful start.
@@ -542,10 +572,85 @@ export class AppManager {
   }
 
   private broadcastList(): void {
+    void this.syncAppDrivers();
     this.options.bus.emit(
       ServerEvents.AppsListChanged,
       { apps: this.listApps(), invalid: this.listInvalidApps() },
       'apps',
+    );
+  }
+
+  /** Runs `change` after the driver host changes queued before it. Never rejects. */
+  private queueDriverChange(change: () => Promise<void>): Promise<void> {
+    const next = this.driversQueue.then(change).catch((err: unknown) => {
+      this.log.error('updating app drivers failed', { err: String(err) });
+    });
+    this.driversQueue = next;
+    return next;
+  }
+
+  /**
+   * Tells the driver hosts which apps ship drivers. The bridge of an app that
+   * went away, or whose source changed, is released first.
+   */
+  private syncAppDrivers(): Promise<void> {
+    const hosts = this.options.appDrivers;
+    if (!hosts) return Promise.resolve();
+    return this.queueDriverChange(async () => {
+      const sources = this.appDriverSources();
+      const keys = new Map(sources.map((app) => [app.slug, appDriverSourceKey(app)]));
+      for (const [slug, key] of Array.from(this.syncedDrivers)) {
+        if (keys.get(slug) !== key) await this.releaseAppDrivers(slug);
+      }
+      const unchanged =
+        keys.size === this.syncedDrivers.size &&
+        Array.from(keys).every(([slug, key]) => this.syncedDrivers.get(slug) === key);
+      if (unchanged) return;
+      hosts.sync(sources);
+      for (const [slug, key] of keys) this.syncedDrivers.set(slug, key);
+    });
+  }
+
+  /**
+   * Stops every running experience, of any app, that holds leases on the
+   * drivers of `slug`, then releases those drivers. Releasing drops the
+   * leases, so an experience left running would get no more events.
+   */
+  private async releaseAppDrivers(slug: string): Promise<void> {
+    const prefix = `${slug}/`;
+    const users = Array.from(this.running.values()).filter((running) =>
+      running.drivers.some((driver) => driver.startsWith(prefix)),
+    );
+    for (const running of users) {
+      this.log.warn('stopping an experience whose app drivers are being replaced or removed', {
+        app: running.appSlug,
+        experience: running.experienceSlug,
+        drivers: slug,
+      });
+      await this.stopExperience(running.appSlug, running.experienceSlug).catch((err: unknown) =>
+        this.log.warn('experience stop failed', {
+          app: running.appSlug,
+          experience: running.experienceSlug,
+          err: String(err),
+        }),
+      );
+    }
+    await this.options.appDrivers?.release(slug);
+    this.syncedDrivers.delete(slug);
+  }
+
+  private appDriverSources(): AppDriverSource[] {
+    return Array.from(this.catalogue.values()).flatMap((record) =>
+      record.manifest.python && !(this.uninstalling.has(record.manifest.slug) && !record.builtin)
+        ? [
+            {
+              slug: record.manifest.slug,
+              installPath: record.installPath,
+              builtin: record.builtin,
+              python: record.manifest.python,
+            },
+          ]
+        : [],
     );
   }
 

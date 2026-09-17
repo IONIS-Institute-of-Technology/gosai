@@ -8,7 +8,8 @@
  * 3. copies `templates/basic` to a temporary directory and builds it with
  *    nothing installed, as the GOSAI installer does, then points its
  *    `@gosai/sdk` dev dependency at the tarball and installs everything,
- * 4. generates types for an app driver with the packed `gosai-sdk` command,
+ * 4. generates types for an app's own driver (`hello-gosai/thermometer`) with
+ *    the packed `gosai-sdk` command,
  * 5. type-checks the template, together with a file that uses the typed
  *    built-in drivers, the generated driver and the host entry, and builds it.
  *
@@ -111,13 +112,13 @@ try {
   );
   await run([process.execPath, 'install'], app);
 
-  // An app driver's schema, as `python -m gosai_py.schemas` prints it.
+  // An app driver's schema, as `python -m gosai_py.schemas --app .` prints it.
   writeFileSync(
     join(work, 'schemas.json'),
     JSON.stringify({
       drivers: [
         {
-          name: 'thermometer',
+          name: 'hello-gosai/thermometer',
           description: 'A test driver.',
           schema: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -173,17 +174,17 @@ export const options: Partial<RuntimeOptions> = { maxDeltaMs: 50 };
 export default defineExperience({
   async start(rt) {
     rt.drivers.on('pose', 'raw_data', (data: DriverTypes.pose.RawPosePayload) => data.body_pose);
-    rt.drivers.on('thermometer', 'reading', (data) => {
+    rt.drivers.on('hello-gosai/thermometer', 'reading', (data) => {
       const celsius: number = data.celsius;
       return celsius;
     });
     const reading: AppDriverTypes.thermometer.Reading = await rt.drivers.execute(
-      'thermometer',
+      'hello-gosai/thermometer',
       'calibrate',
       0.5,
     );
     // @ts-expect-error: calibrate takes a number
-    await rt.drivers.execute('thermometer', 'calibrate', 'hot');
+    await rt.drivers.execute('hello-gosai/thermometer', 'calibrate', 'hot');
     // @ts-expect-error: pose has no such event
     rt.drivers.on('pose', 'no_such_event', () => undefined);
     rt.drivers.on('someone_elses_driver', 'event', (data: unknown) => data);

@@ -10,6 +10,7 @@ import {
   settingsDefaults,
 } from '../src/app-settings.js';
 import { COMMANDS } from '../src/commands.js';
+import { appDriverName, isDriverName, splitDriverName } from '../src/driver-names.js';
 import { EVENTS, eventMatches, parseEventName } from '../src/events.js';
 import { formatLogEntry } from '../src/log-format.js';
 import { manifestJsonSchema } from '../src/manifest-json-schema.js';
@@ -18,6 +19,7 @@ import {
   appDeviceSettingsPatchSchema,
   appManifestSchema,
   findRequiredCycle,
+  parseAppManifest,
 } from '../src/schemas.js';
 
 describe('protocol maps', () => {
@@ -210,5 +212,91 @@ describe('manifest sdk range', () => {
         ok: false,
       });
     }
+  });
+});
+
+describe('manifest python drivers', () => {
+  const manifest = (fields: Record<string, unknown>, drivers: string[] = []): unknown => ({
+    slug: 'hello-app',
+    name: 'Hello',
+    version: '1.0.0',
+    experiences: [{ slug: 'main', name: 'Main', entry: 'main.js', drivers }],
+    ...fields,
+  });
+
+  test('parses the driver package and requirements', () => {
+    const result = parseAppManifest(
+      manifest(
+        { python: { drivers: 'python/hello_drivers', requirements: 'python/requirements.txt' } },
+        ['camera', 'hello-app/counter', 'other-app/sensor_2'],
+      ),
+    );
+    if (!result.success) throw new Error(result.error);
+    expect(result.data.python).toEqual({
+      drivers: 'python/hello_drivers',
+      requirements: 'python/requirements.txt',
+    });
+    expect(result.data.experiences[0]?.drivers).toEqual([
+      'camera',
+      'hello-app/counter',
+      'other-app/sensor_2',
+    ]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  test('rejects package paths that leave the app or are not Python names', () => {
+    for (const drivers of [
+      '../drivers',
+      '/abs/drivers',
+      'python/my-drivers',
+      'python/gosai_py',
+      '',
+    ]) {
+      const result = appManifestSchema.safeParse(manifest({ python: { drivers } }));
+      expect({ drivers, ok: result.success }).toEqual({ drivers, ok: false });
+    }
+    expect(appManifestSchema.safeParse(manifest({ python: {} })).success).toBe(false);
+    expect(
+      appManifestSchema.safeParse(
+        manifest({ python: { drivers: 'drivers', requirements: '../requirements.txt' } }),
+      ).success,
+    ).toBe(false);
+  });
+
+  test('rejects malformed driver names', () => {
+    for (const name of [
+      'Hello/counter',
+      'hello-app/',
+      '/counter',
+      'a/b/c',
+      'hello-app/my-driver',
+    ]) {
+      const result = appManifestSchema.safeParse(manifest({}, [name]));
+      expect({ name, ok: result.success }).toEqual({ name, ok: false });
+    }
+  });
+
+  test('drops the placeholder python fields of older manifests with a warning', () => {
+    const legacy = manifest({ python: { requirements: 'requirements.txt', module: 'app' } });
+    (legacy as { experiences: Record<string, unknown>[] }).experiences[0]!.python = 'main.py';
+    const result = parseAppManifest(legacy);
+    if (!result.success) throw new Error(result.error);
+    expect(result.data.python).toBeUndefined();
+    expect(result.data.experiences[0]).not.toHaveProperty('python');
+    expect(result.warnings).toEqual([
+      '`python` without `drivers` is ignored; name the package with your drivers in `python.drivers`',
+      '`experiences[0].python` is ignored',
+    ]);
+  });
+});
+
+describe('driver names', () => {
+  test('splits app driver names and recognizes both forms', () => {
+    expect(splitDriverName('hand_pose')).toEqual({ app: null, driver: 'hand_pose' });
+    expect(splitDriverName('hello-app/counter')).toEqual({ app: 'hello-app', driver: 'counter' });
+    expect(appDriverName('hello-app', 'counter')).toBe('hello-app/counter');
+    expect(isDriverName('hello-app/counter')).toBe(true);
+    expect(isDriverName('hand_pose')).toBe(true);
+    expect(isDriverName('hello-app/counter/x')).toBe(false);
   });
 });

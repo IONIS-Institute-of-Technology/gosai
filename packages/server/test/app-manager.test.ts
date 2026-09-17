@@ -354,6 +354,80 @@ describe('app manager lifecycle', () => {
     expect(manager.getManifest('pool')?.name).toBe('Shipped pool');
   });
 
+  test('stops experiences of any app that use drivers being replaced or removed', async () => {
+    const paths = makePaths();
+    const builtin = join(paths.root, 'builtin');
+    const python = { drivers: 'python/pool_drivers' };
+    const app = (slug: string, drivers: string[], extra: object = {}) => ({
+      slug,
+      name: slug,
+      version: '1.0.0',
+      experiences: [{ slug: 'main', name: 'Main', entry: 'main.js', drivers }],
+      ...extra,
+    });
+    manifestApp(builtin, app('pool', ['pool/counter'], { python }));
+    manifestApp(paths.apps, app('user', ['camera', 'pool/counter']));
+    manifestApp(paths.apps, app('plain', ['camera']));
+    const calls: string[] = [];
+    const bus = new EventBus();
+    const states: string[] = [];
+    bus.on('experience:state-changed', (_event, payload) => {
+      const { appSlug, state } = payload as { appSlug: string; state: string };
+      states.push(`${appSlug}:${state}`);
+    });
+    const manager = new AppManager({
+      paths,
+      logger: new Logger({ logsDir: paths.logs }),
+      bus,
+      drivers: new StubDrivers() as unknown as DriverManager,
+      builtinAppsDir: builtin,
+      appDrivers: {
+        sync: (apps) =>
+          calls.push(`sync ${apps.map((a) => `${a.slug}:${a.builtin}:${a.installPath}`).join()}`),
+        release: async (slug) => {
+          const running = manager.listRunningExperiences().map((e) => e.appSlug);
+          calls.push(`release ${slug} while [${running.join()}] run`);
+        },
+      },
+    });
+    await waitFor(() => calls.length === 1);
+    expect(calls).toEqual([`sync pool:true:${join(builtin, 'pool')}`]);
+    const running = (): string[] =>
+      manager.listRunningExperiences().map((e) => `${e.appSlug}:${e.state}`);
+
+    // An installed pool replaces the built-in one while other apps use its drivers.
+    await manager.startExperience('user', 'main');
+    await manager.startExperience('pool', 'main');
+    await manager.startExperience('plain', 'main');
+    states.length = 0;
+    manifestApp(paths.apps, app('pool', ['pool/counter'], { python }));
+    manager.discover();
+    await waitFor(() => calls.length === 3);
+    expect(calls.slice(1)).toEqual([
+      'release pool while [plain] run',
+      `sync pool:false:${join(paths.apps, 'pool')}`,
+    ]);
+    expect(running()).toEqual(['plain:running']);
+    expect(states).toEqual(expect.arrayContaining(['user:idle', 'pool:idle']));
+
+    // Uninstalling it stops them again before its files go.
+    await manager.startExperience('user', 'main');
+    await manager.uninstall('pool');
+    await waitFor(() => calls.length === 5);
+    expect(calls.slice(3)).toEqual([
+      'release pool while [plain] run',
+      `sync pool:true:${join(builtin, 'pool')}`,
+    ]);
+    expect(running()).toEqual(['plain:running']);
+
+    // Nothing changes for apps whose drivers stay.
+    manager.discover();
+    await manager.startExperience('user', 'main');
+    await Bun.sleep(20);
+    expect(calls).toHaveLength(5);
+    expect(running()).toEqual(['plain:running', 'user:running']);
+  });
+
   test('lists apps with an invalid manifest and can still uninstall them', async () => {
     const { paths } = setup();
     manifestApp(paths.apps, { ...chain, slug: 'broken', experiences: [] });
@@ -410,4 +484,12 @@ function writeApp(
     ),
     'utf8',
   );
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error('condition not met in time');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }

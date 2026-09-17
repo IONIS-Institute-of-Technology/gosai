@@ -17,9 +17,11 @@ import { AppStorage } from './apps/storage.js';
 import { createCommandHandlers } from './commands/index.js';
 import { AppSettingsStore } from './config/app-settings.js';
 import { ConfigStore } from './config/config.js';
+import type { PythonToolchain } from './apps/python-env.js';
+import { pythonAppBridges } from './drivers/app-drivers.js';
 import { driverConfigFor } from './drivers/camera-config.js';
 import { bridgeExecutable } from './drivers/bridge.js';
-import { DriverManager } from './drivers/manager.js';
+import { DriverHub } from './drivers/hub.js';
 import { createHttpRoutes } from './http/routes.js';
 import { EventBus } from './ipc/bus.js';
 import { WebSocketGateway, type ClientData } from './ipc/gateway.js';
@@ -34,6 +36,10 @@ export interface ServerOptions {
   readonly paths: GosaiPaths;
   /** The Python project with the driver bridge. Drivers are off without it. */
   readonly pythonDir?: string;
+  /** uv, for the Python environments of apps that ship drivers. Defaults to `uv` on PATH. */
+  readonly uv?: string;
+  /** uv's cache for those environments. uv's default cache when omitted. */
+  readonly uvCacheDir?: string;
   readonly builtinAppsDir?: string;
   /** The built SDK (`index.js`, `host.js`, `app-host.js`), served under `/sdk/<version>/`. */
   readonly sdkDir?: string;
@@ -57,7 +63,7 @@ export interface GosaiServer {
   readonly port: number;
   readonly logger: Logger;
   readonly bus: EventBus;
-  readonly drivers: DriverManager;
+  readonly drivers: DriverHub;
   readonly apps: AppManager;
   readonly monitor: SystemMonitor;
   readonly config: ConfigStore;
@@ -80,19 +86,28 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
   const config = new ConfigStore(paths.config, bus, logger.child('config'));
   const deviceSettings = new AppSettingsStore(paths, bus, logger.child('app-config'));
 
-  // Without a Python directory the bridge never starts and driver commands fail.
-  const drivers = new DriverManager({
+  // Without a Python directory the bridges never start and driver commands fail.
+  const pythonAvailable =
+    options.enablePython !== false &&
+    !!options.pythonDir &&
+    existsSync(bridgeExecutable(options.pythonDir));
+  const python: PythonToolchain | undefined =
+    pythonAvailable && options.pythonDir
+      ? {
+          pythonDir: options.pythonDir,
+          uv: options.uv ?? 'uv',
+          ...(options.uvCacheDir ? { uvCacheDir: options.uvCacheDir } : {}),
+        }
+      : undefined;
+  const drivers = new DriverHub({
     pythonDir: options.pythonDir ?? '',
     logger,
     bus,
     getDriverConfig: (binding, driver) =>
       driverConfigFor({ config, appSettings: deviceSettings }, binding, driver),
+    ...(python ? { apps: pythonAppBridges({ toolchain: python, paths, logger }) } : {}),
   });
-  if (
-    options.enablePython !== false &&
-    options.pythonDir &&
-    existsSync(bridgeExecutable(options.pythonDir))
-  ) {
+  if (pythonAvailable) {
     try {
       await drivers.start();
     } catch (err) {
@@ -107,6 +122,8 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
     logger,
     bus,
     drivers,
+    appDrivers: drivers,
+    ...(python ? { python } : {}),
     ...(options.builtinAppsDir ? { builtinAppsDir: options.builtinAppsDir } : {}),
     allowFileInstalls: options.allowFileInstalls === true,
   });

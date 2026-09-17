@@ -4,14 +4,14 @@ import type { AppSettingsValuesStore } from '../apps/settings.js';
 import type { AppStorage } from '../apps/storage.js';
 import type { AppSettingsStore } from '../config/app-settings.js';
 import type { ConfigStore } from '../config/config.js';
-import type { DriverManager } from '../drivers/manager.js';
+import type { DriverService } from '../drivers/hub.js';
 import type { EventBus } from '../ipc/bus.js';
 import type { Logger } from '../logger/logger.js';
 
 /** The services command handlers work with. */
 export interface ServerServices {
   readonly apps: AppManager;
-  readonly drivers: DriverManager;
+  readonly drivers: DriverService;
   readonly config: ConfigStore;
   readonly deviceSettings: AppSettingsStore;
   readonly settings: AppSettingsValuesStore;

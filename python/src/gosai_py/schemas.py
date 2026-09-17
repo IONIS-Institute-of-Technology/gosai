@@ -30,19 +30,29 @@ get the empty schema `{}`. `schema` is null when a driver's types can't be
 turned into JSON Schema; the bridge logs why.
 
 Run `python -m gosai_py.schemas` to print `{"drivers": [...]}` for every
-built-in driver, in the same shape.
+built-in driver, in the same shape. `python -m gosai_py.schemas --app <app dir>`
+prints an app's own drivers instead, named `<app slug>/<driver>` as the server
+names them. Run it with the app's requirements installed, for example in the
+environment GOSAI built for the app.
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from functools import cache
 from typing import Any
 
 import msgspec
 import msgspec.inspect
 
+from gosai_py.app_drivers import (
+    AppDriversError,
+    app_driver_classes,
+    qualified_name,
+    read_app_manifest,
+)
 from gosai_py.driver import BaseDriver
 from gosai_py.drivers import builtin_driver_classes
 
@@ -190,18 +200,48 @@ def describe_driver(cls: type[BaseDriver], *, with_schema: bool = True) -> dict[
     }
 
 
-def main() -> int:
+def describe_app_driver(app: str, cls: type[BaseDriver]) -> dict[str, Any]:
+    """`describe_driver` with the names the server uses for an app's drivers."""
+    entry = describe_driver(cls)
+    entry["name"] = qualified_name(app, cls.name)
+    entry["dependencies"] = [qualified_name(app, dep) for dep in cls.dependencies]
+    return entry
+
+
+def main(argv: Sequence[str] = ()) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m gosai_py.schemas",
+        description="Print the schemas of the built-in drivers, or of an app's drivers.",
+    )
+    parser.add_argument("--app", metavar="DIR", help="the app directory, with gosai.app.json")
+    args = parser.parse_args(argv)
     failures: list[str] = []
 
     def on_error(module: str, exc: Exception) -> None:
         failures.append(module)
-        print(f"failed to load drivers.{module}: {exc!r}", file=sys.stderr)
+        print(f"failed to load {module}: {exc!r}", file=sys.stderr)
 
-    classes = sorted(builtin_driver_classes(on_error), key=lambda cls: cls.name)
-    output = {"drivers": [describe_driver(cls) for cls in classes]}
+    if args.app is None:
+        classes = sorted(builtin_driver_classes(on_error), key=lambda cls: cls.name)
+        output = {"drivers": [describe_driver(cls) for cls in classes]}
+    else:
+        try:
+            slug, package = read_app_manifest(args.app)
+        except AppDriversError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        # The app directory may be read-only or signed: keep bytecode out of it
+        # unless PYTHONPYCACHEPREFIX sends it elsewhere.
+        write_bytecode = sys.dont_write_bytecode
+        sys.dont_write_bytecode = write_bytecode or sys.pycache_prefix is None
+        try:
+            classes = sorted(app_driver_classes(package, on_error), key=lambda cls: cls.name)
+        finally:
+            sys.dont_write_bytecode = write_bytecode
+        output = {"drivers": [describe_app_driver(slug, cls) for cls in classes]}
     sys.stdout.buffer.write(msgspec.json.format(msgspec.json.encode(output)) + b"\n")
     return 1 if failures else 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

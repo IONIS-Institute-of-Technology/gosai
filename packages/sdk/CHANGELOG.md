@@ -19,6 +19,9 @@ Breaking:
   from the canvas box before CSS transforms, under any transform. With a
   transform such as a warp from `applyQuadWarp`, a scale or a rotation, it used
   to take the size of the transformed bounding box.
+- `gosai.app.schema.json` drops the placeholder `python.module` and
+  per-experience `python` fields, and `python` requires `drivers`. GOSAI still
+  loads manifests with the old fields and ignores them with a warning.
 
 Added:
 
@@ -26,6 +29,11 @@ Added:
   example from the dashboard, including changes made while the connection was
   down: a reconnect reloads the settings. The runtime removes the listener when
   the experience stops.
+- Apps can ship Python drivers: the manifest's `python.drivers` names the
+  package and `python.requirements` its requirements file. They run in their
+  own process and Python environment, named `<app slug>/<driver>`.
+- `gosai-sdk gen-driver-types` accepts app driver names such as
+  `my-app/counter`, from `python -m gosai_py.schemas --app <dir>`.
 
 ## 0.1.0
 

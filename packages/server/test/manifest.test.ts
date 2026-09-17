@@ -91,10 +91,28 @@ describe('validateManifest', () => {
       slug: 'x',
       name: 'X',
       version: '0.1.0',
-      experiences: [{ slug: 'a', name: 'A', entry: './a.ts' }],
-      python: { requirements: './requirements.txt' },
+      experiences: [{ slug: 'a', name: 'A', entry: './a.ts', drivers: ['x/counter'] }],
+      python: { drivers: 'python/x_drivers', requirements: './requirements.txt' },
     });
-    expect(m.python?.requirements).toBe('./requirements.txt');
+    expect(m.python).toEqual({ drivers: 'python/x_drivers', requirements: './requirements.txt' });
+    expect(m.experiences[0]?.drivers).toEqual(['x/counter']);
+  });
+
+  test('warns about the placeholder python config of older manifests', () => {
+    const warnings: string[] = [];
+    const m = validateManifest(
+      PATH,
+      {
+        slug: 'x',
+        name: 'X',
+        version: '0.1.0',
+        experiences: [{ slug: 'a', name: 'A', entry: './a.ts' }],
+        python: { requirements: './requirements.txt' },
+      },
+      (warning) => warnings.push(warning),
+    );
+    expect(m.python).toBeUndefined();
+    expect(warnings).toEqual([expect.stringContaining('`python` without `drivers` is ignored')]);
   });
 
   test('accepts a manifest with a default experience matching an existing slug', () => {

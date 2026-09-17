@@ -5,7 +5,8 @@ import type {
   MicrophoneSettings,
 } from '@gosai/shared';
 import type { ChildLogger } from '../logger/logger.js';
-import { SYSTEM_BINDING, type DriverManager } from './manager.js';
+import type { DriverService } from './hub.js';
+import { SYSTEM_BINDING } from './manager.js';
 
 /** Where device settings come from: the global config and per-app overrides. */
 export interface DeviceSettingsSources {
@@ -47,7 +48,7 @@ export function cameraSettingsFor(
   );
 }
 
-/** Startup config for a driver instance, used by `DriverManager.getDriverConfig`. */
+/** Startup config for a driver instance, used by `DriverManagerOptions.getDriverConfig`. */
 export function driverConfigFor(
   sources: DeviceSettingsSources,
   binding: string,
@@ -72,7 +73,7 @@ function sameCamera(a: ResolvedCameraSettings, b: ResolvedCameraSettings): boole
 
 /** Hot-apply resolved camera settings to a binding's running camera instance. */
 export async function applyCameraSettings(
-  drivers: DriverManager,
+  drivers: DriverService,
   binding: string,
   settings: ResolvedCameraSettings,
   log: ChildLogger,
@@ -94,7 +95,7 @@ export async function applyCameraSettings(
  * settings changed. Call after the config store has been updated.
  */
 export async function applyGlobalCameraSettings(
-  drivers: DriverManager,
+  drivers: DriverService,
   sources: DeviceSettingsSources,
   previousGlobal: CameraSettings,
   log: ChildLogger,
@@ -115,7 +116,7 @@ export async function applyGlobalCameraSettings(
  * rather than disrupting other apps.
  */
 export async function applyAppDeviceSettings(
-  drivers: DriverManager,
+  drivers: DriverService,
   sources: DeviceSettingsSources,
   binding: string,
   previous: AppDeviceSettings,
@@ -146,7 +147,7 @@ export async function applyAppDeviceSettings(
 }
 
 async function applyMicrophoneSettings(
-  drivers: DriverManager,
+  drivers: DriverService,
   binding: string,
   next: Partial<MicrophoneSettings>,
   previous: Partial<MicrophoneSettings>,

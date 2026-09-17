@@ -179,6 +179,37 @@ describe('capabilities', () => {
     ).not.toBeNull();
   });
 
+  test('app drivers are checked on the binding like built-in ones, whichever app ships them', () => {
+    const own = { driver: 'pool/counter', event: 'count' };
+    const theirs = { driver: 'other/counter', event: 'count' };
+    expect(commandDenial(POOL_GRANT, 'driver:subscribe', { ...own, binding: 'pool' })).toBeNull();
+    // Another app's drivers are usable through the token's own binding.
+    expect(
+      commandDenial(POOL_GRANT, 'driver:subscribe', { ...theirs, binding: 'pool' }),
+    ).toBeNull();
+    expect(
+      commandDenial(POOL_GRANT, 'driver:execute', {
+        driver: 'other/counter',
+        action: 'reset',
+        binding: 'pool',
+      }),
+    ).toBeNull();
+    // Never through that app's binding, nor the dashboard's.
+    expect(
+      commandDenial(POOL_GRANT, 'driver:subscribe', { ...theirs, binding: 'other' }),
+    ).not.toBeNull();
+    expect(commandDenial(POOL_GRANT, 'driver:get-data', own)).not.toBeNull();
+    expect(commandDenial(DASH, 'driver:subscribe', { ...theirs, binding: 'other' })).toBeNull();
+    // Without drivers:use, app drivers are out of reach too.
+    const noDrivers: Grant = {
+      scope: POOL_GRANT.scope,
+      capabilities: new Set([...POOL_GRANT.capabilities].filter((c) => c !== 'drivers:use')),
+    };
+    expect(commandDenial(noDrivers, 'driver:subscribe', { ...own, binding: 'pool' })).toContain(
+      'drivers:use',
+    );
+  });
+
   test('a window launched with a driver binding uses those drivers, and nothing else of that app', () => {
     const runner = app('pool-tools', { driverBinding: 'pool' });
     expect(
