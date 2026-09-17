@@ -10,7 +10,7 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "start": "electron .",
-    "typecheck": "tsc -p tsconfig.node.json && tsc -p tsconfig.web.json",
+    "typecheck": "tsc -p tsconfig.node.json && tsc -p tsconfig.web.json && tsc -p tsconfig.test.json",
     "test": "bun test",
     "clean": "rm -rf out dist release",
     "pack": "electron-vite build && bun ../../scripts/prepare-bundle.ts && electron-builder --config electron-builder.config.cjs --publish never --dir",
