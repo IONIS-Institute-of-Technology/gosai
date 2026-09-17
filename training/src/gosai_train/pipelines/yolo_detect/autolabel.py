@@ -51,8 +51,10 @@ def run(ctx: ModelContext, args: Namespace) -> None:
     device = resolve_device(load_yaml(ctx.train_config))
     labelled = boxes_total = 0
     with paths_source("autolabel", images) as source:
+        # nms=False runs the NMS-free end-to-end head, the one `export` ships.
         results = model.predict(
-            source=source, conf=args.conf, device=device, batch=1, stream=True, verbose=False,
+            source=source, conf=args.conf, device=device, nms=False,
+            batch=1, stream=True, verbose=False,
         )
         for result in results:
             lines: list[str] = []

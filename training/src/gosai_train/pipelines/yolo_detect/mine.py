@@ -59,7 +59,8 @@ def run(ctx: ModelContext, args: Namespace) -> None:
     def handle(frame: Any, name: str) -> None:
         nonlocal hits, scanned
         scanned += 1
-        result = model.predict(frame, conf=args.conf, device=device, verbose=False)[0]
+        # nms=False runs the NMS-free end-to-end head, the one `export` ships.
+        result = model.predict(frame, conf=args.conf, device=device, nms=False, verbose=False)[0]
         boxes = [(*box.xyxy[0].tolist(), float(box.conf.item())) for box in result.boxes]
         if not boxes:
             return

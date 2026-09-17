@@ -46,8 +46,9 @@ def _golden_data_yaml(ctx: ModelContext) -> Path:
 def _val_row(
     model: Any, name: str, data: Path, split: str, imgsz: int, device: str, runs_dir: Path
 ) -> tuple[str, ...]:
+    # nms=False runs the NMS-free end-to-end head, the one `export` ships.
     metrics = model.val(
-        data=str(data), split=split, imgsz=imgsz, device=device, verbose=False, plots=False,
+        data=str(data), split=split, imgsz=imgsz, device=device, nms=False, verbose=False, plots=False,
         project=str(runs_dir), name="eval", exist_ok=True,
     )
     box = metrics.box
@@ -103,8 +104,10 @@ def run(ctx: ModelContext, args: Namespace) -> None:
 
     fired = boxes = 0
     with paths_source("eval-negatives", negatives) as source:
+        # nms=False runs the NMS-free end-to-end head, the one `export` ships.
         results = model.predict(
-            source=source, conf=args.conf, device=device, batch=1, stream=True, verbose=False,
+            source=source, conf=args.conf, device=device, nms=False,
+            batch=1, stream=True, verbose=False,
         )
         for result in results:
             n = len(result.boxes)
