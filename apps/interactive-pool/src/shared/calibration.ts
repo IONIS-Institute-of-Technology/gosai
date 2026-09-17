@@ -1,92 +1,49 @@
 /**
- * Calibration data loader + driver configuration helpers.
- *
- * Reads this app's calibration profile and pushes the relevant pieces into
- * the tracking drivers (`ball`, `hand_pose`) so their emitted coordinates
- * already live in the app's 1920x1080 reference space. Also exposes the focus
- * quad in projector coordinates so the compositor can warp the canvas to land
- * on the physical surface exactly.
+ * Pushes the calibration into the tracking drivers (`ball`, `hand_pose`) so
+ * the coordinates they emit already live in the app's 1920x1080 reference
+ * space. The calibration itself comes from `loadCameraProjectorSurfaceCalibration`.
  */
 
-import {
-  loadCameraProjectorSurfaceCalibration,
-  type CameraProjectorSurfaceCalibrationProfile,
-  type ExperienceRuntimeContext,
-  type SizeXY,
+import type {
+  CalibrationSize,
+  CameraProjectorSurfaceCalibration,
+  ExperienceRuntimeContext,
 } from '@gosai/sdk';
 
-export type CalibrationData = CameraProjectorSurfaceCalibrationProfile;
-
-export async function loadCalibration(rt: ExperienceRuntimeContext): Promise<CalibrationData> {
-  return loadCameraProjectorSurfaceCalibration(rt);
-}
-
 /**
- * Configure the `ball` driver from the loaded calibration:
- *
- *   - `set_homography`: camera -> surface reference space so YOLO detections
- *     are warped into our 1920x1080 reference space (falls back to the
- *     camera -> display matrix when surface is unavailable)
- *   - `set_output_size`: target reference resolution so the warped coordinates
- *     and radius scaling match our render space
+ * Configures both drivers. Each driver action is tried on its own, and a
+ * failure is logged rather than thrown, so a missing or old driver leaves the
+ * experience running uncorrected.
  */
-export async function configureBallDriver(
+export async function configureTrackingDrivers(
   rt: ExperienceRuntimeContext,
-  cal: CalibrationData,
-  fallbackSize: SizeXY,
+  cal: CameraProjectorSurfaceCalibration,
+  fallbackSize: CalibrationSize,
 ): Promise<void> {
-  const homography = cal.homographySurface ?? cal.homography;
-  if (!homography) {
-    rt.log.warn('ball driver not configured: no homography available');
-    return;
-  }
-  const outputSize = cal.homographySurface ? (cal.surfaceSize ?? fallbackSize) : fallbackSize;
+  const run = (driver: string, action: string, data: unknown): Promise<void> =>
+    rt.drivers
+      .execute(driver, action, data)
+      .then(() => undefined)
+      .catch((err: unknown) => rt.log.warn(`${driver}.${action} failed`, { err: String(err) }));
 
-  await rt.drivers
-    .execute('ball', 'set_homography', homography)
-    .catch((err) => rt.log.warn('ball.set_homography failed', { err: String(err) }));
-  await rt.drivers
-    .execute('ball', 'set_output_size', {
-      width: outputSize.width,
-      height: outputSize.height,
-    })
-    .catch((err) => rt.log.warn('ball.set_output_size failed', { err: String(err) }));
-}
+  // ball: camera -> surface when available, camera -> display otherwise, and
+  // the output size matching whichever space that is.
+  const ballOutput = cal.homographySurface ? cal.surfaceSize : fallbackSize;
+  await run('ball', 'set_homography', cal.homographySurface ?? cal.homography);
+  await run('ball', 'set_output_size', { width: ballOutput.width, height: ballOutput.height });
 
-/**
- * Configure the `hand_pose` driver from the loaded calibration. With the
- * camera -> surface homography in place, MediaPipe landmarks are warped
- * server-side so the values reaching this app are already normalised over
- * the apps' reference space.
- */
-export async function configureHandPoseDriver(
-  rt: ExperienceRuntimeContext,
-  cal: CalibrationData,
-  fallbackSize: SizeXY,
-): Promise<void> {
-  if (!cal.homographySurface) {
-    // Without a surface homography the driver keeps emitting raw
-    // camera-normalised coords. Nothing to configure.
-    return;
-  }
+  // hand_pose: warps MediaPipe landmarks into the surface space. Without a
+  // surface homography it keeps emitting camera-normalised coordinates.
+  if (!cal.homographySurface) return;
   if (!cal.frameSize) {
-    rt.log.warn('hand_pose not configured: missing frame_size in calibration');
+    rt.log.warn('hand_pose not configured: the calibration has no frame size');
     return;
   }
-  const surfaceSize = cal.surfaceSize ?? fallbackSize;
-  await rt.drivers
-    .execute('hand_pose', 'set_frame_size', {
-      width: cal.frameSize.width,
-      height: cal.frameSize.height,
-    })
-    .catch((err) => rt.log.warn('hand_pose.set_frame_size failed', { err: String(err) }));
-  await rt.drivers
-    .execute('hand_pose', 'set_surface_size', {
-      width: surfaceSize.width,
-      height: surfaceSize.height,
-    })
-    .catch((err) => rt.log.warn('hand_pose.set_surface_size failed', { err: String(err) }));
-  await rt.drivers
-    .execute('hand_pose', 'set_homography', cal.homographySurface)
-    .catch((err) => rt.log.warn('hand_pose.set_homography failed', { err: String(err) }));
+  const { frameSize, surfaceSize } = cal;
+  await run('hand_pose', 'set_frame_size', { width: frameSize.width, height: frameSize.height });
+  await run('hand_pose', 'set_surface_size', {
+    width: surfaceSize.width,
+    height: surfaceSize.height,
+  });
+  await run('hand_pose', 'set_homography', cal.homographySurface);
 }
