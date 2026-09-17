@@ -49,6 +49,9 @@ describe('tokens', () => {
   test('refuses to mint tokens for invalid slugs', () => {
     expect(() => mintAppToken(SECRET, '../x')).toThrow();
     expect(() => mintAppToken(SECRET, 'pool', ['a+b'])).toThrow();
+    // `system` is the dashboard's driver binding.
+    expect(() => mintAppToken(SECRET, 'system')).toThrow('reserved');
+    expect(() => mintAppToken(SECRET, 'pool', ['system'])).toThrow('reserved');
   });
 });
 
@@ -170,6 +173,15 @@ describe('capabilities', () => {
         driverBinding: 'pool',
       }),
     ).toBeNull();
+  });
+
+  test("apps never reach the dashboard's system binding", () => {
+    const forged = grant({ kind: 'app', appSlug: 'pool', slugs: ['pool', 'system'] });
+    expect(
+      commandDenial(forged, 'driver:execute', { driver: 'd', action: 'a', binding: 'system' }),
+    ).not.toBeNull();
+    expect(commandDenial(forged, 'driver:get-data', { driver: 'd', event: 'e' })).not.toBeNull();
+    expect(subscriptionDenial(forged, 'driver:event:system')).not.toBeNull();
   });
 
   test('apps log only under their own source', () => {

@@ -9,8 +9,9 @@
 import { Capabilities, type Capability } from './capabilities.js';
 import type { CommandName, ParsedCommandRequest } from './protocol.js';
 
-/** Driver binding the dashboard uses when a driver command names none. */
-export const SYSTEM_BINDING = 'system';
+import { SYSTEM_BINDING } from './slug.js';
+
+export { SYSTEM_BINDING };
 
 export interface CommandSpec<C extends CommandName> {
   /**
@@ -48,6 +49,7 @@ export const COMMANDS: { readonly [C in CommandName]: CommandSpec<C> } = {
   // Clone, dependency install, build and Python requirements, each with its own limit.
   'app:install': { capability: Capabilities.AppsManage, timeoutMs: 45 * MINUTE },
   'app:uninstall': { capability: Capabilities.AppsManage, timeoutMs: 2 * MINUTE },
+  'app:capabilities:set': { capability: Capabilities.AppsManage },
   'app:broadcast': { capability: Capabilities.AppEvents, apps: appSlug },
   'app:log': { capability: Capabilities.LogsWrite, apps: (p) => logSourceApps(p.source) },
   'app:settings:get': { capability: Capabilities.StorageRead, apps: appSlug },

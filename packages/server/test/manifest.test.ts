@@ -345,6 +345,10 @@ describe('validateManifest', () => {
     ).toContain('entry');
   });
 
+  test('rejects the reserved system slug', () => {
+    expect(errorOf({ ...base, slug: 'system' })).toContain('reserved');
+  });
+
   test('accepts requestable capabilities only', () => {
     expect(validateManifest(PATH, { ...base, capabilities: ['logs:read'] }).capabilities).toEqual([
       'logs:read',

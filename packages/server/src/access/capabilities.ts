@@ -24,6 +24,7 @@ import {
 } from '@gosai/shared/events';
 import type { CommandName, FixedEventPayloads, ParsedCommandRequest } from '@gosai/shared/protocol';
 import type { TokenScope } from '@gosai/shared/auth';
+import { isReservedSlug } from '@gosai/shared/slug';
 
 export interface Grant {
   readonly scope: TokenScope;
@@ -31,22 +32,25 @@ export interface Grant {
 }
 
 /**
- * Resolves a token's grant. `requestedBy` returns the capabilities an app's
- * manifest asks for; dashboard-only capabilities are never granted to apps.
+ * Resolves a token's grant. `grantedTo` returns the requested capabilities an
+ * app holds (see AppManager.grantedCapabilities); dashboard-only capabilities
+ * are never granted to apps.
  */
 export function grantFor(
   scope: TokenScope,
-  requestedBy: (appSlug: string) => readonly Capability[] | undefined,
+  grantedTo: (appSlug: string) => readonly Capability[] | undefined,
 ): Grant {
   if (scope.kind === 'dashboard') return { scope, capabilities: new Set(ALL_CAPABILITIES) };
-  const requested = (requestedBy(scope.appSlug) ?? []).filter(
+  const requested = (grantedTo(scope.appSlug) ?? []).filter(
     (capability) => CAPABILITY_INFO[capability].grant !== 'dashboard',
   );
   return { scope, capabilities: new Set([...DEFAULT_APP_CAPABILITIES, ...requested]) };
 }
 
 export function canAccessApp(grant: Grant, slug: string): boolean {
-  return grant.scope.kind === 'dashboard' || grant.scope.slugs.includes(slug);
+  if (grant.scope.kind === 'dashboard') return true;
+  // Verified tokens never name `system`; this keeps the dashboard's binding out of reach anyway.
+  return !isReservedSlug(slug) && grant.scope.slugs.includes(slug);
 }
 
 function missing(grant: Grant, capability: Capability | null): string | null {

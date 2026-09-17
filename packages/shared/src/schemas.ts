@@ -11,7 +11,7 @@
 import { z } from 'zod';
 import { isValidSettingKey } from './app-settings.js';
 import { CAPABILITY_INFO, isCapability, type Capability } from './capabilities.js';
-import { isValidSlug, SLUG_PATTERN } from './slug.js';
+import { isReservedSlug, isValidSlug, SLUG_PATTERN } from './slug.js';
 import type {
   AppCalibrationSchema,
   AppDeviceSettings,
@@ -237,7 +237,9 @@ const networkSchema = z.strictObject({
 export const appManifestSchema = z
   .strictObject({
     $schema: z.string().optional(),
-    slug: slugSchema.describe('Unique app id. Names its directory and driver binding.'),
+    slug: slugSchema
+      .refine((slug) => !isReservedSlug(slug), 'is reserved')
+      .describe('Unique app id. Names its directory and driver binding.'),
     name: nonEmpty.describe('Display name.'),
     version: nonEmpty,
     description: z.string().optional(),
@@ -544,6 +546,7 @@ export const installedAppSchema: z.ZodType<InstalledApp> = z.object({
   installedAt: z.number(),
   source: z.enum(['builtin', 'git']),
   builtin: z.boolean(),
+  grantedCapabilities: z.array(z.custom<Capability>(isCapability)),
   state: z.enum(['installed', 'starting', 'running', 'stopping', 'crashed']),
 });
 
