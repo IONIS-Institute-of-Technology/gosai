@@ -222,7 +222,7 @@ export class AppManager {
         continue;
       }
       try {
-        const discovered = linkBuiltinApp(dir, this.options.paths);
+        const discovered = linkBuiltinApp(dir);
         this.ingest(discovered, dir, true);
       } catch (err) {
         if (err instanceof ManifestError) {

@@ -24,7 +24,7 @@
 
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
-import { fetchUv } from './fetch-uv.ts';
+import { fetchUv } from './fetch-uv.js';
 
 const repoRoot = resolve(import.meta.dir, '..');
 const desktopDir = join(repoRoot, 'packages', 'desktop');

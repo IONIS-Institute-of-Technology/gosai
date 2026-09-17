@@ -241,7 +241,7 @@ export function createSignGameLayer(deps: LayerDeps): Layer {
 
       drawCharacters(ctx);
 
-      if (mode === 'menu') drawMenu(ctx, timestamp);
+      if (mode === 'menu') drawMenu(ctx);
       else if (mode === 'dialog') drawDialog(ctx, timestamp);
       else if (mode === 'end') drawEnd(ctx);
     },
@@ -304,7 +304,7 @@ export function createSignGameLayer(deps: LayerDeps): Layer {
     drawSignProgress(ctx);
   }
 
-  function drawMenu(ctx: CanvasRenderingContext2D, now: number): void {
+  function drawMenu(ctx: CanvasRenderingContext2D): void {
     if (lastDialog) {
       drawTextBox(ctx);
       wrapText(ctx, lastDialog.text, 80, 1500, REF_WIDTH - 160, 44, 26, '#fff');

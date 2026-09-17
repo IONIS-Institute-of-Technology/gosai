@@ -102,7 +102,7 @@ export class PythonBridge {
 
     const env: Record<string, string> = {
       ...(process.env as Record<string, string>),
-      ...(this.options.env ?? {}),
+      ...this.options.env,
       PYTHONUNBUFFERED: '1',
       // MediaPipe / TensorFlow write verbose native logs to stderr.
       GLOG_minloglevel: '2',

@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  js:
+    name: JS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          lfs: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - run: bun install --frozen-lockfile
+      - run: bun run format:check
+      - run: bun run lint
+      - run: bun run typecheck
+      - run: bun run test
+
+  python:
+    name: Python (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            os: ubuntu-latest
+          - name: macOS arm64
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          lfs: false
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: '3.12'
+          # The Linux environment pulls several GB of CUDA wheels, too large to cache usefully.
+          enable-cache: false
+      - run: uv sync --locked
+      - run: uv run --locked ruff check .
+      - run: uv run --locked pyright
+      - run: uv run --locked pytest -q
+
+  training:
+    name: Training
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: training
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          lfs: false
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: '3.12'
+          enable-cache: false
+      - run: uv run --locked --only-group dev ruff check .

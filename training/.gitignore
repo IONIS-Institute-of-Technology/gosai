@@ -1,6 +1,5 @@
 # Virtualenv / uv
 .venv/
-uv.lock
 
 # Secrets
 .env

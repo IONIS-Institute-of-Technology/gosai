@@ -20,7 +20,7 @@ from typing import Any, ClassVar
 
 from gosai_py.driver import DriverContext
 from gosai_py.processor import BaseProcessor
-from gosai_py.runtime import mediapipe_base_options
+from gosai_py.runtime import RuntimeInfo, mediapipe_base_options
 
 MODEL_FILENAME = "holistic_landmarker.task"
 MODEL_URL = (
@@ -92,7 +92,7 @@ class PoseDriver(BaseProcessor):
         if model_path is None:
             raise RuntimeError("pose: model unavailable")
 
-        def create(allow_gpu: bool) -> tuple[Any, dict[str, Any]]:
+        def create(allow_gpu: bool) -> tuple[Any, RuntimeInfo]:
             base_options, info = mediapipe_base_options(
                 mp.tasks.BaseOptions,
                 model_path=model_path,

@@ -83,10 +83,11 @@ export function SettingsPanel(): React.ReactElement {
     if (status === 'connected') void refresh();
   }, [status, refresh]);
 
+  const cameraDevice = config?.camera.device;
   useEffect(() => {
-    if (status !== 'connected' || !config) return;
-    void probeFormats(config.camera.device);
-  }, [status, config?.camera.device, probeFormats]);
+    if (status !== 'connected' || cameraDevice === undefined) return;
+    void probeFormats(cameraDevice);
+  }, [status, cameraDevice, probeFormats]);
 
   useEffect(() => {
     const api = window.gosai;

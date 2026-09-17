@@ -171,7 +171,7 @@ export function computeCSSMatrix3d(width: number, height: number, dstCorners: Qu
  * directly.
  */
 export function multiplyHomographies(A: ArrayLike<number>, B: ArrayLike<number>): number[] {
-  const out = new Array<number>(9).fill(0);
+  const out = Array.from({ length: 9 }, () => 0);
   for (let row = 0; row < 3; row++) {
     for (let col = 0; col < 3; col++) {
       let sum = 0;
@@ -221,7 +221,7 @@ function solveLinearSystem(A: number[][], b: number[]): number[] {
     }
   }
   // Back-substitution.
-  const x = new Array<number>(n).fill(0);
+  const x = Array.from({ length: n }, () => 0);
   for (let row = n - 1; row >= 0; row--) {
     let sum = M[row]![n]!;
     for (let k = row + 1; k < n; k++) sum -= M[row]![k]! * x[k]!;

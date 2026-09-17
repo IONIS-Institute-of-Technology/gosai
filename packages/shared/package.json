@@ -28,12 +28,6 @@
     }
   },
   "scripts": {
-    "build": "tsc -b",
-    "typecheck": "tsc -b",
-    "clean": "rm -rf dist *.tsbuildinfo",
-    "dev": "tsc -b --watch"
-  },
-  "devDependencies": {
-    "typescript": "^5.9.3"
+    "typecheck": "tsc"
   }
 }

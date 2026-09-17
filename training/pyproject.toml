@@ -33,7 +33,9 @@ dependencies = [
 # (TensorRT export to .engine needs no extra: Ultralytics installs `tensorrt`
 #  on demand during `gosai-train export --formats engine` on a CUDA machine.)
 coreml = ["coremltools>=8.1"]
-dev = ["ruff>=0.15.0"]
+
+[dependency-groups]
+dev = ["ruff>=0.16.8"]
 
 [project.scripts]
 gosai-train = "gosai_train.cli:main"
