@@ -1,10 +1,9 @@
 """Evaluate trained weights on the merged test split and the golden set.
 
-The golden set (<model>/data/golden/images + labels) is your own-camera
-footage, labelled and NEVER trained on -- it is the number that matters for
-the real rig. Alongside mAP/P/R, this reports the false-positive rate on
-negative-only images (frames with no ball), which is the metric that matches
-"the detector fires on pockets / glare".
+The golden set (<model>/data/golden/images + labels) is your own-camera footage,
+labelled and never trained on. It is the number that matters for the real rig.
+Alongside mAP/P/R, this reports the false-positive rate on negative-only images
+(frames with no ball), the metric behind "the detector fires on pockets or glare".
 
 Use it to compare runs or base models:
 
@@ -14,16 +13,19 @@ Use it to compare runs or base models:
 
 from __future__ import annotations
 
+from argparse import Namespace
 from pathlib import Path
 from typing import Any
 
 from ...context import ModelContext
 from ...devices import resolve_device
-from ...util import console, find_latest, iter_images, load_yaml, paths_txt, save_yaml
+from ...util import console, iter_images, load_yaml, paths_source, save_yaml
+from .sources import read_label_rows
+from .weights import infer_size, print_weights, resolve_weights
 
 
-def _empty_label(label: Path) -> bool:
-    return not label.exists() or not label.read_text().strip()
+def _is_negative(labels_dir: Path, image: Path) -> bool:
+    return not read_label_rows(labels_dir / f"{image.stem}.txt")
 
 
 def _golden_data_yaml(ctx: ModelContext) -> Path:
@@ -32,7 +34,7 @@ def _golden_data_yaml(ctx: ModelContext) -> Path:
         path,
         {
             "path": str(ctx.golden_dir.resolve()),
-            "train": "images",  # unused, required key
+            "train": "images",  # unused, but Ultralytics requires the key
             "val": "images",
             "nc": 1,
             "names": [ctx.class_name],
@@ -41,79 +43,47 @@ def _golden_data_yaml(ctx: ModelContext) -> Path:
     return path
 
 
-def _negative_only_images(ctx: ModelContext) -> list[Path]:
-    """No-ball images from the merged test split and the golden set."""
-    out: list[Path] = []
-    test_images = ctx.merged_dir / "test" / "images"
-    for image in iter_images(test_images):
-        if _empty_label(ctx.merged_dir / "test" / "labels" / (image.stem + ".txt")):
-            out.append(image)
-    for image in iter_images(ctx.golden_dir / "images"):
-        if _empty_label(ctx.golden_dir / "labels" / (image.stem + ".txt")):
-            out.append(image)
-    return out
-
-
-def _val_row(model: Any, name: str, data: Path, split: str,
-             imgsz: int, device: str) -> tuple[str, ...] | None:
-    try:
-        metrics = model.val(data=str(data), split=split, imgsz=imgsz,
-                            device=device, verbose=False)
-    except Exception as exc:  # pragma: no cover
-        console.print(f"[yellow]warn[/] {name}: validation failed: {exc!r}")
-        return None
-    box = getattr(metrics, "box", None)
-    if box is None:
-        return None
+def _val_row(
+    model: Any, name: str, data: Path, split: str, imgsz: int, device: str, runs_dir: Path
+) -> tuple[str, ...]:
+    metrics = model.val(
+        data=str(data), split=split, imgsz=imgsz, device=device, verbose=False, plots=False,
+        project=str(runs_dir), name="eval", exist_ok=True,
+    )
+    box = metrics.box
     return (name, f"{box.map50:.3f}", f"{box.map:.3f}", f"{box.mp:.3f}", f"{box.mr:.3f}")
 
 
-def run(ctx: ModelContext, args: Any = None) -> None:
-    weights = getattr(args, "weights", None)
-    if weights is None:
-        latest = find_latest(ctx.runs_dir, "best.pt")
-        if latest is None:
-            raise SystemExit("no trained weights found; run `gosai-train train` first")
-        weights = str(latest)
-    conf = float(getattr(args, "conf", 0.25) or 0.25)
-
+def run(ctx: ModelContext, args: Namespace) -> None:
+    weights = resolve_weights(ctx, args.weights)
     cfg = load_yaml(ctx.train_config)
-    raw_imgsz = cfg.get("infer_imgsz") or cfg.get("imgsz", 640)
-    imgsz = max(int(v) for v in raw_imgsz) if isinstance(raw_imgsz, (list, tuple)) else int(raw_imgsz)
-    device = resolve_device(cfg.get("device", "auto"))
+    imgsz = max(infer_size(cfg))
+    device = resolve_device(cfg)
+    print_weights("eval", weights)
 
-    weights_path = Path(weights)
-    from datetime import datetime
-
-    if weights_path.exists():
-        trained_at = datetime.fromtimestamp(weights_path.stat().st_mtime)
-        console.print(f"[cyan]eval[/] {weights_path} (trained {trained_at:%Y-%m-%d %H:%M})")
-
-    from ultralytics import YOLO  # type: ignore[import-not-found]
+    from ultralytics import YOLO
 
     model = YOLO(weights)
 
+    test_images = list(iter_images(ctx.merged_dir / "test" / "images"))
+    test_labels = ctx.merged_dir / "test" / "labels"
+    golden_images = list(iter_images(ctx.golden_dir / "images"))
+    golden_labels = ctx.golden_dir / "labels"
+    golden_negatives = [p for p in golden_images if _is_negative(golden_labels, p)]
+
     rows: list[tuple[str, ...]] = []
     merged_yaml = ctx.merged_dir / "data.yaml"
-    if merged_yaml.exists() and any(iter_images(ctx.merged_dir / "test" / "images")):
-        row = _val_row(model, "merged test", merged_yaml, "test", imgsz, device)
-        if row:
-            rows.append(row)
+    if merged_yaml.exists() and test_images:
+        rows.append(_val_row(model, "merged test", merged_yaml, "test", imgsz, device, ctx.runs_dir))
     else:
         console.print("[dim]merged test split not found (run `prepare`); skipping[/]")
 
-    golden_labelled = [
-        p for p in iter_images(ctx.golden_dir / "images")
-        if not _empty_label(ctx.golden_dir / "labels" / (p.stem + ".txt"))
-    ]
-    if golden_labelled:
-        row = _val_row(model, "golden", _golden_data_yaml(ctx), "val", imgsz, device)
-        if row:
-            rows.append(row)
+    if len(golden_negatives) < len(golden_images):
+        rows.append(_val_row(model, "golden", _golden_data_yaml(ctx), "val", imgsz, device, ctx.runs_dir))
     else:
         console.print(
             f"[dim]no labelled golden set at {ctx.golden_dir}/images + labels; skipping. "
-            "Build one from your rig's footage -- it is the metric that matters.[/]"
+            "Build one from your rig's footage: it is the metric that matters.[/]"
         )
 
     if rows:
@@ -126,25 +96,25 @@ def run(ctx: ModelContext, args: Any = None) -> None:
             table.add_row(*row)
         console.print(table)
 
-    # False positives on negative-only images: the "fires on pockets / glare" metric.
-    negatives = _negative_only_images(ctx)
-    if negatives:
-        fired = boxes = 0
+    negatives = [p for p in test_images if _is_negative(test_labels, p)] + golden_negatives
+    if not negatives:
+        console.print("[dim]no negative-only images available for FP check[/]")
+        return
+
+    fired = boxes = 0
+    with paths_source("eval-negatives", negatives) as source:
         results = model.predict(
-            source=paths_txt("eval-negatives", negatives), conf=conf, device=device,
-            batch=1, stream=True, verbose=False,
+            source=source, conf=args.conf, device=device, batch=1, stream=True, verbose=False,
         )
         for result in results:
             n = len(result.boxes)
             if n:
                 fired += 1
                 boxes += n
-        pct = 100.0 * fired / len(negatives)
-        colour = "green" if pct < 2 else "yellow" if pct < 10 else "red"
-        console.print(
-            f"[cyan]false positives[/] (conf>={conf}): "
-            f"[{colour}]{fired}/{len(negatives)} no-ball images fired ({pct:.1f}%)[/], "
-            f"{boxes} boxes total"
-        )
-    else:
-        console.print("[dim]no negative-only images available for FP check[/]")
+    pct = 100.0 * fired / len(negatives)
+    colour = "green" if pct < 2 else "yellow" if pct < 10 else "red"
+    console.print(
+        f"[cyan]false positives[/] (conf>={args.conf}): "
+        f"[{colour}]{fired}/{len(negatives)} no-ball images fired ({pct:.1f}%)[/], "
+        f"{boxes} boxes total"
+    )

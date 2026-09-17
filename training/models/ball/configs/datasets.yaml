@@ -2,8 +2,9 @@
 #
 # Add more by appending entries. Each is parsed from a Roboflow Universe URL:
 #   https://universe.roboflow.com/<workspace>/<project>/
-# Set `version: latest` to always grab the newest generated version, or pin an
-# integer (e.g. 3) for reproducibility.
+# Every enabled entry needs an integer `version` (see the project's Versions
+# page) so a training run can be reproduced. `download` refuses unpinned entries
+# and a raw/<name> folder holding a different version.
 #
 # Per-dataset knobs (all optional):
 #   enabled: false          skip the dataset entirely (download and prepare)
@@ -14,25 +15,24 @@
 #                           empty label file may just mean "nobody labelled it")
 
 format: yolov11 # Roboflow export format (YOLO bbox; yolov11 == yolov8 layout)
-version: latest # default version for entries that don't override it
 
 datasets:
   - name: billiard-8
     workspace: object-detection-billiard
     project: billiard-8
-    version: latest
+    version: null # TODO: pin the version the shipped ball.onnx was trained on
 
   - name: wdzpn
     workspace: '-ahcxq'
     project: '-wdzpn'
-    version: latest
+    version: null # TODO: pin the version the shipped ball.onnx was trained on
 
   # Sloppy labelling (junk class names, unlabelled stock photos): its no-ball
   # frames cannot be trusted as negatives.
   - name: pool-v2
     workspace: pool-table
     project: pool-v2
-    version: latest
+    version: null # TODO: pin the version the shipped ball.onnx was trained on
     trust_negatives: false
 
   # Broadcast side-view snooker: useful variety, but a domain mismatch with a
@@ -40,5 +40,5 @@ datasets:
   - name: snooker-vision
     workspace: morganlewis
     project: snooker-vision-tjn0z
-    version: latest
+    version: null # TODO: pin the version the shipped ball.onnx was trained on
     cap: 800

@@ -132,6 +132,14 @@ def label_for(image: Path) -> Path | None:
     return sibling if sibling.exists() else None
 
 
+def read_label_rows(label: Path | None) -> list[list[str]]:
+    """Rows of a YOLO label file split into fields; rows with fewer than 5 fields are skipped."""
+    if label is None or not label.exists():
+        return []
+    rows = (raw.split() for raw in label.read_text().splitlines())
+    return [parts for parts in rows if len(parts) >= 5]
+
+
 def to_bbox_line(parts: list[str]) -> str | None:
     """Normalize a YOLO label row to a detection bbox line ``0 cx cy w h``.
 
@@ -168,14 +176,9 @@ def remap_lines(label: Path | None, decisions: dict[int, str]) -> tuple[list[str
     Returns ``(lines, has_unknown)`` where ``has_unknown`` flags boxes of a
     class we could not classify -- such frames must not become negatives.
     """
-    if label is None:
-        return [], False
     out: list[str] = []
     has_unknown = False
-    for raw in label.read_text().splitlines():
-        parts = raw.split()
-        if len(parts) < 5:
-            continue
+    for parts in read_label_rows(label):
         try:
             cls = int(float(parts[0]))
         except ValueError:
@@ -231,6 +234,7 @@ def collect_datasets(
         if not entry.get("enabled", True):
             console.print(f"[dim]{dataset_dir.name}: disabled in datasets.yaml, skipping[/]")
             continue
+        trust_negatives = entry.get("trust_negatives", True)
 
         names = dataset_class_names(dataset_dir)
         decisions: dict[int, str] = {}
@@ -248,7 +252,6 @@ def collect_datasets(
                 continue
             images_dir = split_dir / "images"
             search = images_dir if images_dir.exists() else split_dir
-            trust_negatives = entry.get("trust_negatives", True)
             for image in iter_images(search):
                 lines, has_unknown = remap_lines(label_for(image), decisions)
                 if not lines and (has_unknown or not trust_negatives):
@@ -275,7 +278,7 @@ def collect_datasets(
         if excluded:
             notes = f", [yellow]{excluded} unlabelled/unknown frames excluded[/]"
         if unknown_classes:
-            notes += f" [yellow]({unknown_classes} unknown classes -- review classes.lock.yaml)[/]"
+            notes += f" [yellow]({unknown_classes} unknown classes -- review runs/classes.lock.yaml)[/]"
         console.print(
             f"[cyan]{dataset_dir.name}[/]: {len(names)} classes, "
             f"{kept_classes} mapped to {ctx.class_name}{capped}{notes}"
@@ -299,14 +302,7 @@ def collect_custom(ctx: ModelContext) -> list[Sample]:
         if not label.exists():
             console.print(f"[yellow]skip[/] custom/{image.name}: no label (run autolabel?)")
             continue
-        lines: list[str] = []
-        for raw in label.read_text().splitlines():
-            parts = raw.split()
-            if len(parts) < 5:
-                continue
-            line = to_bbox_line(parts)
-            if line is not None:
-                lines.append(line)
+        lines = [line for parts in read_label_rows(label) if (line := to_bbox_line(parts))]
         samples.append(
             Sample(image=image, split=assign_split("custom/" + group_key(image)),
                    prefix="custom", label_lines=lines)
