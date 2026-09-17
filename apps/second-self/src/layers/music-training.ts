@@ -4,8 +4,9 @@
  * The dominant microphone pitch (from the `frequency_analysis` feed) places a
  * cursor on a piano-key strip. "Play La Vie En Rose" plays the melody on the
  * shared {@link Synth} and sends the same notes up the screen; keeping the
- * cursor on a note as it crosses the strip earns score. Notes move by elapsed
- * time, in step with the synth's clock-based schedule.
+ * cursor on a note as it crosses the strip earns score. Notes are placed from
+ * the audio clock the synth schedules on, so they stay in step with the
+ * melody even after long or dropped frames.
  */
 
 import type { LayerDeps } from '../shared/deps.js';
@@ -40,7 +41,9 @@ const CYAN = { r: 0, g: 191, b: 255 };
 
 export interface FallingNote {
   readonly x: number;
-  /** Top of the note; it rises as time passes. */
+  /** Top of the note when the score starts, below the screen. */
+  readonly startY: number;
+  /** Top of the note now; it rises as the score plays. */
   y: number;
   /** Length in px, proportional to the note's duration. */
   readonly length: number;
@@ -56,6 +59,7 @@ export function layoutNotes(score: Score): FallingNote[] {
     const key = MUSICAL_ELEMENTS.notes_key[name];
     const note = {
       x: key === undefined ? 0 : keyToPx(key),
+      startY: y,
       y,
       length: noteDurationSec(score, durationName) * NOTE_SPEED,
     };
@@ -65,20 +69,22 @@ export function layoutNotes(score: Score): FallingNote[] {
 }
 
 /**
- * Moves the notes up by `deltaMs` and drops the ones that left the screen.
- * Returns the points earned: notes that reached the strip score while the
- * cursor sits on them. A `cursorX` of null means no pitch is detected.
+ * Places the notes `elapsedSec` into the score and drops the ones that left
+ * the screen. Returns the points earned over the last `stepSec`: notes that
+ * reached the strip score while the cursor sits on them. A `cursorX` of null
+ * means no pitch is detected.
  */
 export function advanceNotes(
   notes: FallingNote[],
-  deltaMs: number,
+  elapsedSec: number,
+  stepSec: number,
   cursorX: number | null,
 ): number {
   let points = 0;
   for (let i = notes.length - 1; i >= 0; i--) {
     const note = notes[i]!;
-    note.y -= (NOTE_SPEED * deltaMs) / 1000;
-    if (note.y < CURSOR_Y && matches(note, cursorX)) points += (POINTS_PER_S * deltaMs) / 1000;
+    note.y = note.startY - Math.max(0, elapsedSec) * NOTE_SPEED;
+    if (note.y < CURSOR_Y && matches(note, cursorX)) points += POINTS_PER_S * Math.max(0, stepSec);
     if (note.y + note.length < 0) notes.splice(i, 1);
   }
   return points;
@@ -91,6 +97,9 @@ function matches(note: FallingNote, cursorX: number | null): boolean {
 export function createMusicTrainingLayer(deps: LayerDeps): Layer {
   const particles = new ParticleSystem(PARTICLE_LIFE_MS);
   let notes: FallingNote[] = [];
+  /** Audio-clock time the score starts at, and the score time of the last frame. */
+  let scoreStart = 0;
+  let lastElapsed = 0;
   let score = 0;
   let unsubscribes: Array<() => void> = [];
 
@@ -106,8 +115,9 @@ export function createMusicTrainingLayer(deps: LayerDeps): Layer {
       score = 0;
       unsubscribes = [
         deps.options.onTrigger(SLUG, 'Play La Vie En Rose', () => {
-          deps.synth.playScore(scoreToNotes(LA_VIE_EN_ROSE, 0.5));
+          scoreStart = deps.synth.playScore(scoreToNotes(LA_VIE_EN_ROSE, 0.5));
           notes = layoutNotes(LA_VIE_EN_ROSE);
+          lastElapsed = 0;
           score = 0;
         }),
         deps.options.onTrigger(SLUG, 'Stop', stopTutorial),
@@ -137,7 +147,11 @@ export function createMusicTrainingLayer(deps: LayerDeps): Layer {
       }
       particles.run(ctx, deltaMs);
 
-      score += advanceNotes(notes, deltaMs, cursorX);
+      if (notes.length > 0) {
+        const elapsed = Math.max(0, deps.synth.currentTime - scoreStart);
+        score += advanceNotes(notes, elapsed, elapsed - lastElapsed, cursorX);
+        lastElapsed = elapsed;
+      }
       for (const note of notes) {
         const color = matches(note, cursorX) ? 'rgb(80,255,120)' : 'rgb(170,170,170)';
         strokeLine(ctx, note.x, note.y, note.x, note.y + note.length, 5, color);

@@ -22,8 +22,11 @@ import { REF_HEIGHT, REF_WIDTH, type Landmark, type Layer } from '../shared/type
 import { dist } from '../shared/ui.js';
 
 const SAMPLE_FRAMES = 30;
-/** The reference recordings ran at 30 fps; a matched pose advances at that rate. */
-const SAMPLE_FRAME_MS = 1000 / 30;
+/**
+ * How long a matched pose shows each sample frame: the legacy loop stepped one
+ * frame per 60 fps render, so the 30 frames replay in half a second.
+ */
+const SAMPLE_FRAME_MS = 1000 / 60;
 const BODY_STUDY = [0, 11, 12, 15, 16, 23, 24];
 const HAND_STUDY = [0, 5, 17, 4, 8, 20];
 const BODY_PRECISION = 40;
@@ -80,6 +83,15 @@ export function meanDistance(
   return count > 0 ? sum / (count * fit.ratio) : Number.POSITIVE_INFINITY;
 }
 
+/**
+ * Progress through the sample frames after `deltaMs` of matching. It never
+ * moves past the next frame, so a long frame can't skip a pose the user
+ * hasn't matched.
+ */
+export function advanceSamplePosition(position: number, deltaMs: number): number {
+  return Math.min(Math.floor(position) + 1, position + deltaMs / SAMPLE_FRAME_MS);
+}
+
 export function createSignTrainingLayer(deps: LayerDeps): Layer {
   const tracker = new SignTracker();
   const media = createMediaCache();
@@ -112,6 +124,8 @@ export function createSignTrainingLayer(deps: LayerDeps): Layer {
 
   function startMimic(now: number): void {
     phase = 'mimic';
+    // A hold of the previous target must not count toward this one.
+    tracker.reset();
     lastReplay = now;
     // The previous target's video stops with the next pauseUnused().
     video = media.video(videoUrl(target()));
@@ -204,7 +218,7 @@ export function createSignTrainingLayer(deps: LayerDeps): Layer {
     const rightDiff = handDiff(fit, frame.right_hand, mirror.right_hand_pose);
     const leftDiff = handDiff(fit, frame.left_hand, mirror.left_hand_pose);
     if (bodyDiff < BODY_PRECISION && rightDiff < HAND_PRECISION && leftDiff < HAND_PRECISION) {
-      framePosition += deltaMs / SAMPLE_FRAME_MS;
+      framePosition = advanceSamplePosition(framePosition, deltaMs);
       lastDetected = now;
     }
   }
@@ -217,7 +231,6 @@ export function createSignTrainingLayer(deps: LayerDeps): Layer {
     start(): void {
       targetIdx = 0;
       sentence.length = 0;
-      tracker.reset();
       sampleFrames = [];
       samplesLoading = false;
       startMimic(performance.now());

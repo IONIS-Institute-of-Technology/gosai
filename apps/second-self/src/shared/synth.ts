@@ -48,9 +48,18 @@ export class Synth {
     this.liveGain.gain.setTargetAtTime(gain, now, SMOOTHING_S);
   }
 
-  /** Schedules a sequence of notes. Cancels any score currently playing. */
-  playScore(notes: readonly Note[]): void {
-    if (notes.length === 0) return;
+  /** The audio clock the synth schedules on, in seconds. */
+  get currentTime(): number {
+    return this.ctx.currentTime;
+  }
+
+  /**
+   * Schedules a sequence of notes. Cancels any score currently playing.
+   * Returns the {@link currentTime} the first note starts at.
+   */
+  playScore(notes: readonly Note[]): number {
+    const start = this.ctx.currentTime + 0.05;
+    if (notes.length === 0) return start;
     this.stopScore();
 
     const gain = this.ctx.createGain();
@@ -61,7 +70,7 @@ export class Synth {
     osc.type = 'sine';
     osc.connect(gain);
 
-    let t = this.ctx.currentTime + 0.05;
+    let t = start;
     for (const note of notes) {
       const dur = Math.max(note.duration, 0.001);
       if (note.frequency > 0 && note.amplitude > 0) {
@@ -87,6 +96,7 @@ export class Synth {
         this.scoreGain = null;
       }
     };
+    return start;
   }
 
   stopScore(): void {
