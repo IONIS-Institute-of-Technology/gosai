@@ -89,6 +89,12 @@ export function createDanceLayer(deps: LayerDeps): Layer {
     elapsedMs = 0;
   }
 
+  function createFallback(): HTMLImageElement {
+    const img = new Image();
+    img.src = deps.asset('dance/dance02.webp');
+    return img;
+  }
+
   function finish(): void {
     void deps.layers.stop('dance');
     reset();
@@ -105,24 +111,29 @@ export function createDanceLayer(deps: LayerDeps): Layer {
       if (typeof ImageDecoder !== 'undefined') {
         referenceData = await fetchOk(referenceUrl, 'arrayBuffer').catch(() => null);
       }
-      if (!referenceData) {
-        fallbackImg = new Image();
-        fallbackImg.src = referenceUrl;
-      }
+      if (!referenceData) fallbackImg = createFallback();
     },
 
     async start(): Promise<void> {
       reset();
       if (!referenceData) return;
+      let next: ImageDecoder | null = null;
       try {
-        const next = new ImageDecoder({ data: referenceData, type: 'image/webp' });
+        next = new ImageDecoder({ data: referenceData, type: 'image/webp' });
         decoder = next;
         await next.tracks.ready;
         frameCount = next.tracks.selectedTrack?.frameCount ?? 1;
       } catch (err) {
+        // The layer stopped meanwhile and closed the decoder.
+        if (decoder !== next) return;
         deps.rt.log.warn('dance: the reference animation can not be decoded', {
           err: String(err),
         });
+        next?.close();
+        decoder = null;
+        // Play the animated image instead, from now on.
+        referenceData = null;
+        fallbackImg ??= createFallback();
       }
     },
 
