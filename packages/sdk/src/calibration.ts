@@ -1,4 +1,4 @@
-import type { Point2D } from '@gosai/shared/homography';
+import type { Point2D } from './homography.js';
 import type {
   AppEventsClient,
   AppLogger,

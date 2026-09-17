@@ -22,10 +22,6 @@
       "types": "./src/types.ts",
       "import": "./src/types.ts"
     },
-    "./homography": {
-      "types": "./src/homography.ts",
-      "import": "./src/homography.ts"
-    },
     "./slug": {
       "types": "./src/slug.ts",
       "import": "./src/slug.ts"
@@ -33,6 +29,10 @@
     "./auth": {
       "types": "./src/auth.ts",
       "import": "./src/auth.ts"
+    },
+    "./app-origin": {
+      "types": "./src/app-origin.ts",
+      "import": "./src/app-origin.ts"
     }
   },
   "scripts": {

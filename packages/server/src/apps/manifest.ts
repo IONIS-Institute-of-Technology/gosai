@@ -6,9 +6,11 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { isValidSlug } from '@gosai/shared/slug';
+import { isConnectSource } from './app-host.js';
 import type {
   AppCalibrationSchema,
   AppManifest,
+  AppNetworkSchema,
   AppRequirements,
   AppSettingsField,
   AppSettingsGroup,
@@ -112,6 +114,7 @@ export function validateManifest(path: string, value: unknown): AppManifest {
   const requirements = parseRequirements(path, v.requirements);
   const calibration = parseCalibration(path, v.calibration);
   const settings = parseSettings(path, v.settings);
+  const network = parseNetwork(path, v.network);
 
   let python: AppManifest['python'];
   if (v.python !== undefined) {
@@ -139,6 +142,7 @@ export function validateManifest(path: string, value: unknown): AppManifest {
     ...(requirements ? { requirements } : {}),
     ...(calibration ? { calibration } : {}),
     ...(settings ? { settings } : {}),
+    ...(network ? { network } : {}),
     builtin,
   };
   return result;
@@ -160,6 +164,28 @@ function parseRequirements(path: string, value: unknown): AppRequirements | unde
     ...(microphone !== undefined ? { microphone } : {}),
     ...(speaker !== undefined ? { speaker } : {}),
   };
+}
+
+function parseNetwork(path: string, value: unknown): AppNetworkSchema | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new ManifestError(path, '`network` must be an object');
+  }
+  const connect = (value as Record<string, unknown>).connect;
+  if (connect === undefined) return {};
+  if (!Array.isArray(connect)) {
+    throw new ManifestError(path, '`network.connect` must be an array');
+  }
+  for (const entry of connect) {
+    if (!isConnectSource(entry)) {
+      throw new ManifestError(
+        path,
+        `\`network.connect\` entry ${JSON.stringify(entry)} must be scheme://host[:port] ` +
+          'with an http, https, ws or wss scheme and no path',
+      );
+    }
+  }
+  return { connect: [...(connect as string[])] };
 }
 
 function parseCalibration(path: string, value: unknown): AppCalibrationSchema | undefined {

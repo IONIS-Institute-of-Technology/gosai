@@ -7,7 +7,7 @@ The GOSAI desktop app ships as a self-contained package that bundles:
 - `uv`, which builds the Python environment on first launch.
 - The Python source tree under `resources/python/`.
 - The built-in apps under `resources/apps/`.
-- The SDK runtime bundle served to app-host windows at `/sdk-runtime.js`.
+- The SDK bundle served to app windows under `/sdk/`.
 
 Supported targets are Linux x64 and macOS arm64. Windows x64 builds are best
 effort.

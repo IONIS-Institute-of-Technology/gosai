@@ -148,17 +148,20 @@ function main(): void {
     if (mode === 'desktop' && booted) app.quit();
   });
 
-  app.on('before-quit', async (event) => {
+  let quitting = false;
+  app.on('before-quit', (event) => {
+    if (quitting) return;
+    quitting = true;
+    event.preventDefault();
     // Suppress per-window POST /v1/experiences/stop; apps.shutdown() handles all
     // experiences in a single call.
     windows.setShuttingDown();
-    windows.closeAllControlWindows();
-    windows.closeAllAppHosts();
-    if (serverRunner?.isRunning()) {
-      event.preventDefault();
-      await serverRunner.stop().catch(() => undefined);
+    void (async () => {
+      // Let running experiences stop before the server goes away.
+      await Promise.all([windows.closeAllControlWindows(), windows.closeAllAppHosts()]);
+      if (serverRunner?.isRunning()) await serverRunner.stop().catch(() => undefined);
       app.exit();
-    }
+    })();
   });
 }
 

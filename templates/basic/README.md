@@ -1,16 +1,17 @@
 # hello-gosai
 
-Minimal GOSAI app template.
+Minimal GOSAI app. It draws a dot circling the screen, counts `heartbeat`
+driver ticks, keeps the count in storage and reads its color from settings.
 
 ## Structure
 
 ```
 hello-gosai/
-├── gosai.app.json   # manifest read by GOSAI
-├── package.json     # bun build script + @gosai/sdk dep
+├── gosai.app.json   # manifest: experiences, requirements, settings
+├── package.json     # build script and the @gosai/sdk dependency
 ├── tsconfig.json
 └── src/
-    └── main.ts      # the experience entry
+    └── main.ts      # the experience
 ```
 
 ## Build
@@ -20,95 +21,42 @@ bun install
 bun run build
 ```
 
-The `build` script bundles `src/main.ts` into `dist/main.js` as a browser
-ESM module. `@gosai/sdk` is marked as external; GOSAI provides it at
-runtime via `http://127.0.0.1:7777/sdk-runtime.js` and resolves the
-`@gosai/sdk` specifier in your bundle through an import map injected by the
-app-host.
+`build` bundles `src/main.ts` into `dist/main.js`, the `entry` the manifest
+names. `@gosai/sdk` stays external: GOSAI provides it when it runs the app.
 
-## Install into GOSAI
+## Run it in GOSAI
 
-If you push this directory to a git repo, GOSAI can install it via the
-dashboard's `Install` form (paste the repository URL).
+- **Install from git.** Push the directory to a repository and paste its URL
+  in the dashboard's Apps tab. GOSAI clones it, runs `bun install` and
+  `bun run build`.
+- **Kiosk.** Run one built app without the dashboard, from the GOSAI
+  repository: `bun run kiosk <path-to-this-directory>`. See the kiosk section
+  of the root README.
 
-For local development, copy or symlink this directory into
-`~/.gosai/apps/hello-gosai/` and refresh the dashboard.
+Apps are discovered when the server starts, so restart GOSAI after adding one
+by hand to its apps directory.
 
-## What it does
+## What `src/main.ts` shows
 
-The experience opens a fullscreen canvas, subscribes to the GOSAI
-`heartbeat` driver's `tick` event, and renders a bouncing dot annotated with
-the current tick count and elapsed time.
+- `init(rt)` builds the state: a fullscreen canvas removed automatically when
+  the experience stops (`signal: rt.signal`), settings merged with the
+  manifest defaults, and a counter read from storage with a typed fallback.
+- `start` subscribes to a driver. The runtime removes the subscription on stop.
+- `render` scales motion by `frame.deltaMs` and draws in a 1920x1080 reference
+  space that `fit()` maps onto the window.
+- `stop` saves the counter.
 
-## Manifest reference
+## Network access
 
-```jsonc
-{
-  "slug": "hello-gosai", // required, kebab-case
-  "name": "Hello GOSAI", // required, human-readable
-  "version": "0.1.0", // required
-  "description": "...",
-  "author": "GOSAI",
-  "icon": "./assets/icon.png", // optional, served via /v1/apps/.../static/...
-  "experiences": [
-    // at least one required
-    {
-      "slug": "main", // required, kebab-case unique per app
-      "name": "Main",
-      "description": "...",
-      "entry": "dist/main.js", // ESM module relative to app root
-      "python": "src/main.py", // optional Python processor module
-      "drivers": ["heartbeat"], // drivers auto-started for this experience
-      "exclusive": false, // if true, stops other non-allowed experiences
-      "allowed": [], // experiences that can co-run when exclusive
-      "required": [], // experiences that must also be running
-    },
-  ],
-  "python": {
-    // optional python deps for the app
-    "requirements": "requirements.txt",
-  },
-  "startup": ["main"], // experiences to autostart
-}
+The app window may connect to its own origin and to any `https:` or `wss:`
+URL. To reach a plain `http:` or `ws:` service, such as a device on the local
+network, list its origin in `gosai.app.json`:
+
+```json
+"network": { "connect": ["ws://relay.local:8080"] }
 ```
 
-## SDK Quick reference
+Blocked requests appear in the dashboard's Logs panel.
 
-```ts
-import { defineExperience } from '@gosai/sdk';
-
-export default defineExperience<MyState>({
-  slug: 'main',
-  name: 'Main',
-
-  init(): MyState {
-    /* synchronous setup */
-  },
-
-  async start(rt, state) {
-    rt.drivers.on('camera', 'color', (frame) => {
-      /* ... */
-    });
-    await rt.storage.set('foo', 42);
-    rt.log.info('hello');
-  },
-
-  render(rt, state, frame) {
-    // called every animation frame
-  },
-
-  async stop(rt, state) {
-    /* cleanup */
-  },
-});
-```
-
-The `rt` (runtime) object provides:
-
-- `rt.drivers.on(driver, event, listener)` - subscribe to driver events
-- `rt.drivers.get(driver, event)` - get latest value
-- `rt.drivers.execute(driver, action, data)` - invoke driver actions
-- `rt.storage.{get,set,remove,list}` - per-app KV storage
-- `rt.log.{debug,info,warn,error}` - log to the GOSAI dashboard
-- `rt.router.switchTo(experienceSlug)` - move to another experience
-- `rt.app.appSlug` / `rt.app.experienceSlug` - this experience's identity
+See [`packages/sdk/README.md`](../../packages/sdk/README.md) for the manifest
+reference and the full runtime API.

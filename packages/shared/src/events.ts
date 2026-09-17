@@ -34,6 +34,7 @@ export type ServerEventName = (typeof ServerEvents)[keyof typeof ServerEvents];
 export const ClientCommands = {
   Subscribe: 'subscribe',
   Unsubscribe: 'unsubscribe',
+  Ping: 'system:ping',
 
   AppInstall: 'app:install',
   AppUninstall: 'app:uninstall',

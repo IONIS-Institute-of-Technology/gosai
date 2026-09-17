@@ -10,7 +10,7 @@ git clone https://github.com/IONIS-Institute-of-Technology/gosai ~/Repos/gosai
 cd ~/Repos/gosai
 bun install
 bun run python:sync                # builds python/.venv with uv
-bun run build:sdk                  # builds /sdk-runtime.js for app-host windows
+bun run build:sdk                  # builds the SDK bundle served to app windows
 bun run build:apps                 # builds built-in app entry bundles
 ```
 
@@ -42,7 +42,7 @@ bun run dev
 Three processes start with one shared dashboard token:
 
 - The server on `http://127.0.0.1:7777` (`GOSAI_PORT` changes the port).
-- The SDK runtime watcher.
+- The SDK bundle watcher.
 - The Electron desktop app, connected to that server.
 
 The dashboard appears with five tabs: Apps · Experiences · Drivers · Logs ·
@@ -95,7 +95,7 @@ git init && git add . && git commit -m "initial"
 | `GOSAI_PYTHON_DIR`         | Override the Python source/venv directory. Skips the packaged first-run Python install.             |
 | `GOSAI_BUILTIN_APPS`       | Override the built-in apps discovery root.                                                          |
 | `GOSAI_PYTHON=0`           | Disable the Python bridge entirely.                                                                 |
-| `GOSAI_SDK_RUNTIME`        | Path of the SDK runtime bundle the server serves at `/sdk-runtime.js`.                              |
+| `GOSAI_SDK_DIR`            | Directory of the built SDK bundle the server serves to app windows under `/sdk/`.                   |
 | `GOSAI_AUTOSTART_SERVER=1` | Make the desktop app start its own server when run from source.                                     |
 | `GOSAI_AUTOSTART_SERVER=0` | Make the packaged desktop app connect to a server started separately.                               |
 | `GOSAI_SERVER_BIN`         | Server executable the desktop app starts instead of the bundled one or the source.                  |

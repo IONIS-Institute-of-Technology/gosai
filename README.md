@@ -83,7 +83,7 @@ bun run python:sync          # creates python/.venv with uv (CV + audio included
 bun run python:sync -- --extra gpu --no-group cpu # CUDA onnxruntime on NVIDIA GPUs
 bun run python:sync -- --extra speech    # for the speech-to-text driver
 bun run python:sync -- --extra realsense # for Intel RealSense cameras
-bun run build:sdk           # builds /sdk-runtime.js for app-host windows
+bun run build:sdk           # builds the SDK bundle served to app windows
 bun run build:apps          # builds built-in app entry bundles
 bun run dev
 ```
@@ -97,30 +97,30 @@ To install a new app paste its git URL into the Apps tab of the dashboard.
 
 ## Scripts
 
-| Command                  | Purpose                                           |
-| ------------------------ | ------------------------------------------------- |
-| `bun run dev`            | Server, SDK runtime and desktop with hot reload   |
-| `bun run dev:server`     | Only the server                                   |
-| `bun run dev:desktop`    | Only the Electron app                             |
-| `bun run build:sdk`      | Build the SDK runtime served at `/sdk-runtime.js` |
-| `bun run build`          | Build every package                               |
-| `bun run build:apps`     | Build the built-in apps                           |
-| `bun run bundle:prepare` | Compile the server and fetch uv for packaging     |
-| `bun run typecheck`      | TypeScript check across the workspace             |
-| `bun run lint`           | oxlint across the workspace                       |
-| `bun run test`           | Server tests                                      |
-| `bun run format:check`   | Prettier check across the workspace               |
-| `bun run python:sync`    | `uv sync` for the Python runtime                  |
-| `bun run python:lint`    | `ruff check` for the Python runtime               |
-| `bun run python:test`    | `pytest` for the Python runtime                   |
-| `bun run python:check`   | ruff, pyright and pytest for the Python runtime   |
-| `bun run training:lint`  | `ruff check` for the training pipeline            |
-| `bun run package:linux`  | Linux x64 AppImage                                |
-| `bun run package:mac`    | macOS arm64 DMG (on a Mac)                        |
-| `bun run package:win`    | Windows x64 installer (best effort)               |
-| `bun run package:kiosk`  | Build a single-app kiosk bundle (see below)       |
-| `bun run kiosk`          | Launch a built app as a kiosk from the repo       |
-| `bun run clean`          | Remove all build artifacts                        |
+| Command                  | Purpose                                               |
+| ------------------------ | ----------------------------------------------------- |
+| `bun run dev`            | Server, SDK runtime and desktop with hot reload       |
+| `bun run dev:server`     | Only the server                                       |
+| `bun run dev:desktop`    | Only the Electron app                                 |
+| `bun run build:sdk`      | Build the SDK bundle served to app windows at `/sdk/` |
+| `bun run build`          | Build every package                                   |
+| `bun run build:apps`     | Build the built-in apps                               |
+| `bun run bundle:prepare` | Compile the server and fetch uv for packaging         |
+| `bun run typecheck`      | TypeScript check across the workspace                 |
+| `bun run lint`           | oxlint across the workspace                           |
+| `bun run test`           | Server, SDK and desktop tests                         |
+| `bun run format:check`   | Prettier check across the workspace                   |
+| `bun run python:sync`    | `uv sync` for the Python runtime                      |
+| `bun run python:lint`    | `ruff check` for the Python runtime                   |
+| `bun run python:test`    | `pytest` for the Python runtime                       |
+| `bun run python:check`   | ruff, pyright and pytest for the Python runtime       |
+| `bun run training:lint`  | `ruff check` for the training pipeline                |
+| `bun run package:linux`  | Linux x64 AppImage                                    |
+| `bun run package:mac`    | macOS arm64 DMG (on a Mac)                            |
+| `bun run package:win`    | Windows x64 installer (best effort)                   |
+| `bun run package:kiosk`  | Build a single-app kiosk bundle (see below)           |
+| `bun run kiosk`          | Launch a built app as a kiosk from the repo           |
+| `bun run clean`          | Remove all build artifacts                            |
 
 ## Authoring an app
 
@@ -131,21 +131,20 @@ example.
 A minimal app looks like this:
 
 ```ts
-import { defineExperience, fitCanvasToWindow } from '@gosai/sdk';
+import { createFullscreenCanvas, defineExperience, type FullscreenCanvas } from '@gosai/sdk';
 
-export default defineExperience<{ canvas: HTMLCanvasElement }>({
-  slug: 'main',
-  name: 'My Experience',
-  init() {
-    const canvas = document.createElement('canvas');
-    document.body.appendChild(canvas);
-    return { canvas };
+export default defineExperience<{ view: FullscreenCanvas; hue: number }>({
+  init(rt) {
+    return { view: createFullscreenCanvas({ signal: rt.signal }), hue: 0 };
+  },
+  start(rt) {
+    rt.log.info(`${rt.app.experience.name} started`);
   },
   render(_rt, state, frame) {
-    fitCanvasToWindow(state.canvas);
-    const ctx = state.canvas.getContext('2d')!;
-    ctx.fillStyle = `hsl(${frame.elapsed / 10} 80% 50%)`;
-    ctx.fillRect(0, 0, state.canvas.width, state.canvas.height);
+    state.view.fit();
+    state.hue = (state.hue + frame.deltaMs / 20) % 360;
+    state.view.ctx.fillStyle = `hsl(${state.hue} 80% 50%)`;
+    state.view.ctx.fillRect(0, 0, state.view.canvas.width, state.view.canvas.height);
   },
 });
 ```

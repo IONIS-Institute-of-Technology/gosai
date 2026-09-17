@@ -36,7 +36,6 @@ export default defineConfig({
       rollupOptions: {
         input: {
           dashboard: resolve(root, 'src/renderer/dashboard.html'),
-          appHost: resolve(root, 'src/renderer/app-host.html'),
         },
       },
     },

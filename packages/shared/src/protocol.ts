@@ -65,6 +65,7 @@ export type ServerMessage =
 export type ClientMessage =
   | MessageEnvelope<'subscribe', { events: string[] }>
   | MessageEnvelope<'unsubscribe', { events: string[] }>
+  | MessageEnvelope<'system:ping', Record<string, never>>
   | MessageEnvelope<'app:install', { source: string }>
   | MessageEnvelope<'app:uninstall', { slug: string }>
   | MessageEnvelope<'app:broadcast', { appSlug: string; topic: string; data?: unknown }>
