@@ -1,7 +1,7 @@
 /**
  * App manager. Owns the catalogue of installed apps and the set of running
- * experiences. Coordinates with the DriverManager so experiences get the
- * drivers they declared. Designed so app crashes never bring down the server:
+ * experiences. Coordinates with the drivers so experiences get the drivers
+ * they declared, and tells them which apps ship drivers of their own. Designed so app crashes never bring down the server:
  * lifecycle errors are caught, surfaced as state transitions, and logged.
  */
 
@@ -20,13 +20,14 @@ import { ServerEvents } from '@gosai/shared/events';
 import type { EventBus } from '../ipc/bus.js';
 import type { ChildLogger, Logger } from '../logger/logger.js';
 import { appDataDir, type GosaiPaths } from '../paths.js';
-import type { DriverManager } from '../drivers/manager.js';
+import type { AppDriverHosts, AppDriverSource, DriverService } from '../drivers/hub.js';
 import {
   discoverApps,
   type DiscoveredApp,
   type InvalidApp as DiscoveredInvalidApp,
 } from './manifest.js';
 import { installApp, uninstallApp } from './installer.js';
+import type { PythonToolchain } from './python-env.js';
 import { gitOrigin, InstallRecords } from './install-records.js';
 import { SDK_VERSION } from './sdk-version.js';
 
@@ -34,7 +35,11 @@ export interface AppManagerOptions {
   readonly paths: GosaiPaths;
   readonly logger: Logger;
   readonly bus: EventBus;
-  readonly drivers: Pick<DriverManager, 'subscribe' | 'unsubscribe'>;
+  readonly drivers: Pick<DriverService, 'subscribe' | 'unsubscribe'>;
+  /** Runs the drivers apps ship. Kept in step with the catalogue. */
+  readonly appDrivers?: AppDriverHosts;
+  /** Builds the Python environment of apps that ship drivers, at install. */
+  readonly python?: PythonToolchain;
   readonly builtinAppsDir?: string;
   /** Let installs clone `file:` URLs. Only for tests. */
   readonly allowFileInstalls?: boolean;
@@ -188,6 +193,7 @@ export class AppManager {
       paths: this.options.paths,
       allowFileSources: this.options.allowFileInstalls === true,
       sdkVersion: this.sdkVersion,
+      ...(this.options.python ? { python: this.options.python } : {}),
       checkManifest: (manifest) => {
         if (!options.reuseData) this.checkLeftoverData(manifest.slug, trimmed);
       },
@@ -226,6 +232,7 @@ export class AppManager {
     const installedPath = join(this.options.paths.apps, slug);
     if (record && !record.builtin) {
       await this.stopAllExperiencesFor(slug);
+      await this.options.appDrivers?.release(slug);
       await uninstallApp(slug, this.options.paths);
       this.catalogue.delete(slug);
       this.invalid.delete(slug);
@@ -542,10 +549,26 @@ export class AppManager {
   }
 
   private broadcastList(): void {
+    this.options.appDrivers?.sync(this.appDriverSources());
     this.options.bus.emit(
       ServerEvents.AppsListChanged,
       { apps: this.listApps(), invalid: this.listInvalidApps() },
       'apps',
+    );
+  }
+
+  private appDriverSources(): AppDriverSource[] {
+    return Array.from(this.catalogue.values()).flatMap((record) =>
+      record.manifest.python
+        ? [
+            {
+              slug: record.manifest.slug,
+              installPath: record.installPath,
+              builtin: record.builtin,
+              python: record.manifest.python,
+            },
+          ]
+        : [],
     );
   }
 

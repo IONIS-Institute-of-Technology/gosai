@@ -27,6 +27,9 @@
  *
  * Driver events fan out to `driver:event:<binding>` for every binding holding a
  * lease on that event, so each app only receives its own stream.
+ *
+ * One manager runs one bridge. The built-in drivers have one, and so does each
+ * app that ships drivers; `DriverHub` (hub.ts) puts them together.
  */
 
 import { createHash } from 'node:crypto';
@@ -63,8 +66,11 @@ export interface DriverManifestEntry {
 }
 
 export interface DriverManagerOptions {
-  readonly pythonDir: string;
+  /** The Python project for the default bridge. Unused with `createBridge`. */
+  readonly pythonDir?: string;
   readonly logger: Logger;
+  /** Logger child name. Defaults to `drivers`. */
+  readonly logSource?: string;
   readonly bus: EventBus;
   /**
    * Optional per-binding, per-driver startup config (e.g. an app's persisted
@@ -82,6 +88,12 @@ export interface DriverManagerOptions {
   readonly bridgeReadyWaitMs?: number;
   /** Backoff between attempts to stop an instance whose stop timed out. */
   readonly stopRetry?: { readonly initialMs: number; readonly maxMs: number };
+  /**
+   * Called when the driver list changes, instead of emitting
+   * `drivers:list-changed` with this manager's drivers. `DriverHub` emits the
+   * list of every manager instead.
+   */
+  readonly onListChanged?: () => void;
 }
 
 /** Default binding used when a request does not carry one (diagnostics). */
@@ -181,7 +193,7 @@ export class DriverManager {
   private generation = 0;
 
   constructor(private readonly options: DriverManagerOptions) {
-    this.log = options.logger.child('drivers');
+    this.log = options.logger.child(options.logSource ?? 'drivers');
     const handlers: BridgeHandlers = {
       onEvent: (instance, driver, event, data, ts) =>
         this.handleDriverEvent(instance, driver, event, data, ts),
@@ -213,7 +225,7 @@ export class DriverManager {
       options.createBridge ??
       ((bridgeHandlers: BridgeHandlers) =>
         new PythonBridge({
-          pythonDir: options.pythonDir,
+          pythonDir: options.pythonDir ?? '',
           logger: this.log,
           handlers: bridgeHandlers,
         }));
@@ -931,6 +943,10 @@ export class DriverManager {
   }
 
   private broadcastList(): void {
+    if (this.options.onListChanged) {
+      this.options.onListChanged();
+      return;
+    }
     this.options.bus.emit(
       ServerEvents.DriversListChanged,
       { drivers: this.listDrivers() },

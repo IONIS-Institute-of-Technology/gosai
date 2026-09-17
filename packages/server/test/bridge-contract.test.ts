@@ -1,17 +1,21 @@
 /**
- * Contract test against the real Python bridge with the `heartbeat` driver.
- * Skipped when `python/.venv` has not been synced.
+ * Contract tests against the real Python bridge with the `heartbeat` driver,
+ * and against an app's bridge with a tiny app driver next to it. Skipped when
+ * `python/.venv` has not been synced; the app tests also need uv.
  */
 
 import { describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { DriverSchema } from '@gosai/shared';
+import { pythonAppBridges } from '../src/drivers/app-drivers.js';
 import { PythonBridge, type BridgeHandlers } from '../src/drivers/bridge.js';
+import { DriverHub, type AppDriverSource } from '../src/drivers/hub.js';
 import { DriverManager } from '../src/drivers/manager.js';
 import { EventBus } from '../src/ipc/bus.js';
 import { Logger } from '../src/logger/logger.js';
+import { COUNTER_DRIVER, HAS_UV, writeDriverPackage, writeTinyWheel } from './python-fixtures.js';
 
 const PYTHON_DIR = resolve(import.meta.dir, '..', '..', '..', 'python');
 const HAS_BRIDGE = existsSync(join(PYTHON_DIR, '.venv', 'bin', 'gosai-bridge'));
@@ -139,6 +143,122 @@ describe.skipIf(!HAS_BRIDGE)('python bridge contract', () => {
         expect(manager.getDriver('heartbeat')?.state).toBe('available');
       } finally {
         await manager.stop();
+      }
+    },
+    TIMEOUT_MS,
+  );
+});
+
+describe.skipIf(!HAS_BRIDGE || !HAS_UV)('app driver bridge contract', () => {
+  interface DriverEvent {
+    readonly driver: string;
+    readonly event: string;
+    readonly data: { count?: number };
+  }
+
+  async function startHub(): Promise<{ hub: DriverHub; events: DriverEvent[] }> {
+    const root = mkdtempSync(join(tmpdir(), 'gosai-app-contract-'));
+    const appDir = join(root, 'apps', 'contract-app');
+    const python = writeDriverPackage(appDir, { 'counter.py': COUNTER_DRIVER }, 'contract_drivers');
+    const wheel = writeTinyWheel(join(appDir, 'vendor'));
+    writeFileSync(join(appDir, 'requirements.txt'), `${wheel}\n`);
+    const data = join(root, 'data');
+    mkdirSync(data);
+    const app: AppDriverSource = {
+      slug: 'contract-app',
+      installPath: appDir,
+      builtin: false,
+      python: { ...python, requirements: 'requirements.txt' },
+    };
+    const logger = newLogger();
+    const bus = new EventBus();
+    const hub = new DriverHub({
+      pythonDir: PYTHON_DIR,
+      logger,
+      bus,
+      apps: pythonAppBridges({
+        toolchain: { pythonDir: PYTHON_DIR, uv: 'uv' },
+        paths: { root, data },
+        logger,
+      }),
+      supervisorTiming: { initialBackoffMs: 50 },
+    });
+    const events: DriverEvent[] = [];
+    bus.on('driver:event:contract', (_event, payload) => events.push(payload as DriverEvent));
+    hub.sync([app]);
+    await hub.start();
+    return { hub, events };
+  }
+
+  test(
+    'an app bridge runs its drivers next to the built-in bridge',
+    async () => {
+      const { hub, events } = await startHub();
+      try {
+        await hub.subscribe('contract', 'heartbeat', 'tick', 'client');
+        await hub.subscribe('contract', 'contract-app/counter', 'count', 'client');
+        await waitFor(
+          () =>
+            events.some((e) => e.driver === 'heartbeat') &&
+            events.some((e) => e.driver === 'contract-app/counter' && e.event === 'count'),
+          30_000,
+        );
+
+        // The driver runs in the app's environment, with its requirement installed.
+        expect(await hub.execute('contract', 'contract-app/counter', 'where', null)).toEqual({
+          slug: 'contract-app',
+          tinydep: 42,
+        });
+        expect(hub.listDrivers().map((d) => d.name)).toContain('contract-app/counter');
+        const schema = hub.getSchemas('contract-app/counter').schemas['contract-app/counter'];
+        expect(schema?.schema?.events['count']?.payload).toEqual({ $ref: '#/$defs/Count' });
+        expect(hub.getDriver('contract-app/counter')?.schemaVersion).toMatch(/^[0-9a-f]{16}$/);
+
+        await hub.unsubscribe('contract', 'contract-app/counter', 'count', 'client');
+        expect(hub.getDriver('contract-app/counter')?.state).toBe('available');
+        expect(hub.getDriver('heartbeat')?.state).toBe('running');
+      } finally {
+        await hub.stop();
+      }
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    'a crashing app bridge restarts while built-in drivers keep running',
+    async () => {
+      const { hub, events } = await startHub();
+      try {
+        await hub.subscribe('contract', 'heartbeat', 'tick', 'client');
+        await hub.subscribe('contract', 'contract-app/counter', 'count', 'client');
+        // Far enough that a restarted process, which counts from 1 again, is told apart.
+        await waitFor(
+          () => events.some((e) => e.driver === 'contract-app/counter' && (e.data.count ?? 0) >= 5),
+          30_000,
+        );
+
+        await expect(
+          hub.execute('contract', 'contract-app/counter', 'crash', null),
+        ).rejects.toThrow();
+        const ticksAtCrash = events.filter((e) => e.driver === 'heartbeat').length;
+
+        // The supervisor restarts the app bridge and applies the lease again: a
+        // new process counts from the start.
+        const counts = (): number[] =>
+          events.filter((e) => e.driver === 'contract-app/counter').map((e) => e.data.count ?? 0);
+        const before = counts().length;
+        await waitFor(
+          () => counts().some((count, i) => i >= before && count < counts()[i - 1]!),
+          30_000,
+        );
+        await waitFor(
+          () => events.filter((e) => e.driver === 'heartbeat').length > ticksAtCrash + 1,
+          10_000,
+        );
+        expect(hub.getDriver('heartbeat')?.state).toBe('running');
+        expect(hub.getDriver('contract-app/counter')?.state).toBe('running');
+      } finally {
+        await hub.stop();
       }
     },
     TIMEOUT_MS,

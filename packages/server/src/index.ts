@@ -34,6 +34,10 @@ const server = await createServer({
   port,
   paths,
   pythonDir: envPath('GOSAI_PYTHON_DIR') ?? layout.python,
+  uv: envPath('GOSAI_UV') ?? layout.uv,
+  ...(process.env.GOSAI_UV_CACHE_DIR
+    ? { uvCacheDir: resolve(process.env.GOSAI_UV_CACHE_DIR) }
+    : {}),
   ...(existsSync(builtinAppsDir) ? { builtinAppsDir } : {}),
   sdkDir: envPath('GOSAI_SDK_DIR') ?? layout.sdkDir,
   enablePython: process.env.GOSAI_PYTHON !== '0',
@@ -78,6 +82,8 @@ if (process.env.GOSAI_EXIT_ON_STDIN_CLOSE === '1') {
 
 interface InstallLayout {
   readonly python: string;
+  /** uv for app Python environments: the bundled binary, or `uv` on PATH from source. */
+  readonly uv: string;
   readonly builtinApps: string;
   /** The built SDK: `index.js`, `host.js`, `app-host.js` and their chunks. */
   readonly sdkDir: string;
@@ -88,7 +94,8 @@ interface InstallLayout {
  * with `bun build --compile` has no source tree (`import.meta.dir` points into
  * the embedded filesystem), so they are found next to the binary instead:
  * packaged apps put it at `<resources>/server/gosai-server`, beside
- * `<resources>/python`, `<resources>/apps` and `<resources>/sdk`.
+ * `<resources>/python`, `<resources>/apps`, `<resources>/sdk` and
+ * `<resources>/bin/uv`.
  */
 function installLayout(): InstallLayout {
   const compiled =
@@ -97,6 +104,7 @@ function installLayout(): InstallLayout {
     const resources = dirname(dirname(process.execPath));
     return {
       python: join(resources, 'python'),
+      uv: join(resources, 'bin', process.platform === 'win32' ? 'uv.exe' : 'uv'),
       builtinApps: join(resources, 'apps'),
       sdkDir: join(resources, 'sdk'),
     };
@@ -104,6 +112,7 @@ function installLayout(): InstallLayout {
   const repo = resolve(import.meta.dir, '..', '..', '..');
   return {
     python: join(repo, 'python'),
+    uv: 'uv',
     builtinApps: join(repo, 'apps'),
     sdkDir: join(repo, 'packages', 'sdk', 'dist'),
   };

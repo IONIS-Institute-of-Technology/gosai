@@ -354,6 +354,38 @@ describe('app manager lifecycle', () => {
     expect(manager.getManifest('pool')?.name).toBe('Shipped pool');
   });
 
+  test('keeps app driver hosts in step with the apps that ship drivers', async () => {
+    const paths = makePaths();
+    const builtin = join(paths.root, 'builtin');
+    const python = { drivers: 'python/pool_drivers' };
+    manifestApp(builtin, { ...chain, python });
+    manifestApp(paths.apps, { ...chain, slug: 'plain' });
+    const calls: string[] = [];
+    const manager = new AppManager({
+      paths,
+      logger: new Logger({ logsDir: paths.logs }),
+      bus: new EventBus(),
+      drivers: new StubDrivers() as unknown as DriverManager,
+      builtinAppsDir: builtin,
+      appDrivers: {
+        sync: (apps) =>
+          calls.push(`sync ${apps.map((a) => `${a.slug}:${a.builtin}:${a.installPath}`).join()}`),
+        release: async (slug) => {
+          calls.push(`release ${slug}`);
+        },
+      },
+    });
+    expect(calls.at(-1)).toBe(`sync pool:true:${join(builtin, 'pool')}`);
+
+    // An installed app shadows the built-in one, and uninstalling it releases its drivers first.
+    manifestApp(paths.apps, { ...chain, python });
+    manager.discover();
+    expect(calls.at(-1)).toBe(`sync pool:false:${join(paths.apps, 'pool')}`);
+    await manager.uninstall('pool');
+    expect(calls.slice(-2)).toEqual(['release pool', `sync pool:true:${join(builtin, 'pool')}`]);
+    expect(manager.getApp('pool')?.manifest.python).toEqual(python);
+  });
+
   test('lists apps with an invalid manifest and can still uninstall them', async () => {
     const { paths } = setup();
     manifestApp(paths.apps, { ...chain, slug: 'broken', experiences: [] });
