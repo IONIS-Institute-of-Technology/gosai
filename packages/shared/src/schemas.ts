@@ -34,6 +34,7 @@ import type {
   GlobalConfig,
   GlobalConfigPatch,
   InstalledApp,
+  InvalidApp,
   LogEntry,
   PerformanceSample,
   PythonConfig,
@@ -231,10 +232,19 @@ const networkSchema = z.strictObject({
     .optional(),
 }) satisfies z.ZodType<AppNetworkSchema>;
 
-/** The `gosai.app.json` schema. `$schema` is accepted so editors can validate. */
+/**
+ * The `gosai.app.json` schema. `$schema` is accepted so editors can validate.
+ * Unknown top-level fields are dropped rather than rejected, so a manifest
+ * with an extra `homepage` or an old `builtin` still loads;
+ * `parseAppManifest` reports them as warnings.
+ */
 export const appManifestSchema = z
-  .strictObject({
+  .object({
     $schema: z.string().optional(),
+    builtin: z
+      .boolean()
+      .optional()
+      .describe('Ignored. Whether an app is built in depends on where it is installed.'),
     slug: slugSchema
       .refine((slug) => !isReservedSlug(slug), 'is reserved')
       .describe('Unique app id. Names its directory and driver binding.'),
@@ -321,11 +331,21 @@ export const appManifestSchema = z
 /** Parsed manifest, without `$schema`. */
 export function parseAppManifest(
   value: unknown,
-): { success: true; data: AppManifest } | { success: false; error: string } {
+):
+  | { success: true; data: AppManifest; warnings: readonly string[] }
+  | { success: false; error: string } {
   const result = appManifestSchema.safeParse(value);
   if (!result.success) return { success: false, error: formatZodError(result.error) };
-  const { $schema: _schema, ...manifest } = result.data;
-  return { success: true, data: manifest satisfies AppManifest };
+  const { $schema: _schema, builtin, ...manifest } = result.data;
+  const warnings: string[] = [];
+  if (builtin !== undefined) {
+    warnings.push('`builtin` is ignored; it comes from where the app is installed');
+  }
+  const known = new Set(Object.keys(appManifestSchema.shape));
+  for (const key of Object.keys(value as object)) {
+    if (!known.has(key)) warnings.push(`unknown field \`${key}\` is ignored`);
+  }
+  return { success: true, data: manifest satisfies AppManifest, warnings };
 }
 
 /** The first `required` cycle among experiences, as a slug path, or `null`. */
@@ -563,6 +583,12 @@ export const installedAppSchema: z.ZodType<InstalledApp> = z.object({
   builtin: z.boolean(),
   grantedCapabilities: z.array(z.custom<Capability>(isCapability)),
   state: z.enum(['installed', 'starting', 'running', 'stopping', 'crashed']),
+});
+
+export const invalidAppSchema: z.ZodType<InvalidApp> = z.object({
+  slug: z.string(),
+  builtin: z.boolean(),
+  error: z.string(),
 });
 
 export const runningExperienceSchema: z.ZodType<RunningExperience> = z.object({

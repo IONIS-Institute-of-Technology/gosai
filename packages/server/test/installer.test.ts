@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -238,6 +239,24 @@ describe('installer', () => {
 
     await manager.installFromGit(impostor, { reuseData: true });
     expect(existsSync(join(paths.data, 'same-slug', 'keep.txt'))).toBe(true);
+  });
+
+  test('records the git origin of apps installed before install records existed', async () => {
+    const paths = makePaths();
+    const options = {
+      paths,
+      logger,
+      bus: new EventBus(),
+      drivers: {} as DriverManager,
+      allowFileInstalls: true,
+    };
+    const source = makeRepo(paths.root, 'older-app', 'true');
+    await new AppManager(options).installFromGit(source);
+    rmSync(join(paths.data, 'older-app'), { recursive: true });
+
+    new AppManager(options);
+    const record = JSON.parse(readFileSync(join(paths.data, 'older-app', 'install.json'), 'utf8'));
+    expect(record).toMatchObject({ source, approvedCapabilities: [] });
   });
 
   test('refuses leftover data of unknown origin', async () => {

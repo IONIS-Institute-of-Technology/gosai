@@ -12,6 +12,7 @@ import type {
   AppState,
   ExperienceDescriptor,
   InstalledApp,
+  InvalidApp,
   RunningExperience,
 } from '@gosai/shared';
 import type { Capability } from '@gosai/shared/capabilities';
@@ -20,7 +21,11 @@ import type { EventBus } from '../ipc/bus.js';
 import type { ChildLogger, Logger } from '../logger/logger.js';
 import { appDataDir, type GosaiPaths } from '../paths.js';
 import type { DriverManager } from '../drivers/manager.js';
-import { discoverApps, type DiscoveredApp } from './manifest.js';
+import {
+  discoverApps,
+  type DiscoveredApp,
+  type InvalidApp as DiscoveredInvalidApp,
+} from './manifest.js';
 import { installApp, uninstallApp } from './installer.js';
 import { gitOrigin, InstallRecords } from './install-records.js';
 
@@ -66,6 +71,10 @@ interface AppRecord {
   state: AppState;
 }
 
+interface InvalidAppRecord extends DiscoveredInvalidApp {
+  readonly builtin: boolean;
+}
+
 interface ExperienceRecord extends RunningExperience {
   readonly driverBinding: string;
 }
@@ -75,6 +84,7 @@ export class AppManager {
   private readonly catalogue = new Map<string, AppRecord>();
   private readonly running = new Map<string, ExperienceRecord>();
   private readonly records: InstallRecords;
+  private readonly invalid = new Map<string, InvalidAppRecord>();
 
   constructor(private readonly options: AppManagerOptions) {
     this.log = options.logger.child('apps');
@@ -85,16 +95,32 @@ export class AppManager {
 
   discover(): void {
     this.catalogue.clear();
+    this.invalid.clear();
     if (this.options.builtinAppsDir) {
-      for (const found of discoverApps(this.options.builtinAppsDir, this.log)) {
-        this.ingest(found, true);
-      }
+      const builtin = discoverApps(this.options.builtinAppsDir, this.log);
+      for (const found of builtin.apps) this.ingest(found, true);
+      for (const app of builtin.invalid) this.invalid.set(app.slug, { ...app, builtin: true });
     }
     // An installed app replaces a built-in one with the same slug.
-    for (const found of discoverApps(this.options.paths.apps, this.log)) {
+    const installed = discoverApps(this.options.paths.apps, this.log);
+    for (const found of installed.apps) {
       this.ingest(found, false);
+      this.invalid.delete(found.manifest.slug);
+      this.recordLegacyInstall(found);
+    }
+    for (const app of installed.invalid) {
+      if (!this.catalogue.has(app.slug)) this.invalid.set(app.slug, { ...app, builtin: false });
     }
     this.broadcastList();
+  }
+
+  /** App directories whose manifest doesn't parse, with the error. */
+  listInvalidApps(): InvalidApp[] {
+    return Array.from(this.invalid.values(), ({ slug, builtin, error }) => ({
+      slug,
+      builtin,
+      error,
+    }));
   }
 
   listApps(): InstalledApp[] {
@@ -170,7 +196,6 @@ export class AppManager {
     return installed;
   }
 
-  /** Removes the app's checkout. Its data stays unless `deleteData` is set. */
   /** Refuses data left by an app from another, or an unknown, source. */
   private checkLeftoverData(slug: string, source: string): void {
     const dataDir = appDataDir(this.options.paths, slug);
@@ -183,13 +208,27 @@ export class AppManager {
     );
   }
 
+  /**
+   * Removes the app's checkout. Its data stays unless `deleteData` is set.
+   * Works on an app whose manifest no longer parses too.
+   */
   async uninstall(slug: string, options: { deleteData?: boolean } = {}): Promise<boolean> {
     const record = this.catalogue.get(slug);
+    const invalid = this.invalid.get(slug);
+    if (!record && invalid && !invalid.builtin) {
+      await uninstallApp(slug, this.options.paths);
+      this.invalid.delete(slug);
+      return this.finishUninstall(slug, options);
+    }
     if (!record) throw new Error(`App ${slug} not installed`);
     if (record.builtin) throw new Error(`Cannot uninstall built-in app ${slug}`);
     await this.stopAllExperiencesFor(slug);
     await uninstallApp(slug, this.options.paths);
     this.catalogue.delete(slug);
+    return this.finishUninstall(slug, options);
+  }
+
+  private finishUninstall(slug: string, options: { deleteData?: boolean }): boolean {
     const dataDir = appDataDir(this.options.paths, slug);
     if (options.deleteData) {
       rmSync(dataDir, { recursive: true, force: true });
@@ -423,6 +462,22 @@ export class AppManager {
     };
   }
 
+  /**
+   * Git apps installed before install records existed get one from their
+   * checkout's origin, so a later install from elsewhere can't inherit their data.
+   */
+  private recordLegacyInstall(found: DiscoveredApp): void {
+    const slug = found.manifest.slug;
+    if (this.records.get(slug) || !existsSync(join(found.installPath, '.git'))) return;
+    const source = gitOrigin(found.installPath);
+    if (!source) return;
+    this.records.set(slug, {
+      source,
+      installedAt: installTime(found.installPath),
+      approvedCapabilities: [],
+    });
+  }
+
   private ingest(found: DiscoveredApp, builtin: boolean): AppRecord {
     const record: AppRecord = {
       manifest: found.manifest,
@@ -459,7 +514,11 @@ export class AppManager {
   }
 
   private broadcastList(): void {
-    this.options.bus.emit(ServerEvents.AppsListChanged, { apps: this.listApps() }, 'apps');
+    this.options.bus.emit(
+      ServerEvents.AppsListChanged,
+      { apps: this.listApps(), invalid: this.listInvalidApps() },
+      'apps',
+    );
   }
 
   private broadcastExperience(state: ExperienceRecord): void {

@@ -266,6 +266,13 @@ export interface InstalledApp {
   readonly state: AppState;
 }
 
+/** An installed app whose manifest doesn't parse. The dashboard offers to uninstall it. */
+export interface InvalidApp {
+  readonly slug: string;
+  readonly builtin: boolean;
+  readonly error: string;
+}
+
 export interface RunningExperience {
   readonly appSlug: string;
   readonly experienceSlug: string;

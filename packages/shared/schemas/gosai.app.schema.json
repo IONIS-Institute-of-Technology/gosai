@@ -5,6 +5,10 @@
     "$schema": {
       "type": "string"
     },
+    "builtin": {
+      "description": "Ignored. Whether an app is built in depends on where it is installed.",
+      "type": "boolean"
+    },
     "slug": {
       "type": "string",
       "pattern": "^[a-z][a-z0-9-]*$",
@@ -353,6 +357,5 @@
     }
   },
   "required": ["slug", "name", "version", "experiences"],
-  "additionalProperties": false,
   "title": "GOSAI app manifest (gosai.app.json)"
 }

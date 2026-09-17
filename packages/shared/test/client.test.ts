@@ -112,8 +112,8 @@ describe('ServerClient requests', () => {
     const pending = client.request('apps:list');
     const sent = latest().ofType('apps:list')[0]!;
     expect(sent).toMatchObject({ v: 1, payload: {} });
-    latest().reply(sent, { apps: [] });
-    expect(await pending).toEqual({ apps: [] });
+    latest().reply(sent, { apps: [], invalid: [] });
+    expect(await pending).toEqual({ apps: [], invalid: [] });
   });
 
   test('rejects with the server error code', async () => {

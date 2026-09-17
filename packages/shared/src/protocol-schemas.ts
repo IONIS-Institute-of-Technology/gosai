@@ -19,6 +19,7 @@ import {
   globalConfigPatchSchema,
   globalConfigSchema,
   installedAppSchema,
+  invalidAppSchema,
   logEntrySchema,
   logLevelSchema,
   performanceSampleSchema,
@@ -59,7 +60,8 @@ export const commandSchemas = {
 
   'apps:list': {
     request: empty,
-    response: z.object({ apps: z.array(installedAppSchema) }),
+    /** `invalid` lists app directories whose manifest doesn't parse. */
+    response: z.object({ apps: z.array(installedAppSchema), invalid: z.array(invalidAppSchema) }),
   },
   'app:install': {
     request: z.strictObject({
@@ -228,7 +230,10 @@ export const eventSchemas = {
   'drivers:list-changed': z.object({ drivers: z.array(driverInfoSchema) }),
   'app:installed': installedAppSchema,
   'app:uninstalled': z.object({ slug: z.string() }),
-  'apps:list-changed': z.object({ apps: z.array(installedAppSchema) }),
+  'apps:list-changed': z.object({
+    apps: z.array(installedAppSchema),
+    invalid: z.array(invalidAppSchema),
+  }),
   'experience:state-changed': runningExperienceSchema,
   'experiences:list-changed': z.object({ experiences: z.array(runningExperienceSchema) }),
   'system:stats': systemStatsSchema,

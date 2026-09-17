@@ -16,6 +16,14 @@ export interface DiscoveredApp {
   readonly installPath: string;
 }
 
+/** An app directory whose manifest doesn't parse. It can still be uninstalled. */
+export interface InvalidApp {
+  /** The directory name, which is the slug the app was installed under. */
+  readonly slug: string;
+  readonly installPath: string;
+  readonly error: string;
+}
+
 export class ManifestError extends Error {
   constructor(
     readonly path: string,
@@ -26,10 +34,14 @@ export class ManifestError extends Error {
   }
 }
 
-/** Every app directory in `dir` with a valid manifest. Invalid ones are logged. */
-export function discoverApps(dir: string, log: ChildLogger): DiscoveredApp[] {
-  if (!existsSync(dir)) return [];
+/** Every app directory in `dir`, split into valid and invalid manifests. */
+export function discoverApps(
+  dir: string,
+  log: ChildLogger,
+): { apps: DiscoveredApp[]; invalid: InvalidApp[] } {
   const out: DiscoveredApp[] = [];
+  const invalid: InvalidApp[] = [];
+  if (!existsSync(dir)) return { apps: out, invalid };
   for (const entry of readdirSync(dir)) {
     if (entry.startsWith('.')) continue;
     const appDir = join(dir, entry);
@@ -41,29 +53,37 @@ export function discoverApps(dir: string, log: ChildLogger): DiscoveredApp[] {
     const manifestPath = join(appDir, MANIFEST_FILE);
     if (!existsSync(manifestPath)) continue;
     try {
-      out.push({ manifest: parseManifest(manifestPath), installPath: appDir });
+      const manifest = parseManifest(manifestPath, (warning) =>
+        log.warn(`manifest warning: ${warning}`, { path: manifestPath }),
+      );
+      out.push({ manifest, installPath: appDir });
     } catch (err) {
-      log.warn('skipping app with an invalid manifest', {
-        path: manifestPath,
-        err: err instanceof Error ? err.message : String(err),
-      });
+      const error = err instanceof Error ? err.message : String(err);
+      log.warn('app has an invalid manifest', { path: manifestPath, err: error });
+      invalid.push({ slug: entry, installPath: appDir, error });
     }
   }
-  return out;
+  return { apps: out, invalid };
 }
 
-export function parseManifest(path: string): AppManifest {
+export function parseManifest(path: string, onWarning?: (warning: string) => void): AppManifest {
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(path, 'utf8'));
   } catch (err) {
     throw new ManifestError(path, `invalid JSON: ${String(err)}`);
   }
-  return validateManifest(path, raw);
+  return validateManifest(path, raw, onWarning);
 }
 
-export function validateManifest(path: string, value: unknown): AppManifest {
+/** Throws a ManifestError for an invalid manifest; ignored fields go to `onWarning`. */
+export function validateManifest(
+  path: string,
+  value: unknown,
+  onWarning?: (warning: string) => void,
+): AppManifest {
   const result = parseAppManifest(value);
   if (!result.success) throw new ManifestError(path, result.error);
+  for (const warning of result.warnings) onWarning?.(warning);
   return result.data;
 }

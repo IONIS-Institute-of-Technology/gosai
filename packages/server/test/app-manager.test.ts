@@ -321,18 +321,29 @@ describe('app manager lifecycle', () => {
     expect(create(builtin).grantedCapabilities('pool')).toEqual(['devices:read']);
   });
 
-  test('logs apps with an invalid manifest instead of dropping them silently', () => {
+  test('lists apps with an invalid manifest and can still uninstall them', async () => {
     const { paths } = setup();
     manifestApp(paths.apps, { ...chain, slug: 'broken', experiences: [] });
+    manifestApp(paths.apps, { ...chain, builtin: false, homepage: 'https://example.com' });
     const logger = new Logger({ logsDir: paths.logs });
+    const bus = new EventBus();
     const manager = new AppManager({
       paths,
       logger,
-      bus: new EventBus(),
+      bus,
       drivers: new StubDrivers() as unknown as DriverManager,
     });
+    // Old and unknown fields only warn.
+    expect(manager.getApp('pool')).toBeDefined();
+    expect(logger.history().some((entry) => entry.message.includes('homepage'))).toBe(true);
+
     expect(manager.getApp('broken')).toBeUndefined();
-    expect(logger.history().some((entry) => entry.message.includes('invalid manifest'))).toBe(true);
+    expect(manager.listInvalidApps()).toEqual([
+      { slug: 'broken', builtin: false, error: expect.stringContaining('experiences') },
+    ]);
+    expect(await manager.uninstall('broken')).toBe(false);
+    expect(existsSync(join(paths.apps, 'broken'))).toBe(false);
+    expect(manager.listInvalidApps()).toEqual([]);
   });
 });
 

@@ -305,8 +305,18 @@ describe('validateManifest', () => {
     expect(m).not.toHaveProperty('$schema');
   });
 
-  test('rejects unknown fields, including builtin, which only the install location decides', () => {
-    expect(errorOf({ ...base, builtin: true })).toContain('builtin');
+  test('ignores builtin and unknown top-level fields with a warning', () => {
+    const warnings: string[] = [];
+    const m = validateManifest(PATH, { ...base, builtin: false, homepage: 'https://x' }, (w) =>
+      warnings.push(w),
+    );
+    expect(m).not.toHaveProperty('builtin');
+    expect(m).not.toHaveProperty('homepage');
+    expect(warnings).toEqual([
+      '`builtin` is ignored; it comes from where the app is installed',
+      'unknown field `homepage` is ignored',
+    ]);
+    // Inside an experience an unknown field is still a mistake.
     expect(errorOf({ ...base, experiences: [{ ...base.experiences[0], extra: 1 }] })).toContain(
       'extra',
     );

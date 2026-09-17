@@ -27,7 +27,7 @@ export function appCommands({ apps, settings, storage, logger, bus }: ServerServ
   };
 
   return {
-    'apps:list': () => ({ apps: apps.listApps() }),
+    'apps:list': () => ({ apps: apps.listApps(), invalid: apps.listInvalidApps() }),
     'app:install': ({ source, capabilities, reuseData }) =>
       apps.installFromGit(source, {
         ...(capabilities ? { capabilities } : {}),

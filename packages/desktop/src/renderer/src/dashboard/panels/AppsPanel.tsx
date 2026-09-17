@@ -8,6 +8,7 @@ import type {
   DeviceCatalog,
   DisplayMode,
   InstalledApp,
+  InvalidApp,
   RunningExperience,
 } from '@gosai/shared';
 import {
@@ -52,6 +53,7 @@ type CalStatus = 'unknown' | 'calibrated' | 'required';
 export function AppsPanel(): React.ReactElement {
   const { client, status } = useServer();
   const [apps, setApps] = useState<InstalledApp[]>([]);
+  const [invalidApps, setInvalidApps] = useState<InvalidApp[]>([]);
   const [running, setRunning] = useState<RunningExperience[]>([]);
   const [installSource, setInstallSource] = useState('');
   const [installing, setInstalling] = useState(false);
@@ -90,6 +92,7 @@ export function AppsPanel(): React.ReactElement {
     try {
       const appsResult = await client.request('apps:list');
       setApps(appsResult.apps);
+      setInvalidApps(appsResult.invalid);
     } catch (err) {
       if (!isNotConnectedError(err)) {
         setError(err instanceof Error ? err.message : String(err));
@@ -108,7 +111,10 @@ export function AppsPanel(): React.ReactElement {
   }, [status, refresh]);
 
   useEffect(() => {
-    const offList = client.on('apps:list-changed', (payload) => setApps(payload.apps));
+    const offList = client.on('apps:list-changed', (payload) => {
+      setApps(payload.apps);
+      setInvalidApps(payload.invalid);
+    });
     const offRunning = client.on('experiences:list-changed', (payload) =>
       setRunning(payload.experiences),
     );
@@ -136,7 +142,8 @@ export function AppsPanel(): React.ReactElement {
         }
         installed = await client.request('app:install', { source, reuseData: true });
       }
-      // The dashboard approves what the app requests until it asks the operator first.
+      // TODO(PR 13): ask the operator before approving; until then the dashboard approves
+      // everything the app requests.
       const requested = installed.manifest.capabilities ?? [];
       if (requested.length > 0) {
         await client.request('app:capabilities:set', {
@@ -220,6 +227,32 @@ export function AppsPanel(): React.ReactElement {
           </ul>
         )}
       </Panel>
+
+      {invalidApps.length > 0 ? (
+        <Panel title={`Invalid (${invalidApps.length})`}>
+          <ul className="divide-y divide-neutral-800 overflow-hidden rounded border border-neutral-800">
+            {invalidApps.map((invalid) => (
+              <li key={invalid.slug} className="flex items-start gap-3 bg-neutral-900/40 px-4 py-3">
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="font-mono text-sm text-neutral-100">{invalid.slug}</span>
+                  <span className="font-mono text-[11px] break-words text-red-300">
+                    {invalid.error}
+                  </span>
+                </span>
+                {invalid.builtin ? null : (
+                  <button
+                    type="button"
+                    onClick={() => void handleUninstall(invalid.slug)}
+                    className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-neutral-500 hover:text-red-400"
+                  >
+                    uninstall
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      ) : null}
     </div>
   );
 }

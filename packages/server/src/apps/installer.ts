@@ -107,7 +107,9 @@ export async function installApp(options: InstallOptions): Promise<InstallResult
     if (!existsSync(manifestPath)) {
       throw new Error('Cloned repository does not contain gosai.app.json');
     }
-    const manifest = parseManifest(manifestPath);
+    const manifest = parseManifest(manifestPath, (warning) =>
+      logger.warn(`manifest warning: ${warning}`),
+    );
     const slug = assertSlug(options.slugOverride ?? manifest.slug, 'app slug');
     if (busySlugs.has(slug)) {
       throw new Error(`App ${slug} is already being installed or uninstalled`);
