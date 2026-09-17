@@ -128,8 +128,11 @@ export class AppManager {
 
     const key = experienceKey(appSlug, experienceSlug);
     const existing = this.running.get(key);
-    if (existing && existing.state === 'running') {
-      if (existing.driverBinding === driverBinding) return toPublicRunningExperience(existing);
+    if (existing) {
+      if (existing.state === 'running' && existing.driverBinding === driverBinding) {
+        return toPublicRunningExperience(existing);
+      }
+      // Release whatever an earlier run or failed start still holds.
       await this.stopExperience(appSlug, experienceSlug);
     }
 
@@ -143,9 +146,11 @@ export class AppManager {
     this.running.set(key, entry);
     this.broadcastExperienceState(toPublicRunningExperience(entry));
 
+    const subscribed: string[] = [];
     try {
       for (const driverName of exp.drivers) {
         await this.options.drivers.subscribe(driverBinding, driverName, '*', key);
+        subscribed.push(driverName);
       }
       const running: RunningExperienceRecord = { ...entry, state: 'running' };
       this.running.set(key, running);
@@ -159,6 +164,7 @@ export class AppManager {
       });
       return toPublicRunningExperience(running);
     } catch (err) {
+      await this.releaseDrivers(driverBinding, subscribed, key);
       const failed: RunningExperienceRecord = { ...entry, state: 'crashed' };
       this.running.set(key, failed);
       this.broadcastExperienceState(toPublicRunningExperience(failed));
@@ -182,13 +188,10 @@ export class AppManager {
     this.broadcastExperienceState(toPublicRunningExperience(stopping));
 
     const record = this.catalogue.get(appSlug);
-    const drivers = record?.getExperience(experienceSlug).drivers ?? [];
-    for (const driverName of drivers) {
-      try {
-        await this.options.drivers.unsubscribe(current.driverBinding, driverName, '*', key);
-      } catch (err) {
-        this.log.warn('driver unsubscribe failed', { driver: driverName, err: String(err) });
-      }
+    // A crashed start already released its drivers.
+    if (current.state !== 'crashed') {
+      const drivers = record?.getExperience(experienceSlug).drivers ?? [];
+      await this.releaseDrivers(current.driverBinding, drivers, key);
     }
     this.running.delete(key);
     const idleEntry: RunningExperience = {
@@ -203,6 +206,20 @@ export class AppManager {
       this.broadcastList();
     }
     this.log.info('experience stopped', { app: appSlug, experience: experienceSlug });
+  }
+
+  private async releaseDrivers(
+    driverBinding: string,
+    drivers: readonly string[],
+    subscriber: string,
+  ): Promise<void> {
+    for (const driverName of drivers) {
+      try {
+        await this.options.drivers.unsubscribe(driverBinding, driverName, '*', subscriber);
+      } catch (err) {
+        this.log.warn('driver unsubscribe failed', { driver: driverName, err: String(err) });
+      }
+    }
   }
 
   async shutdown(): Promise<void> {
