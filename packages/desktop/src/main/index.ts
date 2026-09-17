@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { app, BrowserWindow, dialog } from 'electron';
 import { generateDashboardToken } from '@gosai/shared/auth';
 import { bootRuntime, showBootFailure, showBootWarnings, type BootMode } from './boot.js';
+import { CalibrationOrchestrator } from './calibration.js';
 import { registerIpc } from './ipc.js';
 import { applyKioskPaths, runKiosk } from './kiosk.js';
 import { resolveKioskConfig, type KioskConfig } from './kiosk-config.js';
@@ -65,6 +66,7 @@ function main(): void {
   delete process.env.GOSAI_DASHBOARD_TOKEN;
 
   const windows = new WindowRegistry({ rootDir: import.meta.dirname, dashboardToken });
+  const calibration = new CalibrationOrchestrator(windows);
   let serverRunner: ServerRunner | null = null;
   let booted = false;
 
@@ -81,7 +83,7 @@ function main(): void {
   });
 
   app.whenReady().then(async () => {
-    registerIpc({ windows });
+    registerIpc({ windows, calibration });
     // Opens on its first status message, so a dev launch without it stays quiet.
     const splash = new SplashWindow();
 
@@ -93,7 +95,13 @@ function main(): void {
 
     if (kioskConfig) {
       try {
-        serverRunner = await runKiosk({ config: kioskConfig, windows, dashboardToken, splash });
+        serverRunner = await runKiosk({
+          config: kioskConfig,
+          windows,
+          calibration,
+          dashboardToken,
+          splash,
+        });
         booted = true;
       } catch (err) {
         await showBootFailure(mode, splash, err);
@@ -144,7 +152,7 @@ function main(): void {
 
   app.on('window-all-closed', () => {
     // Boot and kiosks pass through moments without windows (splash, then
-    // calibration wizard, then app). Kiosks quit when the app window closes.
+    // calibration, then app). Kiosks quit when the app window closes.
     if (mode === 'desktop' && booted) app.quit();
   });
 

@@ -189,10 +189,12 @@ display (with a fullscreen ⇄ windowed toggle). Assignments persist to
 `~/.gosai/data/<slug>/device-settings.json` and are applied when the app starts
 (camera/microphone changes also hot-apply to a running instance).
 
-Calibration is also per app, but it is declared separately with a top-level
-`calibration` object. Apps that need it provide a browser ESM calibration entry;
-GOSAI's built-in calibration runner loads that entry and writes the resulting
-profile into the target app's own storage.
+Calibration is also per app, declared with a top-level `calibration` object: a
+`kind` such as the built-in `camera-projector-surface`, its `options`, and
+whether the app is `required` to be calibrated before it starts. GOSAI's
+built-in calibration app runs built-in kinds and saves one profile for the app;
+an app can run its own flow instead by naming one of its experiences in
+`calibration.experience`. See the SDK README.
 
 ## Kiosk mode
 

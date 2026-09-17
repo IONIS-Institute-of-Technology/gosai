@@ -15,14 +15,14 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { assertSlug, isValidSlug } from '@gosai/shared/slug';
-import type { CalibrationSchema } from './kiosk-calibration.js';
 import { parseDisplayIndex, parseExtras, type LaunchArgs } from './launch-args.js';
 
 export interface AppManifest {
   slug: string;
   name?: string;
   default?: string;
-  calibration?: CalibrationSchema;
+  /** Read from disk without validation; see calibration-plan.ts. The server parses it. */
+  calibration?: unknown;
   experiences: Array<{ slug: string; entry: string }>;
 }
 

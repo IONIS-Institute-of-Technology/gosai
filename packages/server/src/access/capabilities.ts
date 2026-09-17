@@ -3,7 +3,8 @@
  * capability it needs (`@gosai/shared/commands` and `@gosai/shared/events`).
  * The dashboard token holds every capability for every app. An app token
  * holds the default capabilities plus the ones its app's manifest requests,
- * and only for the apps the token names.
+ * for its own app, the driver binding it was launched with, and, for commands
+ * that allow it, the app it was launched for.
  */
 
 import {
@@ -50,7 +51,15 @@ export function grantFor(
 export function canAccessApp(grant: Grant, slug: string): boolean {
   if (grant.scope.kind === 'dashboard') return true;
   // Verified tokens never name `system`; this keeps the dashboard's binding out of reach anyway.
-  return !isReservedSlug(slug) && grant.scope.slugs.includes(slug);
+  return !isReservedSlug(slug) && grant.scope.appSlug === slug;
+}
+
+export function canUseBinding(grant: Grant, binding: string): boolean {
+  if (grant.scope.kind === 'dashboard') return true;
+  return (
+    !isReservedSlug(binding) &&
+    (grant.scope.appSlug === binding || grant.scope.driverBinding === binding)
+  );
 }
 
 function missing(grant: Grant, capability: Capability | null): string | null {
@@ -72,11 +81,26 @@ export function commandDenial<C extends CommandName>(
 ): string | null {
   const capabilityDenial = commandCapabilityDenial(grant, command);
   if (capabilityDenial) return capabilityDenial;
-  const outside = (COMMANDS[command].apps?.(payload) ?? []).filter(
-    (slug) => !canAccessApp(grant, slug),
-  );
-  if (outside.length === 0) return null;
-  return `${command} for ${outside.join(', ')} is outside the token's apps`;
+  const spec = COMMANDS[command];
+  const reasons: string[] = [];
+  const outside: string[] = [];
+  for (const slug of spec.apps?.(payload) ?? []) {
+    if (canAccessApp(grant, slug)) continue;
+    const launchedFor = grant.scope.kind === 'app' && grant.scope.target === slug;
+    if (spec.target && launchedFor && !isReservedSlug(slug)) {
+      const reason = missing(grant, spec.target);
+      if (reason) reasons.push(`${command} for ${slug} ${reason}`);
+      continue;
+    }
+    outside.push(slug);
+  }
+  for (const binding of spec.bindings?.(payload) ?? []) {
+    if (!canUseBinding(grant, binding)) outside.push(binding);
+  }
+  if (outside.length > 0) {
+    reasons.push(`${command} for ${outside.join(', ')} is outside the token's apps`);
+  }
+  return reasons[0] ?? null;
 }
 
 /** Why `grant` may not subscribe to `event`, or `null` when it may. */
@@ -90,7 +114,7 @@ export function subscriptionDenial(grant: Grant, event: string): string | null {
     case 'driver':
       return (
         missing(grant, DRIVER_EVENT_CAPABILITY) ??
-        (canAccessApp(grant, parsed.binding) ? null : "outside the token's apps")
+        (canUseBinding(grant, parsed.binding) ? null : "outside the token's apps")
       );
     case 'app':
       return (

@@ -7,7 +7,6 @@
   "author": "GOSAI",
   "default": "main",
   "requirements": { "display": true, "camera": true, "microphone": true, "speaker": true },
-  "calibration": { "required": false },
   "experiences": [
     {
       "slug": "main",

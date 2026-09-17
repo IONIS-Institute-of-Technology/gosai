@@ -48,9 +48,9 @@ A starter app lives in [`templates/basic`](../../templates/basic).
     "speaker": false, // shared between apps
   },
   "calibration": {
-    "required": true,
-    "entry": "dist/calibration.js",
-    "statusKey": "calibration_status",
+    "kind": "camera-projector-surface", // a built-in kind, or your own with "experience"
+    "required": true, // calibrate before the app starts
+    "options": { "surfaceSize": { "width": 1920, "height": 1080 } },
   },
   "settings": {
     "storageKey": "config", // default
@@ -173,7 +173,7 @@ Release other resources (WebGL renderers, media elements) in `stop`.
 | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `rt.app.appSlug`, `rt.app.experienceSlug`      | Identity.                                                                                                                                |
 | `rt.app.manifest`, `rt.app.experience`         | The parsed manifest and this experience's entry in it.                                                                                   |
-| `rt.app.params`                                | Launch parameters of the window, such as `role` and `target` for calibration.                                                            |
+| `rt.app.params`                                | Launch parameters of the window, such as `role` and `target` for calibration windows.                                                    |
 | `rt.drivers.on(driver, event, listener)`       | Subscribe to a driver event. Returns `{ unsubscribe() }`.                                                                                |
 | `rt.drivers.get<T>(driver, event)`             | Latest value of a driver event.                                                                                                          |
 | `rt.drivers.execute<T>(driver, action, data?)` | Run a driver action and get its result.                                                                                                  |
@@ -181,7 +181,7 @@ Release other resources (WebGL renderers, media elements) in `stop`.
 | `rt.storage.set(key, value)`, `remove`, `list` | Per-app key/value storage.                                                                                                               |
 | `rt.settings.get<T>()`                         | Settings from the manifest schema: stored values merged over the defaults.                                                               |
 | `rt.settings.set({ 'display.zoom': 2 })`       | Store settings by dotted key; `null` restores a default. Throws for undeclared keys and values that aren't strings, numbers or booleans. |
-| `rt.assets.url(path, appSlug?)`                | URL of a file in the app (or in `appSlug`), relative to its root, e.g. `assets/a.png`.                                                   |
+| `rt.assets.url(path)`                          | URL of a file in the app, relative to its root, e.g. `assets/a.png`.                                                                     |
 | `rt.events.emit(topic, data)`, `rt.events.on`  | Messages to the app's other windows, e.g. from a projector to a control window.                                                          |
 | `rt.log.debug/info/warn/error(message, data?)` | Logs shown in the dashboard's Logs panel.                                                                                                |
 | `rt.audio`                                     | An `AudioContext` created on first use and resumed when the experience starts.                                                           |
@@ -276,19 +276,67 @@ OpenCV:
 
 ## Calibration
 
-Declare a calibration entry in the manifest and default-export a definition:
+Declare how the app is calibrated in its manifest's `calibration` object:
+
+- `kind`: what the calibration produces. `camera-projector-surface` is built
+  in: a camera watches a surface a projector draws on.
+- `options`: settings of the kind. For `camera-projector-surface`:
+  `surfaceSize`, `cornerLabels`, `stepCopy` and `projectorMessages`.
+- `required`: the dashboard and kiosks calibrate the app before starting it.
+- `experience`: one of your experiences that runs the flow instead of the
+  built-in calibration app. Required for your own kinds.
+
+GOSAI runs the flow from the dashboard's **Calibrate** button or on a kiosk's
+first boot, and saves one profile for the app. Read it back:
 
 ```ts
-import { createCameraProjectorSurfaceCalibration } from '@gosai/sdk';
+import { loadCameraProjectorSurfaceCalibration } from '@gosai/sdk';
 
-export default createCameraProjectorSurfaceCalibration({
-  name: 'My Surface Calibration',
-  surfaceSize: { width: 1920, height: 1080 },
-});
+const calibration = await loadCameraProjectorSurfaceCalibration(rt); // null until calibrated
+if (calibration?.surfaceQuadDisplay) applyQuadWarp(canvas, calibration.surfaceQuadDisplay);
 ```
 
-The built-in calibration app loads it and writes the result into your app's
-storage. Read it back with `loadCameraProjectorSurfaceCalibration(rt)`.
+`loadCalibrationProfile(rt, { kind })` returns the whole profile of any kind:
+`{ version, kind, savedAt, data }`.
+The server broadcasts `calibration:changed` with `{ appSlug, calibrated }`
+after each save, so a running experience can reload it:
+`rt.app.server.on('calibration:changed', reload)`.
+
+### Custom flows
+
+With `calibration.experience`, GOSAI starts that experience and opens it twice:
+a control window and a fullscreen projector window. `readCalibrationLaunch(rt)`
+tells them apart. The flow saves and then ends, and GOSAI closes both windows:
+
+```ts
+import { finishCalibration, readCalibrationLaunch, saveCalibrationProfile } from '@gosai/sdk';
+
+const { role } = readCalibrationLaunch(rt); // 'control' or 'projector'
+// ... once the operator is done, in the control window:
+await saveCalibrationProfile(rt, { kind: 'acme-depth-grid', data: { grid } });
+await finishCalibration(rt, { ok: true }); // or { ok: false, error, cancelled? }
+```
+
+Use `rt.events` with `CalibrationWizardTopics.Step` to keep the two windows in
+step. Report failures with `finishCalibration` too, so the windows don't stay
+open.
+
+### From the earlier calibration API
+
+Manifests in the earlier shape still load, with a deprecation warning in the
+server log: `{ "required", "entry" }` calibrates as `camera-projector-surface`
+without the options the entry module set, a `calibration` without `entry` is
+ignored, and so is a custom `statusKey`.
+
+| Before                                                                             | Now                                                          |
+| ---------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `calibration.entry` module with `createCameraProjectorSurfaceCalibration(options)` | `calibration.kind` and `calibration.options` in the manifest |
+| `defineCalibration({ init, start, stop })`                                         | `calibration.experience`                                     |
+| `calibration.statusKey`, `CALIBRATION_STATUS_KEY`, `CalibrationStatus`             | the profile, and `calibrated` from `calibration:get`         |
+| `CAMERA_PROJECTOR_SURFACE_STORAGE_KEYS`                                            | `CALIBRATION_PROFILE_KEY`, one key                           |
+| `loadCameraProjectorSurfaceCalibration(rt)` with `null` fields                     | the same call, returning the data or `null`                  |
+| `CAMERA_PROJECTOR_SURFACE_CALIBRATION_KIND`                                        | `CalibrationKinds.CameraProjectorSurface`                    |
+| `'pool-corners'` step                                                              | `'surface-corners'`                                          |
 
 ## Driver data
 

@@ -33,9 +33,9 @@ export interface RuntimeOptions {
   /** The app's manifest. Identity, settings defaults and the experience entry come from it. */
   readonly manifest: AppManifest;
   /**
-   * App binding used for driver instances. Defaults to `appSlug`; calibration
-   * uses this to run under the target app's camera settings while keeping
-   * storage and events scoped to the calibration app.
+   * App binding used for driver instances. Defaults to `appSlug`; the
+   * calibration runner uses its target app's binding, so it gets that app's
+   * camera, while storage and events stay the runner's own.
    */
   readonly driverBinding?: string;
   /** HTTP origin of the server, e.g. `http://my-app.localhost:7777`. */

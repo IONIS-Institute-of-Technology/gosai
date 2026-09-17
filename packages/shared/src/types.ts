@@ -2,6 +2,7 @@
  * Core type definitions shared across all GOSAI packages.
  */
 
+import type { AppCalibrationSchema } from './calibration.js';
 import type { Capability } from './capabilities.js';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -162,8 +163,8 @@ export interface AppManifest {
    */
   readonly requirements?: AppRequirements;
   /**
-   * Declares whether this app owns a calibration flow. Calibration is explicit
-   * per app; it is not inferred from camera/display requirements.
+   * How the app is calibrated, when it needs calibration. Calibration is
+   * explicit per app; it is not inferred from camera/display requirements.
    */
   readonly calibration?: AppCalibrationSchema;
   /**
@@ -195,18 +196,6 @@ export interface AppRequirements {
   readonly camera?: boolean;
   readonly microphone?: boolean;
   readonly speaker?: boolean;
-}
-
-/** Calibration capability declared by an app manifest. */
-export interface AppCalibrationSchema {
-  readonly required: boolean;
-  /**
-   * Browser ESM module, relative to the app root, exporting a calibration
-   * definition. Required when `required` is true.
-   */
-  readonly entry?: string;
-  /** Storage key used to mark calibration completion. Defaults to `calibration_status`. */
-  readonly statusKey?: string;
 }
 
 /** Supported field input types for {@link AppSettingsField}. */

@@ -1,145 +1,65 @@
 /**
- * Shared types, constants, and helpers used by the calibration wizard.
- *
- * The wizard runs in two windows simultaneously:
- *   - Projector window (fullscreen on the configured display)
- *   - Control window  (non-fullscreen on the dashboard's display)
- *
- * Both windows load `dist/calibrate.js` and branch on the `role` URL param.
- *
- * Storage keys are written to the target app's own storage:
- * - `calibration_homography` : 3x3 row-major homography matrix (number[9])
- *                              mapping camera pixels -> display pixels.
- *                              Handles perspective (keystone) correction from
- *                              angled projectors/cameras.
- * - `calibration_homography_inverse` : 3x3 row-major inverse homography
- *                              (display -> camera).
- * - `calibration_homography_surface` : 3x3 row-major homography mapping camera pixels
- *                              -> SURFACE reference space (apps' canonical
- *                              coordinate space, default 1920x1080). This is
- *                              what tracking drivers (`ball`, `hand_pose`)
- *                              should consume.
- * - `calibration_homography_surface_inverse` : inverse of the above.
- * - `calibration_focus_quad` : { points: [{x,y}, ...] } in NORMALISED camera
- *                              coords (0..1, top-left, top-right, bottom-right,
- *                              bottom-left). Defines the physical surface in
- *                              the camera view.
- * - `calibration_surface_quad_display` : { points: [{x,y}, ...] } - the same 4 corners
- *                              after applying the camera->display homography.
- *                              Used by apps to drive CSS `matrix3d` keystone
- *                              correction so the rendered canvas lands exactly
- *                              on the physical surface.
- * - `calibration_surface_size` : { width, height } - the surface reference
- *                              resolution (default 1920x1080).
- * - `calibration_frame_size` : { width, height } - the camera frame size that
- *                              was active when the homography was computed.
- *                              Required by drivers to denormalise inputs.
- * - `calibration_markers_layout` : marker placement used when the homography
- *                                  was computed.
+ * Helpers shared by the control and projector windows. See the README for the
+ * flow and the profile it saves.
  */
 
-import { CAMERA_PROJECTOR_SURFACE_STORAGE_KEYS } from '@gosai/sdk';
+import type {
+  CalibrationQuad,
+  CameraProjectorSurfaceOptions,
+  CameraProjectorSurfaceStep,
+} from '@gosai/sdk';
 
-export interface Point2D {
-  x: number;
-  y: number;
-}
+/** The projector's marker pan and zoom, which the control window owns. */
+export const MARKER_TRANSFORM_TOPIC = 'wizard:marker-transform';
 
-export interface FocusQuad {
-  points: [Point2D, Point2D, Point2D, Point2D];
-}
+/** Payload of the `wizard:step` topic the control window broadcasts. */
+export type StepEvent =
+  | { readonly step: Exclude<CameraProjectorSurfaceStep, 'preview'> | 'done' | 'cancelled' }
+  | {
+      readonly step: 'preview';
+      readonly homography: readonly number[];
+      readonly surfaceQuadDisplay: CalibrationQuad | null;
+    };
+
+/** Markers the projector draws. */
+export const MARKER_COUNT = 9;
 
 export interface MarkerSlot {
-  id: number;
-  x: number;
-  y: number;
-  size: number;
-}
-
-export interface MarkerImage {
-  id: number;
-  size: number;
-  png_base64?: string;
-}
-
-export const STORAGE_KEYS = CAMERA_PROJECTOR_SURFACE_STORAGE_KEYS;
-
-/** Default surface (canvas / app reference) resolution. */
-export const DEFAULT_SURFACE_SIZE = { width: 1920, height: 1080 } as const;
-
-export interface SizeXY {
-  readonly width: number;
-  readonly height: number;
-}
-
-export interface SurfaceQuadDisplay {
-  /** Four corners (TL, TR, BR, BL) of the physical surface in display
-   * (projector) pixels, derived by applying the camera->display homography to
-   * the user-picked `focus_quad`. */
-  readonly points: [Point2D, Point2D, Point2D, Point2D];
-}
-
-/**
- * Wizard step machine. Steps run in order; `done` signals the dashboard to
- * close both windows. `abort` is used when the user cancels mid-flow.
- */
-export type WizardStep = 'markers' | 'pool-corners' | 'compute' | 'preview' | 'done' | 'abort';
-
-/**
- * Events broadcast between the control and projector windows via
- * `rt.events.emit/on`. Topics are namespaced under `wizard:`.
- */
-export const WIZARD_EVENTS = {
-  /** Emitted by the control window whenever the step changes. */
-  Step: 'wizard:step',
-  /** Emitted by the control window when corner points change. */
-  Corners: 'wizard:corners',
-  /** Emitted by the control window when the user aborts. */
-  Aborted: 'wizard:aborted',
-  /** Emitted when the entire flow completes. Dashboard closes windows. */
-  Finished: 'wizard:finished',
-  /** Emitted to sync marker pan/zoom between control and projector windows. */
-  MarkerTransform: 'wizard:marker-transform',
-} as const;
-
-export interface StepEvent {
-  step: WizardStep;
-  /** Optional human-readable message for status bars. */
-  message?: string;
-}
-
-export interface CornersEvent {
-  /** Pool / table corners in *camera image* normalised coords (0..1). */
-  points: Point2D[];
+  readonly id: number;
+  readonly x: number;
+  readonly y: number;
+  readonly size: number;
 }
 
 export interface MarkerTransform {
   /** Horizontal offset in pixels. */
-  offsetX: number;
+  readonly offsetX: number;
   /** Vertical offset in pixels. */
-  offsetY: number;
+  readonly offsetY: number;
   /** Scale factor (1 = no zoom). */
-  scale: number;
-}
-
-export interface MarkerTransformEvent {
-  transform: MarkerTransform;
+  readonly scale: number;
 }
 
 export const DEFAULT_MARKER_TRANSFORM: MarkerTransform = { offsetX: 0, offsetY: 0, scale: 1 };
 
-/** PAN_STEP is in pixels per arrow key press; ZOOM_STEP is the multiplicative factor per wheel tick. */
+/** Pixels per arrow key press. */
 export const PAN_STEP = 20;
+/** Scale change per wheel tick. */
 export const ZOOM_STEP = 0.05;
 export const MIN_SCALE = 0.2;
 export const MAX_SCALE = 3.0;
 
-/**
- * Recompute marker screen positions after applying a transform (pan + zoom).
- * The transform is applied relative to the viewport centre.
- */
+const DEFAULT_CORNER_LABELS = ['TL', 'TR', 'BR', 'BL'] as const;
+
+export function cornerLabels(
+  options: CameraProjectorSurfaceOptions,
+): readonly [string, string, string, string] {
+  return options.cornerLabels ?? DEFAULT_CORNER_LABELS;
+}
+
+/** Marker positions after a pan and zoom around the viewport centre. */
 export function applyTransformToLayout(
-  layout: MarkerSlot[],
+  layout: readonly MarkerSlot[],
   transform: MarkerTransform,
   viewportW: number,
   viewportH: number,
@@ -154,7 +74,12 @@ export function applyTransformToLayout(
   }));
 }
 
-export function makeMarkerLayout(width: number, height: number, count = 9): MarkerSlot[] {
+/** A 3-column grid of markers inside a 10% margin. */
+export function makeMarkerLayout(
+  width: number,
+  height: number,
+  count = MARKER_COUNT,
+): MarkerSlot[] {
   const cols = 3;
   const rows = Math.ceil(count / cols);
   const marginX = width * 0.1;
@@ -164,35 +89,21 @@ export function makeMarkerLayout(width: number, height: number, count = 9): Mark
   const size = Math.min(width, height) * 0.08;
 
   const out: MarkerSlot[] = [];
-  let id = 0;
-  for (let r = 0; r < rows && id < count; r++) {
-    for (let c = 0; c < cols && id < count; c++) {
-      const tx = cols <= 1 ? 0.5 : c / (cols - 1);
-      const ty = rows <= 1 ? 0.5 : r / (rows - 1);
-      out.push({
-        id,
-        x: marginX + tx * innerW,
-        y: marginY + ty * innerH,
-        size,
-      });
-      id += 1;
-    }
+  for (let id = 0; id < count; id++) {
+    const c = id % cols;
+    const r = Math.floor(id / cols);
+    const ty = rows <= 1 ? 0.5 : r / (rows - 1);
+    out.push({ id, x: marginX + (c / (cols - 1)) * innerW, y: marginY + ty * innerH, size });
   }
   return out;
 }
 
-export function setBodyFullscreen(): void {
-  document.body.style.margin = '0';
-  document.body.style.padding = '0';
-  document.body.style.overflow = 'hidden';
-  document.body.style.background = '#000';
-  document.body.style.color = '#fff';
-  document.body.style.fontFamily =
-    'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
-}
-
-/** Quick role detection from URL params. Defaults to `projector`. */
-export function detectRole(): 'projector' | 'control' {
-  const params = new URLSearchParams(window.location.search);
-  return params.get('role') === 'control' ? 'control' : 'projector';
+export function setBodyFullscreen(background: string): void {
+  const style = document.body.style;
+  style.margin = '0';
+  style.padding = '0';
+  style.overflow = 'hidden';
+  style.background = background;
+  style.color = '#fff';
+  style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
 }

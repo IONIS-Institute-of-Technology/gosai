@@ -138,6 +138,7 @@
           "app-config:write",
           "storage:read",
           "storage:write",
+          "calibration:write",
           "app-events:use",
           "logs:read",
           "logs:write",
@@ -179,21 +180,34 @@
       "additionalProperties": false
     },
     "calibration": {
+      "description": "How the app is calibrated, when it needs calibration.",
       "type": "object",
       "properties": {
+        "kind": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$",
+          "description": "What the calibration produces: camera-projector-surface, or any kind an `experience` handles."
+        },
         "required": {
+          "default": false,
+          "description": "The app must be calibrated before it starts.",
           "type": "boolean"
         },
-        "entry": {
-          "type": "string",
-          "minLength": 1
+        "options": {
+          "description": "Settings of the calibration flow, checked for built-in kinds.",
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
         },
-        "statusKey": {
+        "experience": {
+          "description": "One of the app's experiences that runs a custom calibration flow.",
           "type": "string",
-          "pattern": "^[A-Za-z0-9._-]{1,128}$"
+          "pattern": "^[a-z][a-z0-9-]*$"
         }
       },
-      "required": ["required"],
+      "required": ["kind"],
       "additionalProperties": false
     },
     "settings": {

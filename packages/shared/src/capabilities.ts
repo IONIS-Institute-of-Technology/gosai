@@ -18,6 +18,7 @@ export const Capabilities = {
   AppConfigWrite: 'app-config:write',
   StorageRead: 'storage:read',
   StorageWrite: 'storage:write',
+  CalibrationWrite: 'calibration:write',
   AppEvents: 'app-events:use',
   LogsRead: 'logs:read',
   LogsWrite: 'logs:write',
@@ -64,6 +65,10 @@ export const CAPABILITY_INFO: Readonly<Record<Capability, CapabilityInfo>> = {
   'app-config:write': { grant: 'request', description: "Change the app's device assignments" },
   'storage:read': { grant: 'default', description: "Read the app's storage and settings" },
   'storage:write': { grant: 'default', description: "Write the app's storage and settings" },
+  'calibration:write': {
+    grant: 'request',
+    description: 'Read and save the calibration profile of the app a calibration window runs for',
+  },
   'app-events:use': {
     grant: 'default',
     description: "Send and receive the app's events between windows",

@@ -1,7 +1,7 @@
 /**
- * What each command needs: the capability it requires, the apps its payload
- * touches, and how long a client should wait for the reply. The request and
- * response shapes live in `protocol-schemas.ts`.
+ * What each command needs: the capability it requires, the apps and driver
+ * bindings its payload touches, and how long a client should wait for the
+ * reply. The request and response shapes live in `protocol-schemas.ts`.
  *
  * Zod-free, so the client can read timeouts without bundling the schemas.
  */
@@ -20,10 +20,20 @@ export interface CommandSpec<C extends CommandName> {
    */
   readonly capability: Capability | null;
   /**
-   * App slugs whose resources the command touches. An app token must name
-   * every one of them.
+   * App slugs whose resources the command touches. An app token must belong
+   * to every one of them, or reach it through {@link CommandSpec.target}.
    */
   readonly apps?: (payload: ParsedCommandRequest<C>) => readonly string[];
+  /**
+   * Driver bindings the command uses. An app token may use its own app's
+   * binding and the one its window was launched with.
+   */
+  readonly bindings?: (payload: ParsedCommandRequest<C>) => readonly string[];
+  /**
+   * Lets an app token reach the app its window was launched for (the token's
+   * `target`), when the token also holds this capability.
+   */
+  readonly target?: Capability;
   /** Client-side reply timeout. Defaults to {@link DEFAULT_REQUEST_TIMEOUT_MS}. */
   readonly timeoutMs?: number;
 }
@@ -36,7 +46,7 @@ const MINUTE = 60_000;
 const DRIVER_START_TIMEOUT_MS = 7 * MINUTE;
 
 const appSlug = (payload: { appSlug: string }): readonly string[] => [payload.appSlug];
-const binding = (payload: { binding?: string | undefined }): readonly string[] => [
+const driverBinding = (payload: { binding?: string | undefined }): readonly string[] => [
   payload.binding ?? SYSTEM_BINDING,
 ];
 
@@ -64,7 +74,8 @@ export const COMMANDS: { readonly [C in CommandName]: CommandSpec<C> } = {
   'experiences:list': { capability: Capabilities.ExperiencesRead },
   'experience:start': {
     capability: Capabilities.ExperiencesControl,
-    apps: (p) => (p.driverBinding === undefined ? [p.appSlug] : [p.appSlug, p.driverBinding]),
+    apps: appSlug,
+    bindings: (p) => (p.driverBinding === undefined ? [] : [p.driverBinding]),
     // Starts the required experiences and every declared driver in turn.
     timeoutMs: 15 * MINUTE,
   },
@@ -77,17 +88,25 @@ export const COMMANDS: { readonly [C in CommandName]: CommandSpec<C> } = {
   'drivers:list': { capability: Capabilities.DriversRead },
   'drivers:schema': { capability: Capabilities.DriversRead },
   'devices:list': { capability: Capabilities.DevicesRead, timeoutMs: MINUTE },
-  'driver:get-data': { capability: Capabilities.DriversUse, apps: binding, timeoutMs: MINUTE },
+  'driver:get-data': {
+    capability: Capabilities.DriversUse,
+    bindings: driverBinding,
+    timeoutMs: MINUTE,
+  },
   // The server lets an action run for two minutes.
-  'driver:execute': { capability: Capabilities.DriversUse, apps: binding, timeoutMs: 2.5 * MINUTE },
+  'driver:execute': {
+    capability: Capabilities.DriversUse,
+    bindings: driverBinding,
+    timeoutMs: 2.5 * MINUTE,
+  },
   'driver:subscribe': {
     capability: Capabilities.DriversUse,
-    apps: binding,
+    bindings: driverBinding,
     timeoutMs: DRIVER_START_TIMEOUT_MS,
   },
   'driver:unsubscribe': {
     capability: Capabilities.DriversUse,
-    apps: binding,
+    bindings: driverBinding,
     timeoutMs: 2 * MINUTE,
   },
 
@@ -100,6 +119,17 @@ export const COMMANDS: { readonly [C in CommandName]: CommandSpec<C> } = {
   'storage:set': { capability: Capabilities.StorageWrite, apps: appSlug },
   'storage:remove': { capability: Capabilities.StorageWrite, apps: appSlug },
   'storage:list': { capability: Capabilities.StorageRead, apps: appSlug },
+
+  'calibration:get': {
+    capability: Capabilities.StorageRead,
+    apps: appSlug,
+    target: Capabilities.CalibrationWrite,
+  },
+  'calibration:save': {
+    capability: Capabilities.StorageWrite,
+    apps: appSlug,
+    target: Capabilities.CalibrationWrite,
+  },
 };
 
 export function isCommandName(value: string): value is CommandName {

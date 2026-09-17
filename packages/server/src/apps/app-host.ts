@@ -38,15 +38,12 @@ export interface AppPolicyOptions {
  * SDK bundle.
  */
 export function appContentSecurityPolicy(options: AppPolicyOptions): string {
-  // Other app origins on this server, so an app can import a companion app's
-  // module, as the calibration runner does with the target's calibration entry.
-  const appOrigins = `http://*.localhost:${options.port}`;
   // Re-checked here so a manifest that skipped validation can't inject directives.
   const connect = (options.connect ?? []).filter(isConnectSource);
   return [
     "default-src 'self'",
     // 'wasm-unsafe-eval' only allows compiling WebAssembly, which in-browser ML libraries need.
-    `script-src 'self' ${appOrigins} 'sha256-${IMPORT_MAP_HASH}' 'wasm-unsafe-eval'`,
+    `script-src 'self' 'sha256-${IMPORT_MAP_HASH}' 'wasm-unsafe-eval'`,
     "style-src 'self'",
     "img-src 'self' data: blob:",
     "media-src 'self' data: blob:",

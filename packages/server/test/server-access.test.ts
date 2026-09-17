@@ -41,6 +41,10 @@ beforeAll(async () => {
   dataDir = paths.data;
   const builtin = join(tmp, 'builtin');
   writeApp(join(builtin, 'pool'), 'pool');
+  writeApp(join(builtin, 'table'), 'table', {
+    calibration: { kind: 'camera-projector-surface', required: true },
+  });
+  writeApp(join(builtin, 'calibration'), 'calibration', { capabilities: ['calibration:write'] });
   writeApp(join(builtin, 'relay'), 'relay', {
     network: { connect: ['ws://relay.local:8080', 'http://192.168.1.20'] },
   });
@@ -285,6 +289,90 @@ describe('storage commands', () => {
       expect(existsSync(join(dataDir, 'other', 'storage', 'where.json'))).toBe(true);
     } finally {
       dashboard.close();
+    }
+  });
+});
+
+describe('calibration commands', () => {
+  const identity = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  const profile = {
+    kind: 'camera-projector-surface',
+    data: {
+      homography: identity,
+      homographyInverse: identity,
+      homographySurface: null,
+      homographySurfaceInverse: null,
+      focusQuad: null,
+      surfaceQuadDisplay: null,
+      surfaceSize: { width: 1920, height: 1080 },
+      frameSize: null,
+    },
+  };
+
+  test('the calibration runner saves the profile of the app it was launched for, and only that', async () => {
+    const runner = await connect(
+      mintAppToken(SECRET, 'calibration', { driverBinding: 'table', target: 'table' }),
+    );
+    const misdirected = await connect(
+      mintAppToken(SECRET, 'calibration', { driverBinding: 'pool', target: 'pool' }),
+    );
+    const pool = await connect(mintAppToken(SECRET, 'pool', { target: 'table' }));
+    const table = await connect(mintAppToken(SECRET, 'table'));
+    try {
+      // The app itself hears about the save; another app can't even subscribe to it.
+      for (const client of [table, pool]) {
+        expect((await client.request('subscribe', { events: ['calibration:changed'] })).ok).toBe(
+          true,
+        );
+      }
+      const leaked: unknown[] = [];
+      pool.onEvent('calibration:changed', (payload) => leaked.push(payload));
+      const changed = table.nextEvent('calibration:changed');
+      expect((await runner.request('calibration:get', { appSlug: 'table' })).data).toEqual({
+        profile: null,
+        calibrated: false,
+      });
+      const saved = await runner.request('calibration:save', { appSlug: 'table', profile });
+      expect(saved.ok).toBe(true);
+      expect(await changed).toEqual({ appSlug: 'table', calibrated: true });
+      expect((await runner.request('calibration:get', { appSlug: 'table' })).data).toMatchObject({
+        calibrated: true,
+        profile: { version: 1, kind: 'camera-projector-surface' },
+      });
+
+      // Not the target, no capability, or raw storage: refused.
+      const refused = [
+        await misdirected.request('calibration:save', { appSlug: 'table', profile }),
+        await pool.request('calibration:save', { appSlug: 'table', profile }),
+        await pool.request('calibration:get', { appSlug: 'table' }),
+        await runner.request('storage:set', {
+          appSlug: 'table',
+          key: 'calibration_profile',
+          value: profile,
+        }),
+        await runner.request('storage:get', { appSlug: 'table', key: 'calibration_profile' }),
+      ];
+      expect(refused.map((res) => res.error?.code)).toEqual(Array(5).fill('FORBIDDEN'));
+      expect(refused[1]?.error?.message).toContain('calibration:write');
+
+      // The server checks the data and the manifest's kind.
+      const invalid = await runner.request('calibration:save', {
+        appSlug: 'table',
+        profile: { ...profile, data: { homography: [1] } },
+      });
+      expect(invalid.error?.code).toBe('HANDLER_ERROR');
+      const wrongKind = await runner.request('calibration:save', {
+        appSlug: 'table',
+        profile: { kind: 'acme-depth', data: {} },
+      });
+      expect(wrongKind.error?.message).toContain('calibrates as camera-projector-surface');
+      expect((await pool.request('system:ping')).ok).toBe(true);
+      expect(leaked).toEqual([]);
+    } finally {
+      table.close();
+      runner.close();
+      misdirected.close();
+      pool.close();
     }
   });
 });

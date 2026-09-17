@@ -33,7 +33,7 @@ class FakeSocket {
 }
 
 const DASHBOARD: TokenScope = { kind: 'dashboard' };
-const POOL: TokenScope = { kind: 'app', appSlug: 'pool', slugs: ['pool'] };
+const POOL: TokenScope = { kind: 'app', appSlug: 'pool', driverBinding: null, target: null };
 
 function setup(handlers: Partial<CommandHandlers> = {}): {
   bus: EventBus;

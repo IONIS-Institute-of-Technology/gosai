@@ -10,6 +10,8 @@
 import { z } from 'zod';
 import { isCapability } from './capabilities.js';
 import {
+  calibrationProfileInputSchema,
+  calibrationProfileSchema,
   appDeviceSettingsPatchSchema,
   appDeviceSettingsSchema,
   deviceCatalogSchema,
@@ -203,6 +205,17 @@ export const commandSchemas = {
     request: z.strictObject({ appSlug: slugSchema }),
     response: z.object({ keys: z.array(z.string()) }),
   },
+
+  /** The app's calibration profile, and whether it matches the manifest's `calibration`. */
+  'calibration:get': {
+    request: z.strictObject({ appSlug: slugSchema }),
+    response: z.object({ profile: calibrationProfileSchema.nullable(), calibrated: z.boolean() }),
+  },
+  /** Replaces the app's calibration profile. The kind must be the manifest's. */
+  'calibration:save': {
+    request: z.strictObject({ appSlug: slugSchema, profile: calibrationProfileInputSchema }),
+    response: z.object({ profile: calibrationProfileSchema }),
+  },
 } as const;
 
 export const welcomePayloadSchema = z.object({
@@ -236,6 +249,7 @@ export const eventSchemas = {
   }),
   'experience:state-changed': runningExperienceSchema,
   'experiences:list-changed': z.object({ experiences: z.array(runningExperienceSchema) }),
+  'calibration:changed': z.object({ appSlug: z.string(), calibrated: z.boolean() }),
   'system:stats': systemStatsSchema,
 } as const;
 

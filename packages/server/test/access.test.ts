@@ -26,12 +26,19 @@ describe('tokens', () => {
     expect(verifyToken(SECRET, SECRET)).toEqual(DASHBOARD);
   });
 
-  test('an app token carries its app and granted apps', () => {
-    const token = mintAppToken(SECRET, 'calibration', ['pool', 'calibration']);
+  test('an app token carries its app, driver binding and target', () => {
+    expect(verifyToken(SECRET, mintAppToken(SECRET, 'pool'))).toEqual({
+      kind: 'app',
+      appSlug: 'pool',
+      driverBinding: null,
+      target: null,
+    });
+    const token = mintAppToken(SECRET, 'calibration', { driverBinding: 'pool', target: 'pool' });
     expect(verifyToken(SECRET, token)).toEqual({
       kind: 'app',
       appSlug: 'calibration',
-      slugs: ['calibration', 'pool'],
+      driverBinding: 'pool',
+      target: 'pool',
     });
   });
 
@@ -42,16 +49,19 @@ describe('tokens', () => {
     expect(verifyToken(SECRET, 'guess')).toBeNull();
     expect(verifyToken('other-secret', token)).toBeNull();
     expect(verifyToken(SECRET, token.replace('app.pool.', 'app.other.'))).toBeNull();
+    // Claims can't be added to a token after it was signed.
+    expect(verifyToken(SECRET, token.replace('app.pool..', 'app.pool.other.'))).toBeNull();
+    expect(verifyToken(SECRET, token.replace('app.pool...', 'app.pool..other.'))).toBeNull();
     expect(verifyToken(SECRET, `${token}x`)).toBeNull();
     expect(verifyToken('', '')).toBeNull();
   });
 
   test('refuses to mint tokens for invalid slugs', () => {
     expect(() => mintAppToken(SECRET, '../x')).toThrow();
-    expect(() => mintAppToken(SECRET, 'pool', ['a+b'])).toThrow();
+    expect(() => mintAppToken(SECRET, 'pool', { target: 'a.b' })).toThrow();
     // `system` is the dashboard's driver binding.
     expect(() => mintAppToken(SECRET, 'system')).toThrow('reserved');
-    expect(() => mintAppToken(SECRET, 'pool', ['system'])).toThrow('reserved');
+    expect(() => mintAppToken(SECRET, 'pool', { driverBinding: 'system' })).toThrow('reserved');
   });
 });
 
@@ -79,10 +89,16 @@ describe('capabilities', () => {
     pool: [],
     logger: ['logs:read', 'app-config:write'],
     greedy: ['apps:manage', 'config:write', 'devices:read'],
+    calibration: ['calibration:write'],
   };
   const grant = (scope: TokenScope): Grant => grantFor(scope, (slug) => manifests[slug]);
-  const app = (slug: string, extra: string[] = []): Grant =>
-    grant({ kind: 'app', appSlug: slug, slugs: [slug, ...extra] });
+  const app = (slug: string, claims: { driverBinding?: string; target?: string } = {}): Grant =>
+    grant({
+      kind: 'app',
+      appSlug: slug,
+      driverBinding: claims.driverBinding ?? null,
+      target: claims.target ?? null,
+    });
   const DASH = grant(DASHBOARD);
   const POOL_GRANT = app('pool');
 
@@ -163,27 +179,80 @@ describe('capabilities', () => {
     ).not.toBeNull();
   });
 
-  test('a token that names extra apps reaches them', () => {
-    const calibration = app('calibration', ['pool']);
+  test('a window launched with a driver binding uses those drivers, and nothing else of that app', () => {
+    const runner = app('pool-tools', { driverBinding: 'pool' });
     expect(
-      commandDenial(calibration, 'storage:set', { appSlug: 'pool', key: 'k', value: 1 }),
+      commandDenial(runner, 'driver:execute', { driver: 'd', action: 'a', binding: 'pool' }),
     ).toBeNull();
+    expect(subscriptionDenial(runner, 'driver:event:pool')).toBeNull();
     expect(
-      commandDenial(calibration, 'experience:start', {
-        appSlug: 'calibration',
-        experienceSlug: 'calibrate',
+      commandDenial(runner, 'experience:start', {
+        appSlug: 'pool-tools',
+        experienceSlug: 'x',
         driverBinding: 'pool',
       }),
     ).toBeNull();
+    expect(
+      commandDenial(runner, 'storage:set', { appSlug: 'pool', key: 'k', value: 1 }),
+    ).not.toBeNull();
+    expect(subscriptionDenial(runner, 'app:pool:wizard:step')).not.toBeNull();
+    expect(
+      commandDenial(runner, 'experience:stop', { appSlug: 'pool', experienceSlug: 'main' }),
+    ).not.toBeNull();
+  });
+
+  test('calibration:write reaches only the calibration profile of the launch target', () => {
+    const profile = { kind: 'camera-projector-surface', data: {} };
+    const runner = app('calibration', { driverBinding: 'pool', target: 'pool' });
+    expect(commandDenial(runner, 'calibration:save', { appSlug: 'pool', profile })).toBeNull();
+    expect(commandDenial(runner, 'calibration:get', { appSlug: 'pool' })).toBeNull();
+    // Another app than the target.
+    expect(
+      commandDenial(runner, 'calibration:save', { appSlug: 'second-self', profile }),
+    ).toContain('outside');
+    // Raw storage of the target stays out of reach.
+    expect(
+      commandDenial(runner, 'storage:set', {
+        appSlug: 'pool',
+        key: 'calibration_profile',
+        value: profile,
+      }),
+    ).not.toBeNull();
+    // Without the capability, even the target is refused.
+    const plain = app('pool-tools', { target: 'pool' });
+    expect(commandDenial(plain, 'calibration:save', { appSlug: 'pool', profile })).toContain(
+      'calibration:write',
+    );
+    expect(commandDenial(plain, 'calibration:get', { appSlug: 'pool' })).toContain(
+      'calibration:write',
+    );
+    // Any app reads and saves its own profile, as a custom calibration experience does.
+    expect(commandDenial(POOL_GRANT, 'calibration:save', { appSlug: 'pool', profile })).toBeNull();
+    expect(commandDenial(POOL_GRANT, 'calibration:get', { appSlug: 'pool' })).toBeNull();
+    expect(
+      commandDenial(POOL_GRANT, 'calibration:save', { appSlug: 'other', profile }),
+    ).not.toBeNull();
   });
 
   test("apps never reach the dashboard's system binding", () => {
-    const forged = grant({ kind: 'app', appSlug: 'pool', slugs: ['pool', 'system'] });
+    const forged = grant({
+      kind: 'app',
+      appSlug: 'pool',
+      driverBinding: 'system',
+      target: 'system',
+    });
     expect(
       commandDenial(forged, 'driver:execute', { driver: 'd', action: 'a', binding: 'system' }),
     ).not.toBeNull();
     expect(commandDenial(forged, 'driver:get-data', { driver: 'd', event: 'e' })).not.toBeNull();
     expect(subscriptionDenial(forged, 'driver:event:system')).not.toBeNull();
+    const calibration = grant({
+      kind: 'app',
+      appSlug: 'calibration',
+      driverBinding: null,
+      target: 'system',
+    });
+    expect(commandDenial(calibration, 'calibration:get', { appSlug: 'system' })).not.toBeNull();
   });
 
   test('apps log only under their own source', () => {

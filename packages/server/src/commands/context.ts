@@ -1,3 +1,4 @@
+import type { CalibrationStore } from '../apps/calibration.js';
 import type { AppManager } from '../apps/manager.js';
 import type { AppSettingsValuesStore } from '../apps/settings.js';
 import type { AppStorage } from '../apps/storage.js';
@@ -15,6 +16,7 @@ export interface ServerServices {
   readonly deviceSettings: AppSettingsStore;
   readonly settings: AppSettingsValuesStore;
   readonly storage: AppStorage;
+  readonly calibration: CalibrationStore;
   readonly logger: Logger;
   readonly bus: EventBus;
 }

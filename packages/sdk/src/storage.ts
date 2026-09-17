@@ -1,8 +1,9 @@
 import type { ServerConnection, StorageClient } from './types.js';
 
 /**
- * Storage for `appSlug`, such as a calibration target's. The third argument,
- * a server base URL from when storage went over HTTP, is ignored.
+ * Storage for `appSlug`. An app token only reaches its own app's storage. The
+ * third argument, a server base URL from when storage went over HTTP, is
+ * ignored.
  */
 export function createStorageClient(
   appSlug: string,
