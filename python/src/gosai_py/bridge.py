@@ -34,7 +34,6 @@ Threading
 from __future__ import annotations
 
 import os
-import pkgutil
 import signal
 import sys
 import threading
@@ -43,13 +42,14 @@ import traceback
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from importlib import import_module
 from types import FrameType, ModuleType
 from typing import Any
 
 import msgspec
 
 from gosai_py.driver import BaseDriver, DriverContext
+from gosai_py.drivers import builtin_driver_classes, driver_classes_in
+from gosai_py.schemas import describe_driver
 from gosai_py.version import __version__
 from gosai_py.workers import SerialQueue
 
@@ -364,37 +364,22 @@ class Bridge:
                 self._driver_classes[cls.name] = cls
             self._discovered.set()
 
-    # ------------------------------------------------------------------
-    # Driver registration
-    # ------------------------------------------------------------------
-
     def register_module(self, module: ModuleType) -> None:
         """Register every BaseDriver subclass found in `module`."""
-        for attr_name in dir(module):
-            attr = getattr(module, attr_name)
-            if (
-                isinstance(attr, type)
-                and issubclass(attr, BaseDriver)
-                and attr is not BaseDriver
-                and attr.name
-            ):
-                with self._lock:
-                    self._driver_classes[attr.name] = attr
+        with self._lock:
+            for cls in driver_classes_in(module):
+                self._driver_classes[cls.name] = cls
 
     def discover_builtin(self) -> None:
-        """Walk `gosai_py.drivers` and register every driver module found."""
-        try:
-            pkg = import_module("gosai_py.drivers")
-        except ImportError as exc:
-            self._emit_log("error", "bridge", f"failed to import gosai_py.drivers: {exc!r}")
-            return
-        for module_info in pkgutil.iter_modules(pkg.__path__):
-            try:
-                module = import_module(f"gosai_py.drivers.{module_info.name}")
-            except Exception as exc:
-                self._emit_log("warn", "bridge", f"failed to load drivers.{module_info.name}: {exc!r}")
-                continue
-            self.register_module(module)
+        """Import `gosai_py.drivers` and register every driver found."""
+
+        def on_error(module: str, exc: Exception) -> None:
+            self._emit_log("warn", "bridge", f"failed to load drivers.{module}: {exc!r}")
+
+        classes = builtin_driver_classes(on_error)
+        with self._lock:
+            for cls in classes:
+                self._driver_classes[cls.name] = cls
 
     def start_discovery(self) -> None:
         """Import the built-in drivers on a background thread."""
@@ -407,10 +392,6 @@ class Bridge:
 
         self._discovery_thread = threading.Thread(target=discover, name="bridge:discovery", daemon=True)
         self._discovery_thread.start()
-
-    # ------------------------------------------------------------------
-    # Output
-    # ------------------------------------------------------------------
 
     def start(self) -> None:
         """Start the writer thread. Messages posted earlier are written then."""
@@ -476,10 +457,6 @@ class Bridge:
 
     def _respond_error(self, req_id: str, error: str) -> None:
         self._post({"type": "result", "id": req_id, "ok": False, "error": error})
-
-    # ------------------------------------------------------------------
-    # Driver lifecycle
-    # ------------------------------------------------------------------
 
     def _start_driver(self, instance: str, name: str, config: JsonDict | None) -> JsonDict:
         self._discovered.wait()
@@ -598,19 +575,15 @@ class Bridge:
         self._discovered.wait()
         with self._lock:
             classes = list(self._driver_classes.values())
-        return {
-            "drivers": [
-                {
-                    "name": cls.name,
-                    "description": cls.description,
-                    "events": list(cls.events),
-                    "actions": list(cls.actions),
-                    "dependencies": list(cls.dependencies),
-                    "shared": bool(cls.shared),
-                }
-                for cls in classes
-            ]
-        }
+        return {"drivers": [self._describe(cls) for cls in classes]}
+
+    def _describe(self, cls: type[BaseDriver]) -> JsonDict:
+        try:
+            return describe_driver(cls)
+        except Exception as exc:
+            # One driver with an unusable type annotation must not hide the others.
+            self._emit_log("error", "bridge", f"cannot describe {cls.name}: {exc!r}")
+            return describe_driver(cls, with_schema=False)
 
     def _list_instances(self) -> JsonDict:
         with self._lock:
@@ -630,37 +603,30 @@ class Bridge:
                 ]
             }
 
+    # `gosai_py.devices` imports OpenCV, which takes a while, so it loads on
+    # first use instead of delaying `ready`.
     def _list_cameras(self) -> JsonDict:
-        from gosai_py.drivers.camera import CameraDriver
+        from gosai_py import devices
 
-        return {"devices": CameraDriver.probe_devices()}
+        return {"devices": msgspec.to_builtins(devices.list_cameras())}
 
     def _list_audio_devices(self) -> JsonDict:
-        import sounddevice as sd  # type: ignore[import-not-found]
+        from gosai_py import devices
 
-        devices = sd.query_devices()
-        defaults = sd.default.device
-        default_in = defaults[0] if isinstance(defaults, (list, tuple)) else defaults
-        default_out = defaults[1] if isinstance(defaults, (list, tuple)) else defaults
-        microphones = [
-            {
-                "index": idx,
-                "label": d.get("name") or f"Input {idx}",
-                "is_default": idx == default_in,
-            }
-            for idx, d in enumerate(devices)
-            if d.get("max_input_channels", 0) > 0
-        ]
-        speakers = [
-            {
-                "index": idx,
-                "label": d.get("name") or f"Output {idx}",
-                "is_default": idx == default_out,
-            }
-            for idx, d in enumerate(devices)
-            if d.get("max_output_channels", 0) > 0
-        ]
-        return {"ok": True, "microphones": microphones, "speakers": speakers}
+        listing = devices.audio_devices()
+        return {
+            "ok": True,
+            "microphones": [
+                {"index": d.index, "label": d.name, "is_default": d.index == listing.default_input}
+                for d in listing.devices
+                if d.max_input_channels > 0
+            ],
+            "speakers": [
+                {"index": d.index, "label": d.name, "is_default": d.index == listing.default_output}
+                for d in listing.devices
+                if d.max_output_channels > 0
+            ],
+        }
 
     def _get_event_data(self, instance: str, driver: str, event: str) -> Any:
         with self._lock:
@@ -670,16 +636,12 @@ class Bridge:
         return record.driver.get_event_data(event)
 
     def _execute(self, instance: str, driver: str, action: str, data: Any) -> Any:
-        if driver == "camera" and action == "list_formats":
-            from gosai_py.drivers.camera import CameraDriver
-
-            device = 0
-            if isinstance(data, dict) and "device" in data:
-                device = int(data["device"])
-            result = CameraDriver.probe_formats(device)
-            if not result.get("ok"):
-                raise RuntimeError(result.get("error") or f"cannot list formats for device {device}")
-            return result
+        self._discovered.wait()
+        with self._lock:
+            cls = self._driver_classes.get(driver)
+        spec = cls.action_specs().get(action) if cls is not None else None
+        if cls is not None and spec is not None and not spec.requires_instance:
+            return spec.invoke(cls, data)
 
         with self._lock:
             record = self._instances.get((instance, driver))
@@ -689,10 +651,6 @@ class Bridge:
         if action not in record.driver.actions:
             raise ValueError(f"driver {driver!r} does not support action {action!r}")
         return record.driver.execute(action, data)
-
-    # ------------------------------------------------------------------
-    # Subscriptions
-    # ------------------------------------------------------------------
 
     def _has_external(self, instance: str, driver: str, event: str) -> bool:
         subs = self._external_subscriptions
@@ -726,10 +684,6 @@ class Bridge:
             return True
         with self._lock:
             return bool(self._internal_subscribers.get((instance, driver, event)))
-
-    # ------------------------------------------------------------------
-    # Request dispatch
-    # ------------------------------------------------------------------
 
     def handle(self, request: JsonDict) -> None:
         req_type = request.get("type")
@@ -808,10 +762,6 @@ class Bridge:
             queue.submit(task)
         except RuntimeError as exc:
             self._respond_error(req_id, describe_error(exc))
-
-    # ------------------------------------------------------------------
-    # Main loop
-    # ------------------------------------------------------------------
 
     def close(self, timeout: float = CLOSE_BUDGET_S) -> None:
         """Stop every driver and flush output within `timeout` seconds.

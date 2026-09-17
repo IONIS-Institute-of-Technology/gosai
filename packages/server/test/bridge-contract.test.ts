@@ -7,6 +7,7 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import type { DriverSchema } from '@gosai/shared';
 import { PythonBridge, type BridgeHandlers } from '../src/drivers/bridge.js';
 import { DriverManager } from '../src/drivers/manager.js';
 import { EventBus } from '../src/ipc/bus.js';
@@ -54,11 +55,20 @@ describe.skipIf(!HAS_BRIDGE)('python bridge contract', () => {
       try {
         expect(await bridge.ping(5_000)).toBeGreaterThanOrEqual(0);
         const catalogue = await bridge.request<{
-          drivers: Array<{ name: string; events: string[]; actions: string[] }>;
+          drivers: Array<{
+            name: string;
+            events: string[];
+            actions: string[];
+            schema: DriverSchema;
+          }>;
         }>({ type: 'list-drivers' }, { timeoutMs: TIMEOUT_MS });
         const heartbeat = catalogue.drivers.find((d) => d.name === 'heartbeat');
         expect(heartbeat?.events).toContain('tick');
         expect(heartbeat?.actions).toContain('echo');
+        expect(heartbeat?.schema.events['tick']?.payload).toEqual({ $ref: '#/$defs/TickPayload' });
+        expect(heartbeat?.schema.$defs['TickPayload']).toMatchObject({
+          required: ['count', 'now'],
+        });
 
         const started = await bridge.request({
           type: 'start-driver',

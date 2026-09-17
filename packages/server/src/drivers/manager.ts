@@ -35,6 +35,7 @@ import type {
   DriverInfo,
   DriverInstanceInfo,
   DriverRuntimeInfo,
+  DriverSchema,
   DriverState,
 } from '@gosai/shared';
 import { ServerEvents } from '@gosai/shared/events';
@@ -56,6 +57,7 @@ export interface DriverManifestEntry {
   readonly dependencies: readonly string[];
   readonly description?: string;
   readonly shared?: boolean;
+  readonly schema?: DriverSchema | null;
 }
 
 export interface DriverManagerOptions {
@@ -872,6 +874,7 @@ export class DriverManager {
       shared: this.isEffectivelyShared(entry.name),
       ...(primaryRuntime ? { runtime: primaryRuntime } : {}),
       ...(instanceInfos.length > 0 ? { instances: instanceInfos } : {}),
+      ...(entry.schema ? { schema: entry.schema } : {}),
     };
   }
 

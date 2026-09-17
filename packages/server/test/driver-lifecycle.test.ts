@@ -8,6 +8,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { DriverSchema } from '@gosai/shared';
 import type { BridgeHandlers, BridgeRequestSansId, DriverBridge } from '../src/drivers/bridge.js';
 import { DriverManager, SYSTEM_BINDING, type DriverManifestEntry } from '../src/drivers/manager.js';
 import { EventBus } from '../src/ipc/bus.js';
@@ -22,10 +23,18 @@ interface RecordedRequest {
   readonly data?: unknown;
 }
 
+const TICK_SCHEMA: DriverSchema = {
+  $schema: 'https://json-schema.org/draft/2020-12/schema',
+  config: null,
+  events: { tick: { description: 'A tick.', stream: false, payload: { $ref: '#/$defs/Tick' } } },
+  actions: {},
+  $defs: { Tick: { type: 'object', properties: { count: { type: 'integer' } } } },
+};
+
 const MANIFEST: DriverManifestEntry[] = [
   { name: 'camera', events: ['color', 'frame'], actions: ['set_mode'], dependencies: [] },
   { name: 'calibration', events: ['homography'], actions: [], dependencies: ['camera'] },
-  { name: 'unrelated', events: ['tick'], actions: [], dependencies: [] },
+  { name: 'unrelated', events: ['tick'], actions: [], dependencies: [], schema: TICK_SCHEMA },
   { name: 'speaker', events: ['level'], actions: ['play'], dependencies: [], shared: true },
 ];
 
@@ -207,6 +216,15 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<voi
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
+
+describe('driver catalogue', () => {
+  test('driver schemas from the bridge pass through unchanged', async () => {
+    const { manager } = await startManager();
+
+    expect(manager.getDriver('unrelated')?.schema).toEqual(TICK_SCHEMA);
+    expect(manager.getDriver('camera')).not.toHaveProperty('schema');
+  });
+});
 
 describe('driver leases', () => {
   test('starting a driver starts its dependencies first', async () => {
