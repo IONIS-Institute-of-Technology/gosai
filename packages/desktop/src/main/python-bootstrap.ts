@@ -51,10 +51,13 @@ export async function ensurePythonRuntime(
   const name = runtimeName(info, extras);
   const uv = bundledUv(resources);
   const onStatus = options.onStatus ?? (() => undefined);
+  // Upgrades of this app with these extras replace each other's runtime.
+  const family = `${app.getName()}\n${extras.join(',')}`;
   const pythonDir = await materializeRuntime({
     sourceDir,
     runtimeRoot,
     name,
+    family,
     commands: [
       // Relocatable, so the staged runtime still works after the rename.
       ['venv', '--relocatable', '--python', info.python, '.venv'],
@@ -66,9 +69,9 @@ export async function ensurePythonRuntime(
   console.log(`[gosai-python] using ${pythonDir}`);
 
   // Best effort: cleanup also ignores users whose process is gone.
-  process.once('exit', () => releaseInUse(join(runtimeRoot, name)));
+  process.once('exit', () => releaseInUse(runtimeRoot, name));
   try {
-    for (const removed of cleanStaleRuntimes(runtimeRoot, name)) {
+    for (const removed of cleanStaleRuntimes({ runtimeRoot, keep: name, family })) {
       console.log(`[gosai-python] removed the unused runtime ${removed}`);
     }
   } catch (err) {

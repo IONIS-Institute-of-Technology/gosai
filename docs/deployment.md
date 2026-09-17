@@ -78,8 +78,12 @@ When the packaged app launches, desktop and kiosk alike:
    extras, so packages with identical requirements share one installation.
    The install runs in a staging directory under a lock file and is renamed
    into place with a `.complete` marker once it finished, so an interrupted
-   install is redone and two instances never install at once. Runtimes that
-   no running GOSAI uses are deleted after a newer one is ready.
+   install is redone and two instances never install at once. A lock whose
+   holder died, or was held before a reboot, or stopped being refreshed for
+   two minutes, is taken over. A runtime that no running GOSAI uses is
+   deleted when a newer runtime for the same app and extras is ready (after
+   an upgrade), or when no launch used it for 30 days. Runtimes of other
+   apps or other extras stay until then.
 3. It starts the embedded server on `127.0.0.1` with an ephemeral port (the
    OS picks a free one) and hands that port to its windows. The port is also
    written to `<GOSAI_HOME>/server-info.json`.
