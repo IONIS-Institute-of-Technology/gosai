@@ -50,6 +50,12 @@ export interface ResourceSnapshot<T> {
   readonly loading: boolean;
 }
 
+/**
+ * How long listeners wait after an event changed the value. A burst of events,
+ * such as a flood of log lines, renders once instead of once per event.
+ */
+export const EVENT_RENDER_DELAY_MS = 50;
+
 export class ServerResource<C extends CommandName, T> {
   private snapshot: ResourceSnapshot<T> = { data: undefined, error: null, loading: false };
   private readonly listeners = new Set<() => void>();
@@ -61,6 +67,7 @@ export class ServerResource<C extends CommandName, T> {
    * loaded value, so an event never makes the load's result get dropped.
    */
   private queued: Array<(current: T | undefined) => T | typeof RELOAD | undefined> = [];
+  private notifyTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly client: ResourceClient,
@@ -126,8 +133,12 @@ export class ServerResource<C extends CommandName, T> {
             return;
           }
           const next = run(this.snapshot.data);
-          if (next === RELOAD) void this.reload();
-          else if (next !== undefined) this.set(next);
+          if (next === RELOAD) {
+            void this.reload();
+          } else if (next !== undefined) {
+            this.version++;
+            this.update({ data: next, error: null }, { deferred: true });
+          }
         }),
       ),
       this.client.onStatus((status) => {
@@ -151,10 +162,23 @@ export class ServerResource<C extends CommandName, T> {
 
   private stop(): void {
     for (const off of this.offs.splice(0)) off();
+    if (this.notifyTimer !== null) clearTimeout(this.notifyTimer);
+    this.notifyTimer = null;
   }
 
-  private update(patch: Partial<ResourceSnapshot<T>>): void {
+  /** Updates the snapshot now. Listeners hear about event changes a little later. */
+  private update(patch: Partial<ResourceSnapshot<T>>, options: { deferred?: boolean } = {}): void {
     this.snapshot = { ...this.snapshot, ...patch };
+    if (options.deferred) {
+      this.notifyTimer ??= setTimeout(() => this.notify(), EVENT_RENDER_DELAY_MS);
+      return;
+    }
+    this.notify();
+  }
+
+  private notify(): void {
+    if (this.notifyTimer !== null) clearTimeout(this.notifyTimer);
+    this.notifyTimer = null;
     for (const listener of Array.from(this.listeners)) listener();
   }
 }

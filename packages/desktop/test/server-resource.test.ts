@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import type { ConnectionStatus } from '@gosai/shared/client';
 import { NotConnectedError } from '@gosai/shared/client';
 import {
+  EVENT_RENDER_DELAY_MS,
   RELOAD,
   ServerResource,
   type ResourceClient,
@@ -181,6 +182,25 @@ describe('ServerResource', () => {
     resolveSlow({ experiences: ['stale'] });
     await settle();
     expect(list.getSnapshot().data as unknown).toEqual(['fresh']);
+  });
+
+  test('a burst of events notifies listeners once', async () => {
+    const client = new FakeClient();
+    const logs = resource(
+      client,
+      { command: 'logs:history', select: (r) => r.logs.map((entry) => entry.message) },
+      { 'server:log': (entry, current) => [...(current ?? []), entry.message] },
+    );
+    let notified = 0;
+    logs.subscribe(() => notified++);
+    await settle();
+    notified = 0;
+    for (let i = 0; i < 100; i++) client.emit('server:log', { message: String(i) });
+    // The snapshot is current at once; the render waits for the burst.
+    expect(logs.getSnapshot().data).toHaveLength(100);
+    expect(notified).toBe(0);
+    await new Promise((resolve) => setTimeout(resolve, EVENT_RENDER_DELAY_MS + 20));
+    expect(notified).toBe(1);
   });
 
   test('a disabled resource neither loads nor listens', async () => {
