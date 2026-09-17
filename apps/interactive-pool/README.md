@@ -48,5 +48,6 @@ POST /v1/apps/interactive-pool/storage/live_server_url
 
 ## Audio
 
-Drop optional `.mp3` files into `assets/audio/` to enable menu feedback. See
-`assets/audio/README.md` for the expected filenames.
+Menu feedback sounds ship in `assets/audio/`: `opening_menu.mp3`,
+`closing_menu.mp3` and `click.mp3`. If a file is missing or fails to load, that
+sound stays silent.
