@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.metadata
 from collections.abc import Callable
 from pathlib import Path
 
@@ -111,6 +112,44 @@ def test_small_model_still_prefers_an_accelerator() -> None:
     assert provider_names(providers) == [CUDA]
 
 
+def _both_ort_wheels(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("importlib.metadata.version", lambda dist: "1.30.0")
+
+
+def test_reinstall_hint_when_the_cuda_provider_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _both_ort_wheels(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="reinstall onnxruntime-gpu"):
+        choose_onnx_providers([CPU], AcceleratorConfig(mode="cuda"))
+    with pytest.raises(RuntimeError, match="reinstall onnxruntime-gpu"):
+        choose_onnx_providers([CPU], AcceleratorConfig())
+
+
+def test_no_reinstall_hint_when_cuda_is_present_or_not_wanted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _both_ort_wheels(monkeypatch)
+
+    with pytest.raises(RuntimeError) as coreml:
+        choose_onnx_providers([CUDA, CPU], AcceleratorConfig(mode="coreml"))
+    assert "reinstall" not in str(coreml.value)
+
+
+def test_no_reinstall_hint_with_one_wheel(monkeypatch: pytest.MonkeyPatch) -> None:
+    def only_cpu_wheel(dist: str) -> str:
+        if dist == "onnxruntime-gpu":
+            raise importlib.metadata.PackageNotFoundError(dist)
+        return "1.30.0"
+
+    monkeypatch.setattr("importlib.metadata.version", only_cpu_wheel)
+
+    with pytest.raises(RuntimeError) as error:
+        choose_onnx_providers([CPU], AcceleratorConfig(mode="cuda"))
+    assert "reinstall" not in str(error.value)
+
+
 def test_create_session_on_cpu_reports_runtime(identity_model: Path) -> None:
     lines, log = _logs()
 
@@ -143,8 +182,11 @@ def test_create_session_checks_the_active_provider(
     monkeypatch.setattr(ort, "InferenceSession", cpu_session)
     _, log = _logs()
 
-    with pytest.raises(RuntimeError, match="could not start CUDAExecutionProvider"):
+    _both_ort_wheels(monkeypatch)
+    with pytest.raises(RuntimeError, match="could not start CUDAExecutionProvider") as error:
         create_onnx_session(model, log_fn=log, config=AcceleratorConfig())
+    # CUDA is installed and failed to start, so the wheels aren't the problem.
+    assert "reinstall" not in str(error.value)
 
     _, info = create_onnx_session(model, log_fn=log, allow_cpu=True, config=AcceleratorConfig())
     assert info["provider"] == CPU

@@ -121,16 +121,20 @@ def _provider_spec(mode: str, config: AcceleratorConfig) -> ProviderSpec:
     return name
 
 
-def _check_cpu_allowed(config: AcceleratorConfig, allow_cpu: bool, reason: str) -> None:
+def _check_cpu_allowed(
+    config: AcceleratorConfig, allow_cpu: bool, reason: str, hint: str = ""
+) -> None:
     if allow_cpu or config.allow_cpu_fallback or config.mode == "cpu":
         return
     raise RuntimeError(
-        f"{reason}. Set GOSAI_ACCELERATOR=cpu or GOSAI_ALLOW_CPU_FALLBACK=1 to run on CPU."
-        f"{_ort_install_hint()}"
+        f"{reason}. Set GOSAI_ACCELERATOR=cpu or GOSAI_ALLOW_CPU_FALLBACK=1 to run on CPU.{hint}"
     )
 
 
-def _ort_install_hint() -> str:
+def _ort_install_hint(available: Sequence[str], config: AcceleratorConfig) -> str:
+    """Explain a missing CUDA provider caused by the CPU wheel overwriting the GPU one."""
+    if config.mode not in ("auto", "cuda", "tensorrt") or ONNX_PROVIDERS["cuda"][0] in available:
+        return ""
     installed = set()
     for dist in ("onnxruntime", "onnxruntime-gpu"):
         try:
@@ -160,14 +164,20 @@ def choose_onnx_providers(
         mode = next((m for m in AUTO_ORDER if ONNX_PROVIDERS[m][0] in available), None)
         if mode is None:
             _check_cpu_allowed(
-                config, allow_cpu, f"no accelerated ONNX Runtime provider in {list(available)}"
+                config,
+                allow_cpu,
+                f"no accelerated ONNX Runtime provider in {list(available)}",
+                _ort_install_hint(available, config),
             )
             return [CPU_PROVIDER]
     else:
         mode = config.mode
         if ONNX_PROVIDERS[mode][0] not in available:
             _check_cpu_allowed(
-                config, allow_cpu, f"{ONNX_PROVIDERS[mode][0]} not in {list(available)}"
+                config,
+                allow_cpu,
+                f"{ONNX_PROVIDERS[mode][0]} not in {list(available)}",
+                _ort_install_hint(available, config),
             )
             return [CPU_PROVIDER]
     providers = [_provider_spec(mode, config)]
