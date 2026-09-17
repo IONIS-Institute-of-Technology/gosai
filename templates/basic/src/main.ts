@@ -1,83 +1,61 @@
-import {
-  defineExperience,
-  createCanvas,
-  fullscreenContainer,
-  type ExperienceRuntimeContext,
-  type FrameInfo,
-} from '@gosai/sdk';
+import { createFullscreenCanvas, defineExperience, type FullscreenCanvas } from '@gosai/sdk';
 
-interface State {
-  canvas: HTMLCanvasElement;
-  ctx2d: CanvasRenderingContext2D;
-  container: HTMLElement;
-  tickCount: number;
-  startTime: number;
+interface Settings {
+  dot: { color: string };
 }
 
-export default defineExperience<State>({
-  slug: 'main',
-  name: 'Main',
-  description: 'Bouncing dot driven by heartbeat ticks',
+interface State {
+  view: FullscreenCanvas;
+  settings: Settings;
+  ticks: number;
+  angle: number;
+}
 
-  init(): State {
-    const container = fullscreenContainer();
-    const canvas = createCanvas(container);
-    const ctx2d = canvas.getContext('2d');
-    if (!ctx2d) throw new Error('No 2D canvas context available');
+/** Everything is drawn in this space; `fit()` maps it onto the window. */
+const REFERENCE = { width: 1920, height: 1080 };
+
+export default defineExperience<State>({
+  async init(rt) {
     return {
-      container,
-      canvas,
-      ctx2d,
-      tickCount: 0,
-      startTime: performance.now(),
+      // Removed from the page when the experience stops.
+      view: createFullscreenCanvas({ reference: REFERENCE, signal: rt.signal }),
+      settings: await rt.settings.get<Settings>(),
+      ticks: await rt.storage.get('ticks', 0),
+      angle: 0,
     };
   },
 
-  async start(rt: ExperienceRuntimeContext, state: State) {
-    rt.log.info('hello-gosai main started');
+  start(rt, state) {
+    rt.log.info(`${rt.app.experience.name} started`);
 
-    // Subscribe to the built-in heartbeat driver.
-    rt.drivers.on('heartbeat', 'tick', (data) => {
-      const t = data as { count: number };
-      state.tickCount = t.count;
-    });
-
-    // Optional: load persisted counter from storage.
-    const last = await rt.storage.get<number>('last-tick', 0);
-    state.tickCount = last ?? 0;
-
-    window.addEventListener('beforeunload', () => {
-      void rt.storage.set('last-tick', state.tickCount);
+    // The runtime removes this subscription when the experience stops.
+    rt.drivers.on('heartbeat', 'tick', () => {
+      state.ticks += 1;
     });
   },
 
-  render(_rt: ExperienceRuntimeContext, state: State, frame: FrameInfo) {
-    const { ctx2d, canvas } = state;
-    const w = canvas.width;
-    const h = canvas.height;
+  render(_rt, state, frame) {
+    const { ctx } = state.view;
+    state.view.fit();
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, REFERENCE.width, REFERENCE.height);
 
-    ctx2d.fillStyle = '#000';
-    ctx2d.fillRect(0, 0, w, h);
+    // deltaMs is capped after a stall, so motion never jumps.
+    state.angle += (frame.deltaMs / 1000) * Math.PI;
+    const x = REFERENCE.width / 2 + Math.cos(state.angle) * 400;
+    const y = REFERENCE.height / 2 + Math.sin(state.angle) * 300;
 
-    const elapsed = (frame.timestamp - state.startTime) / 1000;
-    const x = (Math.sin(elapsed) * 0.4 + 0.5) * w;
-    const y = (Math.cos(elapsed * 0.7) * 0.4 + 0.5) * h;
-    const r = Math.min(w, h) * 0.05;
+    ctx.fillStyle = state.settings.dot.color;
+    ctx.beginPath();
+    ctx.arc(x, y, 40, 0, Math.PI * 2);
+    ctx.fill();
 
-    ctx2d.fillStyle = '#4ade80';
-    ctx2d.beginPath();
-    ctx2d.arc(x, y, r, 0, Math.PI * 2);
-    ctx2d.fill();
-
-    ctx2d.fillStyle = '#a3a3a3';
-    ctx2d.font = `${Math.floor(h * 0.025)}px ui-monospace, monospace`;
-    ctx2d.fillText(`hello-gosai · heartbeat tick #${state.tickCount}`, 24, 40);
-    ctx2d.fillText(`elapsed ${elapsed.toFixed(1)}s · frame ${frame.frameCount}`, 24, 70);
+    ctx.fillStyle = '#a3a3a3';
+    ctx.font = '32px ui-monospace, monospace';
+    ctx.fillText(`heartbeat ticks: ${state.ticks}`, 48, 72);
   },
 
-  async stop(rt: ExperienceRuntimeContext, state: State) {
-    rt.log.info('hello-gosai main stopping');
-    await rt.storage.set('last-tick', state.tickCount);
-    state.container.remove();
+  async stop(rt, state) {
+    await rt.storage.set('ticks', state.ticks);
   },
 });

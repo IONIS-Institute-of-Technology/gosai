@@ -282,21 +282,25 @@ export class DriverManager {
    * lease, when the driver or a dependency fails to start.
    */
   async subscribe(binding: string, driver: string, event: string, client: string): Promise<void> {
-    const deadline = Date.now() + (this.options.bridgeReadyWaitMs ?? DEFAULT_BRIDGE_READY_WAIT_MS);
-    await this.waitForBridge(deadline);
+    const readyWaitMs = this.options.bridgeReadyWaitMs ?? DEFAULT_BRIDGE_READY_WAIT_MS;
+    await this.waitForBridge(Date.now() + readyWaitMs);
     this.requireDriver(driver);
     const instance = this.instanceFor(binding, driver);
     const lease = this.addLease({ client, binding, instance, driver, event });
     const keys = this.closure(driver).map((name) => instanceKey(instance, name));
     // A new lease is an explicit request, so earlier failures get another try.
-    for (const key of keys) this.startErrors.delete(key);
+    for (const key of keys) {
+      this.startErrors.delete(key);
+      this.retryStopNow(key);
+    }
     this.failedSubscriptions.delete(subscriptionKey(lease));
     for (;;) {
       await this.settle(keys);
       if (this.bridgeReady) break;
       // The bridge went down while the driver was starting; wait for the restart.
+      // The start may have taken long, so the restart gets its own wait.
       try {
-        await this.waitForBridge(deadline);
+        await this.waitForBridge(Date.now() + readyWaitMs);
       } catch (err) {
         this.removeLease(lease);
         throw err;
@@ -414,6 +418,14 @@ export class DriverManager {
     const byInstance = this.leasesByInstance.get(key);
     byInstance?.delete(lease);
     if (byInstance?.size === 0) this.leasesByInstance.delete(key);
+  }
+
+  /** Let the next pass retry a stuck stop, keeping the delay so later failures still back off. */
+  private retryStopNow(key: string): void {
+    const retry = this.stopRetries.get(key);
+    if (!retry) return;
+    clearTimeout(retry.timer);
+    this.stopRetries.set(key, { ...retry, at: 0 });
   }
 
   private waitForBridge(deadline: number): Promise<void> {

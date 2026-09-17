@@ -49,12 +49,12 @@ export class DriverClientImpl implements DriverClient {
     };
   }
 
-  async get(driver: string, event: string): Promise<unknown> {
-    return this.server.request('driver:get-data', { driver, event, binding: this.binding });
+  get<T = unknown>(driver: string, event: string): Promise<T> {
+    return this.server.request<T>('driver:get-data', { driver, event, binding: this.binding });
   }
 
-  async execute(driver: string, action: string, data?: unknown): Promise<unknown> {
-    return this.server.request('driver:execute', {
+  execute<T = unknown>(driver: string, action: string, data?: unknown): Promise<T> {
+    return this.server.request<T>('driver:execute', {
       driver,
       action,
       data,

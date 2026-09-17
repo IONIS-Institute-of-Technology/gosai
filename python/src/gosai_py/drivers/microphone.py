@@ -77,6 +77,8 @@ class MicrophoneDriver(BaseDriver):
         "audio_stream": Event(AudioStreamPayload, "Every captured block, in order."),
         "settings": Event(AudioSettingsPayload, "Stream settings after each (re)open."),
     }
+    # About 4 s of blocks at 16 kHz while Node reads slowly.
+    buffered_events: ClassVar[dict[str, int]] = {"audio_stream": 64}
     config_type = MicrophoneConfig
     loop_interval_s = None
 

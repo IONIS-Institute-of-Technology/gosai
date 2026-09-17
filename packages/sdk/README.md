@@ -1,80 +1,65 @@
 # @gosai/sdk
 
-Official SDK for building GOSAI apps and experiences.
+TypeScript SDK for building GOSAI apps.
 
-## Concepts
+- An **app** is a directory (usually a git repository) with a `gosai.app.json`
+  manifest. GOSAI installs it and serves its files.
+- An **experience** is one runnable interaction in an app. It runs in its own
+  window, usually fullscreen on a projector or display.
+- A **driver** is a Python module in the GOSAI runtime that produces live data
+  (camera frames, hand landmarks, audio analysis) and accepts actions. Apps
+  subscribe to drivers through the SDK.
 
-- **App**: a unit installed into GOSAI. One git repository = one app.
-- **Experience**: a single fullscreen-runnable interaction within an app.
-  An app can declare multiple experiences and switch between them at runtime.
-- **Driver**: a Python module that produces real-time data (camera frames,
-  hand landmarks, audio chunks). Apps subscribe to drivers via the SDK.
-- **Manifest** (`gosai.app.json`): declares the app and its experiences.
+The package has two entries:
 
-## App Layout
+| Import            | For                                                                                                                   |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `@gosai/sdk`      | App code: `defineExperience`, the runtime context types, layers, canvas, warp, homography and calibration helpers.    |
+| `@gosai/sdk/host` | Code that hosts experiences: `runExperience`, `ServerClient`, protocol constants and server types such as `LogEntry`. |
 
-```
-my-app/
-├── gosai.app.json
-├── package.json         # has "@gosai/sdk": "*" as a dep
-├── src/
-│   └── experiences/
-│       └── main.ts      # exports a `defineExperience` default
-├── python/              # optional, if you ship Python drivers/processors
-└── dist/                # built output (referenced by manifest entry)
-```
+A starter app lives in [`templates/basic`](../../templates/basic).
 
-A starter template is at `templates/basic/` in the GOSAI repo.
-
-## Manifest Reference
+## Manifest
 
 ```jsonc
 {
-  "slug": "my-app", // kebab-case unique identifier
+  "slug": "my-app", // lowercase letters, digits and dashes, at most 63 characters
   "name": "My App",
   "version": "0.1.0",
-  "description": "...",
+  "description": "What the app does",
   "author": "you",
-  "icon": "./assets/icon.png",
+  "default": "main", // experience the dashboard launches; defaults to the first one
   "experiences": [
     {
-      "slug": "main", // unique within this app
+      "slug": "main",
       "name": "Main",
-      "description": "...",
-      "entry": "dist/main.js", // ESM module, browser target
-      "python": "python/main.py", // optional
-      "drivers": ["hand_pose"], // auto-started + auto-subscribed
-      "exclusive": false, // closes other experiences when started
-      "allowed": [], // experiences allowed to co-run when exclusive
-      "required": [], // experiences that must also be running
+      "description": "Shown as rt.app.experience.description",
+      "entry": "dist/main.js", // browser ESM module, relative to the app root
+      "drivers": ["hand_pose"], // started with the experience
+      "exclusive": false, // stop the app's other experiences when this one starts
+      "allowed": [], // experiences an exclusive experience keeps running
+      "required": [], // experiences started together with this one
     },
   ],
-  "python": {
-    "requirements": "python/requirements.txt",
-  },
-  "startup": ["main"],
   "requirements": {
-    // device slots this app binds (per app)
-    "display": true, // opens a window (fullscreen/windowed)
-    "camera": true, // exclusive: this app gets its own camera
-    "microphone": false, // exclusive
-    "speaker": false, // shareable across apps
+    "display": true, // opens a window
+    "camera": true, // this app gets its own camera
+    "microphone": false, // this app gets its own microphone
+    "speaker": false, // shared between apps
   },
   "calibration": {
-    // optional, explicit per-app calibration capability
     "required": true,
     "entry": "dist/calibration.js",
     "statusKey": "calibration_status",
   },
   "settings": {
-    // optional declarative settings — renders an editable form in the dashboard
-    "storageKey": "config", // KV key the config object is saved under (default "config")
+    "storageKey": "config", // default
     "groups": [
       {
         "label": "Display",
         "fields": [
           {
-            "key": "display.fit", // dotted path into the config object
+            "key": "display.fit", // dotted path into the settings object
             "label": "Screen fit",
             "type": "select", // boolean | number | string | select
             "default": "contain",
@@ -89,45 +74,207 @@ A starter template is at `templates/basic/` in the GOSAI repo.
             "type": "number",
             "min": 0.5,
             "max": 3,
-            "step": 0.05,
             "default": 1,
           },
         ],
       },
     ],
   },
+  "network": {
+    // origins beyond the defaults, see "Network access" below
+    "connect": ["ws://relay.local:8080"],
+  },
 }
 ```
 
-### Settings (declarative config)
+`requirements` drives the per-app device pickers in the dashboard. Device
+choices are applied to your drivers automatically: `rt.drivers.on('camera', ...)`
+always reaches the camera assigned to your app.
 
-If an app declares a `settings` schema, the dashboard shows a **Settings** button
-on its row that opens a generated form. Values are persisted to the app's
-key/value storage under `settings.storageKey` (default `config`) as a single,
-possibly nested JSON object — field `key`s are dotted paths. Read it from your
-experience with `rt.storage.get(storageKey)`. Settings are read at experience
-start, so changes apply on the next launch.
+## Experiences
 
-### Devices & bindings
+The module named by `entry` default-exports an experience. Every hook is
+optional.
 
-Apps run in parallel, each bound to its own devices (the _binding_ is the app
-slug). The top-level `requirements` object declares which device slots an app
-needs; the dashboard then lets the operator assign a concrete camera /
-microphone / speaker / display per app, persisted to
-`paths.apps/<slug>/_config/settings.json`.
+```ts
+import { createFullscreenCanvas, defineExperience, type FullscreenCanvas } from '@gosai/sdk';
 
-- `camera` / `microphone` are **exclusive** — each app gets its own device.
-- `speaker` and device-less drivers (`heartbeat`) are **shared** across apps.
+interface State {
+  view: FullscreenCanvas;
+  hands: number;
+}
 
-This is transparent to app code: `rt.drivers.on('camera', ...)` always resolves
-to _your_ app's bound camera. The SDK subscribes to a per-app event topic and
-tags requests with the binding for you.
+export default defineExperience<State>({
+  // Runs once and builds the state the other hooks receive.
+  init(rt) {
+    return {
+      view: createFullscreenCanvas({ reference: { width: 1920, height: 1080 }, signal: rt.signal }),
+      hands: 0,
+    };
+  },
 
-### Calibration
+  // Runs when the experience becomes active.
+  start(rt, state) {
+    rt.drivers.on('hand_pose', 'raw_data', (data) => {
+      state.hands = (data as { hands_landmarks?: unknown[] }).hands_landmarks?.length ?? 0;
+    });
+  },
 
-Calibration is declared explicitly with the top-level `calibration` object. It is
-not inferred from `requirements`. When `required` is true, `entry` must point to
-a browser ESM module that exports a calibration definition:
+  // Runs every animation frame.
+  render(rt, state, frame) {
+    const { ctx } = state.view;
+    state.view.fit();
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, 1920, 1080);
+  },
+
+  // Runs when the experience stops, including when its window closes.
+  async stop(rt, state) {
+    await rt.storage.set('last-hands', state.hands);
+  },
+});
+```
+
+The name, description and slug come from the manifest, not from the module.
+
+`frame` has `timestamp` (comparable with `performance.now()`), `frameCount`,
+and `deltaMs`, the time since the previous frame capped at 100 ms so a stall
+doesn't make motion jump. Scale motion by `deltaMs` rather than per frame.
+
+If `render` throws, the runtime logs each distinct error once. After 60
+consecutive failing frames it stops the experience and the window shows the
+error. If `init` or `start` throws, the runtime calls `stop` (when `init`
+succeeded), releases everything and shows the error. When the window closes
+while `init` or `start` is still running, `rt.signal` aborts at once so the
+hook can bail out, and the experience stops once the hook returns.
+
+### Cleanup
+
+When the experience stops, the runtime:
+
+1. aborts `rt.signal` and removes every `rt.drivers.on` and `rt.events.on`
+   subscription still open, so nothing fires into a stopping experience,
+2. runs your `stop` hook, with the server connection still open for storage
+   writes, logs and driver actions,
+3. closes `rt.audio` and the server connection.
+
+Pass `rt.signal` to anything else that accepts one:
+
+```ts
+window.addEventListener('keydown', onKey, { signal: rt.signal });
+const res = await fetch(url, { signal: rt.signal });
+```
+
+Release other resources (WebGL renderers, media elements) in `stop`.
+
+## Runtime context
+
+| Member                                         | Description                                                                            |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `rt.app.appSlug`, `rt.app.experienceSlug`      | Identity.                                                                              |
+| `rt.app.manifest`, `rt.app.experience`         | The parsed manifest and this experience's entry in it.                                 |
+| `rt.app.params`                                | Launch parameters of the window, such as `role` and `target` for calibration.          |
+| `rt.drivers.on(driver, event, listener)`       | Subscribe to a driver event. Returns `{ unsubscribe() }`.                              |
+| `rt.drivers.get<T>(driver, event)`             | Latest value of a driver event.                                                        |
+| `rt.drivers.execute<T>(driver, action, data?)` | Run a driver action and get its result.                                                |
+| `rt.storage.get<T>(key, fallback?)`            | Read a JSON value. Returns `T` when you pass a fallback, `T \| undefined` otherwise.   |
+| `rt.storage.set(key, value)`, `remove`, `list` | Per-app key/value storage.                                                             |
+| `rt.settings.get<T>()`                         | Settings from the manifest schema: stored values merged over the defaults.             |
+| `rt.settings.set({ 'display.zoom': 2 })`       | Store settings by dotted key. Keys you don't set keep following their default.         |
+| `rt.assets.url(path, appSlug?)`                | URL of a file in the app (or in `appSlug`), relative to its root, e.g. `assets/a.png`. |
+| `rt.events.emit(topic, data)`, `rt.events.on`  | Messages between windows of the same app, e.g. a projector and a control window.       |
+| `rt.log.debug/info/warn/error(message, data?)` | Logs shown in the dashboard's Logs panel.                                              |
+| `rt.audio`                                     | An `AudioContext` created on first use and resumed when the experience starts.         |
+| `rt.ping()`                                    | Round-trip time to the server, in milliseconds.                                        |
+| `rt.signal`                                    | Aborts when the experience stops.                                                      |
+| `rt.router.switchTo(slug)`, `rt.router.stop()` | Start or stop experiences of this app on the server. It doesn't open windows yet.      |
+| `rt.app.server`                                | The raw server connection, for commands the SDK doesn't wrap.                          |
+
+## Layers
+
+`LayerManager` runs independent modules inside one experience: a menu,
+overlays, launchable scenes.
+
+```ts
+import { LayerManager, type LayerDefinition } from '@gosai/sdk';
+
+interface Frame {
+  ctx: CanvasRenderingContext2D;
+  deltaMs: number;
+}
+
+const layers = new LayerManager<Frame>(
+  [
+    { slug: 'menu', zIndex: 100, persistent: true, create: () => createMenu() },
+    { slug: 'hands', zIndex: 50, create: () => createHands() },
+    { slug: 'game', exclusive: true, allowed: ['hands'], create: () => createGame() },
+  ],
+  {
+    onError: (slug, err, phase) =>
+      rt.log.warn(`layer ${slug} ${phase} failed`, { err: String(err) }),
+  },
+);
+
+await layers.start('menu');
+layers.render({ ctx, deltaMs: frame.deltaMs }); // in render
+await layers.stopAll(); // in stop
+```
+
+- A layer has optional `preload`, `start`, `render`, `stop`, `suspend` and
+  `resume` hooks. It renders once `start` has resolved, in `zIndex` order.
+- If `start` throws, the error goes to `onError` and the layer's `stop` hook
+  still runs, the same rule as for experiences. A failing `create` or
+  `preload` doesn't call `stop`.
+- Starting an exclusive layer stops every other layer except persistent ones,
+  its `allowed` list and its `required` list, then starts the required ones.
+- Persistent layers ignore `stop(slug)` unless you pass `{ force: true }`.
+- Stopping a layer while its `start` is still running stops it as soon as
+  `start` returns; it never renders.
+- `suspend()` pauses rendering and calls each running layer's `suspend` hook,
+  for example to hide a WebGL canvas or mute audio. `resume()` undoes it.
+- A layer whose `render` keeps throwing is reported once and stopped after 30
+  consecutive failures.
+- Extra fields on definitions (labels, icons) are kept and typed:
+  `new LayerManager<Frame, MyDefinition>(...)`.
+
+## Canvas
+
+```ts
+const view = createFullscreenCanvas({
+  reference: { width: 1080, height: 1920 }, // your drawing coordinates
+  mode: 'contain', // contain | cover | stretch
+  signal: rt.signal, // remove the canvas when the experience stops
+});
+
+// Each frame:
+view.fit(); // resizes the backing store if needed and maps reference coordinates onto the window
+view.ctx.fillRect(0, 0, 1080, 1920);
+```
+
+`fitCanvas(canvas)` sizes a canvas's backing store to its CSS box times the
+device pixel ratio, and only touches it when the size changed.
+`computeFit(target, reference, mode)` returns the scale and offset without
+touching a canvas. `createCanvas(parent)` and `fullscreenContainer()` remain
+for simple cases.
+
+## Projection helpers
+
+`applyQuadWarp(element, quad)` maps an element's box onto a quadrilateral with
+a CSS `matrix3d` transform, for example to land a canvas on a table seen by a
+tilted projector. `clearQuadWarp(element)` restores the element's previous
+styles.
+
+The homography functions work with 3x3 row-major matrices, the same layout as
+OpenCV:
+
+- `perspectiveTransformPoint(H, x, y)` returns `null` when the point maps to
+  infinity. `perspectiveTransformPoints(H, points)` keeps indices.
+- `quadToQuadHomography(src, dst)`, `invertHomography(H)`,
+  `multiplyHomographies(A, B)` and `computeCSSMatrix3d(width, height, quad)`.
+
+## Calibration
+
+Declare a calibration entry in the manifest and default-export a definition:
 
 ```ts
 import { createCameraProjectorSurfaceCalibration } from '@gosai/sdk';
@@ -138,136 +285,60 @@ export default createCameraProjectorSurfaceCalibration({
 });
 ```
 
-The built-in calibration runner imports that module and writes results into the
-target app's own storage. Apps can read the standard camera/projector profile
-with `loadCameraProjectorSurfaceCalibration(rt)`.
+The built-in calibration app loads it and writes the result into your app's
+storage. Read it back with `loadCameraProjectorSurfaceCalibration(rt)`.
 
-## Experience API
+## Driver data
 
-```ts
-import { defineExperience } from '@gosai/sdk';
-
-export default defineExperience<State>({
-  slug: 'main',
-  name: 'Main',
-  description: 'optional',
-
-  init() {
-    /* sync setup, runs before `start` */ return state;
-  },
-
-  async start(rt, state) {
-    /* one-shot setup */
-  },
-
-  render(rt, state, frame) {
-    /* per-rAF; optional */
-  },
-
-  async stop(rt, state) {
-    /* cleanup */
-  },
-});
-```
-
-The runtime context (`rt`) provides:
-
-| Property                                    | Description                                                     |
-| ------------------------------------------- | --------------------------------------------------------------- |
-| `rt.app.appSlug`, `rt.app.experienceSlug`   | identity                                                        |
-| `rt.app.server`                             | underlying `ServerConnection` (advanced)                        |
-| `rt.drivers.on(driver, event, listener)`    | subscribe to a driver event; returns `{ unsubscribe() }`        |
-| `rt.drivers.get(driver, event)`             | get the most recent value for an event                          |
-| `rt.drivers.execute(driver, action, data?)` | invoke a driver action                                          |
-| `rt.storage.get/set/remove/list`            | per-app KV storage backed by `paths.apps/<slug>/_data/storage/` |
-| `rt.log.debug/info/warn/error`              | logs routed to the GOSAI logger                                 |
-| `rt.router.switchTo(slug)`                  | start another experience, stopping the current one              |
-| `rt.router.stop(slug?)`                     | stop an experience (defaults to current)                        |
-
-`FrameInfo` for `render`:
-
-```ts
-interface FrameInfo {
-  timestamp: number; // performance.now()
-  deltaMs: number; // since previous frame
-  frameCount: number; // 0-based
-}
-```
-
-## Renderer helpers
-
-```ts
-import { createCanvas, fitCanvas, fullscreenContainer } from '@gosai/sdk';
-
-const container = fullscreenContainer();
-const canvas = createCanvas(container);
-const ctx = canvas.getContext('2d');
-```
-
-## Driver Data Types
-
-Drivers publish typed events. Built-in driver shapes ship with the
-GOSAI Python runtime; refer to each driver's source for the precise payload.
-The `heartbeat` driver (always available) is great for testing:
+Driver payloads are untyped for now; cast them to the shape the driver emits.
+The `heartbeat` driver ticks steadily and is handy for testing:
 
 ```ts
 rt.drivers.on('heartbeat', 'tick', (data) => {
-  const t = data as { count: number; now: number };
+  const { count } = data as { count: number; now: number };
 });
 ```
 
-Phase 6 will document the standard driver type bundle (camera, hand_pose,
-pose, ball, microphone, etc.) as it lands.
+## Building
 
-## Build
-
-GOSAI assumes app entries are ESM JavaScript with `@gosai/sdk` left as an
-external. Bundle with bun or your bundler of choice:
+Bundle each entry as browser ESM and leave `@gosai/sdk` external:
 
 ```bash
-bun build src/experiences/main.ts \
-  --target=browser --format=esm \
-  --outfile dist/main.js \
-  --external @gosai/sdk
+bun build src/main.ts --target=browser --format=esm --outfile dist/main.js --external @gosai/sdk
 ```
 
-GOSAI serves the bundle at `http://127.0.0.1:7777/v1/apps/<slug>/static/<entry>`
-and resolves `@gosai/sdk` via an import map injected by the app-host.
+GOSAI runs each app on its own origin, `http://<slug>.localhost:<port>`. The
+page there has an import map that resolves `@gosai/sdk` to the server's copy
+of the SDK, fetches your manifest, imports your entry and runs it. Files in
+your app are served under `/v1/apps/<slug>/static/`; use `rt.assets.url` to
+build their URLs.
 
-## Python Integration
+### Content Security Policy
 
-When an experience declares `python: "..."`, the file is loaded into the
-bridge process at experience start. Inside it, you can define a
-`BaseProcessor` (Python-side companion):
+Everything served on an app origin carries a Content Security Policy:
 
-```python
-from gosai_py import BaseProcessor
+- **Scripts** load only from the app origin (your bundle and the SDK) and
+  other GOSAI app origins, and WebAssembly may compile. Bundle every script
+  and `.wasm` file with your app: CDNs and inline scripts are blocked.
+- **Styles, images, media and fonts** load from the app origin; images,
+  media and fonts also from `data:` and `blob:` URLs. Inline `style`
+  attributes written in HTML or with `setAttribute` are blocked; setting
+  `element.style` properties from code works.
+- **Connections** (`fetch`, `XMLHttpRequest`, `WebSocket`) may go to the app
+  origin, `blob:` and `data:` URLs (loaders such as GLTF use them for
+  embedded textures and model weights), and any `https:` or `wss:` URL.
 
-class MyProcessor(BaseProcessor):
-    name = "my-app:main:processor"
-    subscribed = (("camera", "color"),)
-    events = ("annotated_frame",)
+Plain `http:` and `ws:` connections to other hosts are blocked by default,
+since they would reach services on the machine or the local network. List the
+ones your app needs in the manifest:
 
-    def on_data(self, driver, event, data):
-        # data is a JSON-deserialized payload
-        # do work, then publish results:
-        self.emit("annotated_frame", { "found": 3 })
+```json
+"network": { "connect": ["ws://relay.local:8080", "http://192.168.1.20"] }
 ```
 
-JS experience subscribers automatically receive `annotated_frame` events:
+Each entry is a plain `scheme://host[:port]` origin with an `http`, `https`,
+`ws` or `wss` scheme: no path, wildcard, quotes or spaces. The server refuses
+a manifest with any other entry.
 
-```ts
-rt.drivers.on('my-app:main:processor', 'annotated_frame', (data) => { ... });
-```
-
-## Error Handling
-
-- Throws inside lifecycle hooks are caught and logged; the experience moves
-  to `crashed` state but the GOSAI server stays up.
-- The render loop swallows exceptions per frame to keep the UI responsive.
-- Network errors on driver subscriptions auto-retry on reconnect.
-
-## Versioning
-
-The SDK protocol version is exposed via `PROTOCOL_VERSION`. Backwards-
-incompatible changes will bump this constant.
+Blocked requests are logged through `rt.log` with the directive and URL, once
+per URL, so they show up in the dashboard's Logs panel.

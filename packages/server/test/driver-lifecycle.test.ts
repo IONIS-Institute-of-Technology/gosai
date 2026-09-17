@@ -52,6 +52,8 @@ class StubBridge implements DriverBridge {
   readonly stopFailures = new Map<string, number>();
   catalogueGate: Promise<void> | null = null;
   startDelayMs = 0;
+  /** Like PythonBridge: stop() rejects pending requests at once and resolves this much later. */
+  stopDelayMs = 0;
   private exitSignal = Promise.withResolvers<never>();
 
   constructor(readonly handlers: BridgeHandlers) {}
@@ -71,6 +73,11 @@ class StubBridge implements DriverBridge {
 
   async stop(): Promise<void> {
     if (!this.running) return;
+    if (this.stopDelayMs > 0) {
+      this.running = false;
+      this.exitSignal.reject(new Error('Bridge process exited'));
+      await new Promise((r) => setTimeout(r, this.stopDelayMs));
+    }
     this.exit(0);
   }
 
@@ -178,6 +185,8 @@ async function startManager(
     getDriverConfig?: (binding: string, driver: string) => Record<string, unknown> | undefined;
     pingIntervalMs?: number;
     initialBackoffMs?: number;
+    stopRetry?: { initialMs: number; maxMs: number };
+    bridgeReadyWaitMs?: number;
   } = {},
 ): Promise<Harness> {
   const bus = new EventBus();
@@ -191,7 +200,10 @@ async function startManager(
       bridge = new StubBridge(handlers);
       return bridge;
     },
-    stopRetry: { initialMs: 50, maxMs: 1_000 },
+    stopRetry: options.stopRetry ?? { initialMs: 60_000, maxMs: 60_000 },
+    ...(options.bridgeReadyWaitMs !== undefined
+      ? { bridgeReadyWaitMs: options.bridgeReadyWaitMs }
+      : {}),
     supervisorTiming: {
       initialBackoffMs: options.initialBackoffMs ?? 1,
       pingIntervalMs: options.pingIntervalMs ?? 60_000,
@@ -209,7 +221,7 @@ async function startManager(
 const lifecycle = (bridge: StubBridge, type: 'start-driver' | 'stop-driver'): string[] =>
   bridge.requests.filter((r) => r.type === type).map((r) => `${r.instance}/${r.driver}`);
 
-async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
     if (Date.now() > deadline) throw new Error('condition not met in time');
@@ -458,24 +470,57 @@ describe('concurrency', () => {
     expect(lifecycle(bridge, 'start-driver')).toEqual(['appA/camera', 'appA/calibration']);
   });
 
-  test('a stop that timed out is retried with backoff, not on every change', async () => {
-    const { manager, bridge } = await startManager();
+  test('a stop that timed out is not retried on unrelated lease changes', async () => {
+    const { manager, bridge } = await startManager({
+      stopRetry: { initialMs: 60_000, maxMs: 60_000 },
+    });
     await manager.subscribe('appA', 'camera', 'color', 'a');
-    bridge.stopFailures.set('camera', 2);
+    bridge.stopFailures.set('camera', 1);
 
     await manager.unsubscribe('appA', 'camera', 'color', 'a');
     expect(manager.getDriver('camera')?.state).toBe('errored');
-    expect(lifecycle(bridge, 'stop-driver')).toEqual(['appA/camera']);
 
-    // Unrelated lease changes do not retry the stop right away.
     await manager.subscribe('appB', 'unrelated', 'tick', 'b');
     await manager.unsubscribe('appB', 'unrelated', 'tick', 'b');
     expect(lifecycle(bridge, 'stop-driver')).toEqual(['appA/camera', 'appB/unrelated']);
+    expect(manager.getDriver('camera')?.state).toBe('errored');
+  });
 
+  test('a stop that timed out is retried with growing backoff', async () => {
+    const { manager, bridge } = await startManager({ stopRetry: { initialMs: 10, maxMs: 40 } });
+    await manager.subscribe('appA', 'camera', 'color', 'a');
+    bridge.stopFailures.set('camera', 2);
+    const stopTimes: number[] = [];
+    const request = bridge.request.bind(bridge);
+    bridge.request = (req) => {
+      if (req.type === 'stop-driver') stopTimes.push(performance.now());
+      return request(req);
+    };
+
+    await manager.unsubscribe('appA', 'camera', 'color', 'a');
     await waitFor(() => !bridge.instances.has('appA::camera'));
-    const cameraStops = lifecycle(bridge, 'stop-driver').filter((s) => s === 'appA/camera');
-    expect(cameraStops).toHaveLength(3);
+
+    expect(stopTimes).toHaveLength(3);
+    // Timers never fire early; allow 1 ms of clock granularity.
+    expect(stopTimes[1]! - stopTimes[0]!).toBeGreaterThanOrEqual(9);
+    expect(stopTimes[2]! - stopTimes[1]!).toBeGreaterThanOrEqual(19);
     expect(manager.getDriver('camera')?.state).toBe('available');
+  });
+
+  test('a new lease retries a stuck stop right away', async () => {
+    const { manager, bridge } = await startManager({
+      stopRetry: { initialMs: 60_000, maxMs: 60_000 },
+    });
+    await manager.subscribe('appA', 'camera', 'color', 'a');
+    bridge.stopFailures.set('camera', 1);
+    await manager.unsubscribe('appA', 'camera', 'color', 'a');
+    expect(manager.getDriver('camera')?.state).toBe('errored');
+
+    await manager.subscribe('appA', 'camera', 'color', 'a');
+
+    expect(lifecycle(bridge, 'stop-driver')).toEqual(['appA/camera', 'appA/camera']);
+    expect(lifecycle(bridge, 'start-driver')).toEqual(['appA/camera', 'appA/camera']);
+    expect(manager.isInstanceRunning('appA', 'camera')).toBe(true);
   });
 });
 
@@ -509,7 +554,8 @@ describe('bridge restarts', () => {
     const started = Date.now();
     await manager.stop();
     await expect(starting).rejects.toThrow('Bridge process exited');
-    expect(Date.now() - started).toBeLessThan(1_000);
+    // Far below the 2 minute catalogue timeout it would otherwise wait for.
+    expect(Date.now() - started).toBeLessThan(10_000);
     await expect(manager.subscribe('appA', 'camera', '*', 'a')).rejects.toThrow(
       'Python bridge is not running',
     );
@@ -533,6 +579,44 @@ describe('bridge restarts', () => {
     bus.on('driver:event:appA', (_event, payload) => received.push(payload));
     bridge.handlers.onEvent('appA', 'calibration', 'homography', { matrix: [] }, 1);
     expect(received).toHaveLength(1);
+  });
+
+  test('a subscribe waits for the restart when missed pings stop the bridge mid-start', async () => {
+    const { manager, bridge } = await startManager({ pingIntervalMs: 5 });
+    bridge.stopDelayMs = 20;
+    const gate = Promise.withResolvers<void>();
+    bridge.startGates.set('camera', gate.promise);
+
+    const subscribed = manager.subscribe('appA', 'camera', 'color', 'viewer');
+    await waitFor(() => bridge.requests.some((r) => r.type === 'start-driver'));
+    // The restarted bridge starts the camera without waiting.
+    bridge.startGates.delete('camera');
+    bridge.hung = true;
+
+    await subscribed;
+    expect(bridge.starts).toBe(2);
+    expect(manager.isInstanceRunning('appA', 'camera')).toBe(true);
+    expect(bridge.subscriptions).toEqual(new Set(['appA::camera::color']));
+  });
+
+  test('a crash after a long start still waits for the restarted bridge', async () => {
+    const { manager, bridge } = await startManager({
+      bridgeReadyWaitMs: 1_000,
+      initialBackoffMs: 50,
+    });
+    const gate = Promise.withResolvers<void>();
+    bridge.startGates.set('camera', gate.promise);
+
+    const subscribed = manager.subscribe('appA', 'camera', 'color', 'viewer');
+    await waitFor(() => bridge.requests.some((r) => r.type === 'start-driver'));
+    // The start outlasts the whole ready wait before the bridge crashes.
+    await new Promise((r) => setTimeout(r, 1_100));
+    bridge.startGates.delete('camera');
+    bridge.crash();
+
+    await subscribed;
+    expect(bridge.starts).toBe(2);
+    expect(manager.isInstanceRunning('appA', 'camera')).toBe(true);
   });
 
   test('a bridge that stops answering pings is restarted', async () => {

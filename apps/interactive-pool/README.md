@@ -46,6 +46,14 @@ POST /v1/apps/interactive-pool/storage/live_server_url
 "wss://example.com/realtimepool/ws"
 ```
 
+The app window may open `wss://` connections anywhere. A plain `ws://` relay,
+for example on the local network, must also be listed in `gosai.app.json`,
+otherwise the connection is blocked and logged:
+
+```json
+"network": { "connect": ["ws://192.168.1.50:8080"] }
+```
+
 ## Audio
 
 Menu feedback sounds ship in `assets/audio/`: `opening_menu.mp3`,

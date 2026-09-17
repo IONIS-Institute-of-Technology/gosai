@@ -1,21 +1,11 @@
-import type { ExperienceDefinition, ExperienceLifecycle } from './types.js';
+import type { ExperienceDefinition } from './types.js';
 
 /**
- * Type-safe helper for defining an experience. Apps export the result as
- * default from their experience entry module.
+ * Declares an experience. Export the result as the default export of the
+ * module the manifest names as the experience's `entry`.
  */
 export function defineExperience<TState = void>(
-  options: {
-    slug: string;
-    name: string;
-    description?: string;
-  } & ExperienceLifecycle<TState>,
+  definition: ExperienceDefinition<TState>,
 ): ExperienceDefinition<TState> {
-  const { slug, name, description, init, start, render, stop } = options;
-  return {
-    slug,
-    name,
-    description,
-    lifecycle: { init, start, render, stop },
-  };
+  return definition;
 }

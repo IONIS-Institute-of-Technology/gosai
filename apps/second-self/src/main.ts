@@ -104,11 +104,6 @@ interface State {
 }
 
 export default defineExperience<State>({
-  slug: 'main',
-  name: 'Second Self',
-  description:
-    'Composited augmented-mirror experience with a gesture menu and per-experience layers.',
-
   init(): State {
     const { container, canvas, ctx } = createCompositorCanvas();
     const feed = createMirrorFeed();

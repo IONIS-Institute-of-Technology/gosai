@@ -104,11 +104,6 @@ const MENU_ITEMS: readonly MenuItem[] = [
 ];
 
 export default defineExperience<State>({
-  slug: 'main',
-  name: 'Interactive Pool',
-  description:
-    'Composited interactive-pool experience (balls + hands + menu + launchable layers + live relay).',
-
   init(): State {
     const { container, canvas, ctx } = createCompositorCanvas();
     const feed = createPoolFeed();

@@ -23,7 +23,9 @@ export class StorageClientImpl implements StorageClient {
     private readonly baseUrl: string,
   ) {}
 
-  async get<T = unknown>(key: string, fallback?: T): Promise<T | undefined> {
+  get<T = unknown>(key: string): Promise<T | undefined>;
+  get<T>(key: string, fallback: T): Promise<T>;
+  async get<T>(key: string, fallback?: T): Promise<T | undefined> {
     const res = await fetch(this.keyUrl(key), { headers: this.headers() });
     if (res.status === 404) return fallback;
     if (!res.ok) throw new Error(`storage.get(${key}) -> ${res.status}`);
