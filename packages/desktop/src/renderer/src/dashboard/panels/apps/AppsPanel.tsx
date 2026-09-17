@@ -31,6 +31,7 @@ export function AppsPanel(): React.ReactElement {
   const devices = useServerResource({ command: 'devices:list', enabled: devicesWanted });
 
   const [error, setError] = useState<string | null>(null);
+  const [installError, setInstallError] = useState<string | null>(null);
   const [source, setSource] = useState('');
   const [installing, setInstalling] = useState(false);
   const [reusePrompt, setReusePrompt] = useState<ReuseDataPrompt | null>(null);
@@ -45,7 +46,7 @@ export function AppsPanel(): React.ReactElement {
     const trimmed = source.trim();
     if (!trimmed) return;
     setInstalling(true);
-    setError(null);
+    setInstallError(null);
     try {
       const installed = await installApp(
         client,
@@ -56,7 +57,7 @@ export function AppsPanel(): React.ReactElement {
       setSource('');
       openPermissions({ app: installed, reason: 'install' });
     } catch (err) {
-      setError(requestErrorMessage(err));
+      setInstallError(requestErrorMessage(err));
     } finally {
       setInstalling(false);
     }
@@ -137,6 +138,14 @@ export function AppsPanel(): React.ReactElement {
               {installing ? 'Installing…' : 'Install'}
             </Button>
           </form>
+          {installError ? (
+            <div className="rounded border border-red-900/50 bg-red-950/30 px-3 py-2">
+              <p className="font-mono text-[10px] tracking-wider text-red-300 uppercase">
+                Could not install
+              </p>
+              <ErrorText error={installError} />
+            </div>
+          ) : null}
           <ErrorText error={error ?? apps.error} />
         </div>
       </Panel>
@@ -172,7 +181,10 @@ export function AppsPanel(): React.ReactElement {
             {invalidApps.map((invalid) => (
               <li key={invalid.slug} className="flex items-start gap-3 bg-neutral-900/40 px-4 py-3">
                 <span className="flex min-w-0 flex-1 flex-col">
-                  <span className="font-mono text-sm text-neutral-100">{invalid.slug}</span>
+                  <span className="font-mono text-sm text-neutral-100">
+                    {invalid.slug}
+                    {invalid.builtin ? ' · built-in' : ''} · not loaded
+                  </span>
                   <span className="font-mono text-[11px] break-words text-red-300">
                     {invalid.error}
                   </span>

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { Capability, InstalledApp } from '@gosai/shared';
-import { capabilityChoices } from '../../../lib/install.js';
+import { capabilityChoices, sdkRangeLabel } from '../../../lib/install.js';
 import { appIconUrl } from '../../../lib/server-url.js';
 import { Button } from '../../components/Button.js';
 import { Dialog } from '../../components/Dialog.js';
@@ -81,7 +81,8 @@ function PermissionsForm({
         <div className="min-w-0 space-y-1">
           <p className="text-sm font-medium text-neutral-100">{manifest.name}</p>
           <p className="font-mono text-[11px] text-neutral-500">
-            {manifest.author ? `by ${manifest.author}` : 'author not given'}
+            {manifest.author ? `by ${manifest.author}` : 'author not given'} ·{' '}
+            {sdkRangeLabel(manifest)}
           </p>
           {manifest.description ? (
             <p className="text-xs text-neutral-400">{manifest.description}</p>

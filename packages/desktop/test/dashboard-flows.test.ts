@@ -12,6 +12,7 @@ import {
   capabilityChoices,
   hasPermissionRequests,
   installApp,
+  sdkRangeLabel,
   saveCapabilityGrants,
   type InstallClient,
 } from '../src/renderer/src/lib/install.js';
@@ -116,6 +117,11 @@ describe('install and capability approval', () => {
         app({ capabilities: [], network: { connect: ['ws://relay.local:8080'] } }),
       ),
     ).toBe(true);
+  });
+
+  test("labels the app's SDK range", () => {
+    expect(sdkRangeLabel({ sdk: '^0.2.0' })).toBe('SDK ^0.2.0');
+    expect(sdkRangeLabel({})).toBe('no SDK range declared');
   });
 
   test('saves only the approved capabilities the app requests', async () => {

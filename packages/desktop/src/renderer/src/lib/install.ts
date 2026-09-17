@@ -61,6 +61,14 @@ export function capabilityChoices(app: InstalledApp): CapabilityChoice[] {
   }));
 }
 
+/**
+ * The `@gosai/sdk` versions the app says it works with. The server refuses to
+ * install, and lists as invalid, an app whose range excludes its SDK.
+ */
+export function sdkRangeLabel(manifest: Pick<InstalledApp['manifest'], 'sdk'>): string {
+  return manifest.sdk === undefined ? 'no SDK range declared' : `SDK ${manifest.sdk}`;
+}
+
 /** Whether the app asks for anything an operator should review. */
 export function hasPermissionRequests(app: InstalledApp): boolean {
   return (

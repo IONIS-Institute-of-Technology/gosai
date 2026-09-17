@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { DeviceCatalog, InstalledApp, RunningExperience } from '@gosai/shared';
 import { readyToStart } from '../../../lib/calibration-gate.js';
 import { requestErrorMessage } from '../../../lib/errors.js';
-import { hasPermissionRequests } from '../../../lib/install.js';
+import { hasPermissionRequests, sdkRangeLabel } from '../../../lib/install.js';
 import { useServer } from '../../../lib/server-context.js';
 import { RELOAD } from '../../../lib/server-resource.js';
 import { appIconUrl } from '../../../lib/server-url.js';
@@ -156,6 +156,7 @@ export function AppRow({
             <span className="truncate font-mono text-[11px] text-neutral-500">
               {appSlug} v{manifest.version}
               {manifest.author ? ` · by ${manifest.author}` : ''}
+              {manifest.sdk === undefined ? '' : ` · ${sdkRangeLabel(manifest)}`}
               {anyRunning ? ` · running: ${running.map((r) => r.experienceSlug).join(', ')}` : ''}
             </span>
           </span>
