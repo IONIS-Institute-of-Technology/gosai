@@ -29,4 +29,25 @@ describe('settings', () => {
     await expect(settings.set({ display: { zoom: 2 } })).rejects.toThrow('display');
     expect(server.requests).toEqual([]);
   });
+
+  test('onChange receives the settings changes of this app until removed', async () => {
+    const server = new FakeServer();
+    const settings = createSettingsClient(serverSettingsBackend('demo', server.connection));
+    const seen: unknown[] = [];
+    const off = settings.onChange((values) => seen.push(values));
+    server.emit('app:settings-changed', { appSlug: 'other', values: { debug: true } });
+    server.emit('app:settings-changed', { appSlug: 'demo', values: { debug: true } });
+    off();
+    server.emit('app:settings-changed', { appSlug: 'demo', values: { debug: false } });
+    expect(seen).toEqual([{ debug: true }]);
+    expect(server.listenerCount()).toBe(0);
+  });
+
+  test('onChange does nothing for a backend that cannot report changes', () => {
+    const settings = createSettingsClient({
+      load: async () => ({}),
+      update: async () => undefined,
+    });
+    expect(() => settings.onChange(() => undefined)()).not.toThrow();
+  });
 });

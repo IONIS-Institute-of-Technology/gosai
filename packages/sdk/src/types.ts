@@ -198,6 +198,12 @@ export interface SettingsClient {
    * manifest default when nothing was stored.
    */
   set(values: Readonly<Record<string, unknown>>): Promise<void>;
+  /**
+   * Called with the settings, shaped like `get` returns them, each time they
+   * change, for example from the dashboard. Returns a function that removes
+   * the listener. Listeners still set when the experience stops are removed.
+   */
+  onChange<T extends object = Record<string, unknown>>(listener: (settings: T) => void): () => void;
 }
 
 export interface AssetsClient {

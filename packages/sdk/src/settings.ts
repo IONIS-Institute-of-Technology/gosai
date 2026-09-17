@@ -15,12 +15,19 @@ export interface SettingsBackend {
   load(): Promise<SettingsObject>;
   /** Stores values by dotted key on top of what is already stored. */
   update(values: Readonly<Record<string, unknown>>): Promise<void>;
+  /**
+   * Calls `listener` with the current settings each time they change. Returns
+   * a function that removes it. Without it, `onChange` listeners never fire.
+   */
+  subscribe?(listener: (settings: SettingsObject) => void): () => void;
 }
 
 export function createSettingsClient(backend: SettingsBackend): SettingsClient {
   return {
     get: async <T extends object>() => (await backend.load()) as T,
     set: (values) => backend.update(values),
+    onChange: <T extends object>(listener: (settings: T) => void) =>
+      backend.subscribe?.((settings) => listener(settings as T)) ?? ((): void => undefined),
   };
 }
 
@@ -34,6 +41,10 @@ export function serverSettingsBackend(appSlug: string, server: ServerConnection)
     update: async (values) => {
       await server.request('app:settings:set', { appSlug, values: settingValues(values) });
     },
+    subscribe: (listener) =>
+      server.on('app:settings-changed', (change) => {
+        if (change.appSlug === appSlug) listener({ ...change.values });
+      }),
   };
 }
 
