@@ -36,22 +36,29 @@ export type Quad = readonly [Point2D, Point2D, Point2D, Point2D];
 
 /**
  * Apply a 3x3 row-major homography to a single point.
- * Returns `(0, 0)` if the homogeneous denominator collapses (degenerate point).
+ * Returns `null` when the point maps to infinity (the homogeneous `w` is zero).
  */
-export function perspectiveTransformPoint(H: ArrayLike<number>, x: number, y: number): Point2D {
+export function perspectiveTransformPoint(
+  H: ArrayLike<number>,
+  x: number,
+  y: number,
+): Point2D | null {
   const w = H[6]! * x + H[7]! * y + H[8]!;
-  if (Math.abs(w) < 1e-12) return { x: 0, y: 0 };
+  if (Math.abs(w) < 1e-12) return null;
   return {
     x: (H[0]! * x + H[1]! * y + H[2]!) / w,
     y: (H[3]! * x + H[4]! * y + H[5]!) / w,
   };
 }
 
-/** Apply `H` to every point in `points`. */
+/**
+ * Apply `H` to every point in `points`. Entries are `null` where the point
+ * maps to infinity, so indices still match the input.
+ */
 export function perspectiveTransformPoints(
   H: ArrayLike<number>,
   points: readonly Point2D[],
-): Point2D[] {
+): (Point2D | null)[] {
   return points.map((p) => perspectiveTransformPoint(H, p.x, p.y));
 }
 

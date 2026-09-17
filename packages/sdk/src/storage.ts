@@ -15,7 +15,9 @@ export class StorageClientImpl implements StorageClient {
     private readonly server: ServerConnection,
   ) {}
 
-  async get<T = unknown>(key: string, fallback?: T): Promise<T | undefined> {
+  get<T = unknown>(key: string): Promise<T | undefined>;
+  get<T>(key: string, fallback: T): Promise<T>;
+  async get<T>(key: string, fallback?: T): Promise<T | undefined> {
     const stored = await this.server.request('storage:get', { appSlug: this.appSlug, key });
     return stored.found ? (stored.value as T) : fallback;
   }

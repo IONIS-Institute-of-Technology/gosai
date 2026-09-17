@@ -28,7 +28,8 @@ Threading
 - One writer thread owns stdout. Replies, logs, state changes and ordinary
   events are written in order and never dropped. For the events a driver
   declares in `stream_events`, only the latest value per
-  `(instance, driver, event)` is kept while the writer is busy.
+  `(instance, driver, event)` is kept while the writer is busy. Events in
+  `buffered_events` keep a bounded queue per key and drop the oldest value.
 """
 
 from __future__ import annotations
@@ -166,6 +167,7 @@ class _Writer:
         self._cond = threading.Condition()
         self._ordered: deque[JsonDict] = deque()
         self._latest: dict[tuple[str, str, str], JsonDict] = {}
+        self._buffered: dict[tuple[str, str, str], deque[JsonDict]] = {}
         self._closed = False
         self._broken = False
         self._thread: threading.Thread | None = None
@@ -188,6 +190,22 @@ class _Writer:
             self._latest[key] = message
             self._cond.notify()
 
+    def post_buffered(self, key: tuple[str, str, str], message: JsonDict, maxsize: int) -> None:
+        """Queue an event in order, dropping the oldest queued value for `key` when full."""
+        dropped = False
+        with self._cond:
+            queue = self._buffered.get(key)
+            if queue is None:
+                queue = self._buffered[key] = deque()
+            if len(queue) >= maxsize:
+                queue.popleft()
+                dropped = True
+            queue.append(message)
+            self._cond.notify()
+        if dropped:
+            instance, driver, event = key
+            self._metrics.add(instance, driver, f"{event}_dropped", 1.0)
+
     def close(self, timeout: float | None = None) -> None:
         """Write everything still queued, then stop the thread."""
         with self._cond:
@@ -203,7 +221,7 @@ class _Writer:
         next_flush = time.monotonic() + METRICS_INTERVAL_S
         while True:
             with self._cond:
-                while not self._ordered and not self._latest and not self._closed:
+                while not (self._ordered or self._buffered or self._latest or self._closed):
                     remaining = next_flush - time.monotonic()
                     if remaining <= 0:
                         break
@@ -226,12 +244,14 @@ class _Writer:
         with self._cond:
             ordered = list(self._ordered)
             self._ordered.clear()
+            buffered = [(key, message) for key, queue in self._buffered.items() for message in queue]
+            self._buffered.clear()
             latest = list(self._latest.items())
             self._latest.clear()
-        if not ordered and not latest:
+        if not ordered and not buffered and not latest:
             return False
         chunks: list[bytes] = [self._encode_ordered(message) for message in ordered]
-        for key, message in latest:
+        for key, message in (*buffered, *latest):
             encoded = self._encode_event(key, message)
             if encoded is not None:
                 chunks.append(encoded)
@@ -432,6 +452,10 @@ class Bridge:
             cls = self._driver_classes.get(driver)
             if cls is not None and event in cls.stream_events:
                 self._writer.post_latest((instance, driver, event), message)
+            elif cls is not None and event in cls.buffered_events:
+                self._writer.post_buffered(
+                    (instance, driver, event), message, cls.buffered_events[event]
+                )
             else:
                 self._post(message)
         with self._lock:
@@ -805,7 +829,7 @@ class Bridge:
                 queue = SerialQueue(f"bridge:{queue_name}")
                 self._queues[queue_name] = queue
         try:
-            queue.submit(task)
+            queue.submit(task, lambda: self._respond_error(req_id, "bridge is shutting down"))
         except RuntimeError as exc:
             self._respond_error(req_id, describe_error(exc))
 
@@ -817,7 +841,7 @@ class Bridge:
         """Stop every driver and flush output within `timeout` seconds.
 
         Requests already running get a short grace period; queued requests
-        that have not started are refused.
+        that have not started get an error reply and never run.
         """
         start = time.monotonic()
         deadline = start + timeout

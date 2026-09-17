@@ -39,10 +39,6 @@ type State = {
 };
 
 export default defineExperience<State>({
-  slug: 'calibrate',
-  name: 'Calibration Runner',
-  description: 'Generic per-app calibration runner.',
-
   init(): State {
     const role = detectRole();
     return {
@@ -139,7 +135,8 @@ async function loadTargetCalibration(
     throw new Error(`App ${targetAppSlug} does not declare a calibration entry`);
   }
 
-  const entryUrl = `${rt.app.serverBaseUrl}/v1/apps/${targetAppSlug}/static/${calibration.entry}`;
+  // Each app's files are served from its own origin.
+  const entryUrl = rt.assets.url(calibration.entry, targetAppSlug);
   const mod = (await import(/* @vite-ignore */ entryUrl)) as {
     default?: CalibrationDefinition;
   };

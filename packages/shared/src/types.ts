@@ -103,8 +103,6 @@ export interface AppManifest {
    * dashboard shows them at install time.
    */
   readonly capabilities?: readonly Capability[];
-  /** Network access beyond the app's own origin. */
-  readonly network?: AppNetwork;
   /**
    * Device kinds this app needs. Drives the per-app device picker in the
    * dashboard. Omitted kinds default to `false`.
@@ -123,14 +121,17 @@ export interface AppManifest {
    * the declared defaults.
    */
   readonly settings?: AppSettingsSchema;
+  /** Network access beyond the defaults the app window's security policy allows. */
+  readonly network?: AppNetworkSchema;
 }
 
-/** External origins an app talks to. The dashboard shows them at install. */
-export interface AppNetwork {
+/** Extra network access an app requests (see {@link AppManifest.network}). */
+export interface AppNetworkSchema {
   /**
-   * Origins the app may connect to with `fetch` or a WebSocket, as
-   * `scheme://host[:port]` with scheme http, https, ws or wss. Added to the
-   * app page's CSP `connect-src`.
+   * Origins the app's pages may connect to on top of their own origin and any
+   * `https:` or `wss:` URL, as plain `scheme://host[:port]` strings with an
+   * `http`, `https`, `ws` or `wss` scheme. For services on the local network,
+   * such as `ws://relay.local:8080`.
    */
   readonly connect?: readonly string[];
 }

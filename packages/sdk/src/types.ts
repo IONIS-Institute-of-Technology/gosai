@@ -1,8 +1,14 @@
 /**
- * Types shared between SDK and apps.
+ * Types for app code: the experience definition and the runtime context the
+ * lifecycle hooks receive.
  */
 
-import type { AppDeviceSettings, RunningExperience } from '@gosai/shared';
+import type {
+  AppDeviceSettings,
+  AppManifest,
+  ExperienceDescriptor,
+  RunningExperience,
+} from '@gosai/shared';
 import type { ServerClient } from '@gosai/shared/client';
 
 export type {
@@ -20,25 +26,29 @@ export type {
   InstalledApp,
   RunningExperience,
   DriverInfo,
+  DriverInstanceInfo,
   DriverRuntimeInfo,
   DriverState,
-  LogEntry,
   LogLevel,
-  GlobalConfig,
-  PerformanceSample,
-  SystemStats,
-  DisplayInfo,
   ExperienceState,
   AppState,
 } from '@gosai/shared';
 
-export { PROTOCOL_VERSION } from '@gosai/shared/protocol';
-export { ServerEvents, ClientCommands } from '@gosai/shared/events';
-
 export interface AppContext {
   readonly appSlug: string;
   readonly experienceSlug: string;
+  /** The app's manifest, as the server parsed it. */
+  readonly manifest: AppManifest;
+  /** This experience's entry in the manifest: name, description, drivers. */
+  readonly experience: ExperienceDescriptor;
+  /**
+   * Launch parameters the window was opened with, such as `role` or `target`
+   * for the calibration runner. The access token is never included.
+   */
+  readonly params: Readonly<Record<string, string>>;
+  /** Underlying server connection, for commands the SDK doesn't wrap. */
   readonly server: ServerConnection;
+  /** HTTP origin of the server for this app, e.g. `http://my-app.localhost:7777`. */
   readonly serverBaseUrl: string;
 }
 
@@ -50,24 +60,42 @@ export type ServerConnection = Pick<
 
 export interface ExperienceRuntimeContext {
   readonly app: AppContext;
+  /**
+   * Driver events and actions for this app's driver binding. Subscriptions
+   * still open when the experience stops are removed by the runtime.
+   */
   readonly drivers: DriverClient;
   readonly storage: StorageClient;
+  /** The app's settings from its manifest `settings` schema. */
+  readonly settings: SettingsClient;
+  /** URLs of files shipped with the app. */
+  readonly assets: AssetsClient;
   readonly log: AppLogger;
   readonly router: ExperienceRouter;
   /**
-   * App-scoped pub/sub. Useful when an experience runs in multiple windows
-   * (e.g. projector + control window) and they need to coordinate state.
+   * App-scoped pub/sub. Useful when an experience runs in several windows
+   * (e.g. projector and control windows) that need to coordinate state.
+   * Subscriptions still open when the experience stops are removed.
    */
   readonly events: AppEventsClient;
-  /** The app's device assignments (display, camera, microphone, speaker). */
+  /** The app's device assignments and their changes. */
   readonly appConfig: AppConfigClient;
+  /**
+   * Aborts when the experience stops. Pass it to `addEventListener`, `fetch`
+   * and anything else that accepts a signal so it is released automatically.
+   */
+  readonly signal: AbortSignal;
+  /**
+   * An AudioContext the runtime owns. Created on first use, resumed when the
+   * experience starts and closed when it stops.
+   */
+  readonly audio: AudioContext;
+  /** Measures one round trip to the server, in milliseconds. */
+  ping(): Promise<number>;
 }
 
-export interface AppConfigClient {
-  get(): Promise<AppDeviceSettings>;
-  /** Called when the dashboard changes the app's device assignments. */
-  onChange(listener: (settings: AppDeviceSettings) => void): () => void;
-}
+/** Short name for the runtime context. */
+export type ExperienceContext = ExperienceRuntimeContext;
 
 export interface AppEventsSubscription {
   unsubscribe(): void;
@@ -89,20 +117,54 @@ export interface DriverSubscription {
   unsubscribe(): void;
 }
 
+export interface AppConfigClient {
+  /** The app's device assignments: display, camera, microphone and speaker overrides. */
+  get(): Promise<AppDeviceSettings>;
+  /** Called when the dashboard changes them. Removed when the experience stops. */
+  onChange(listener: (settings: AppDeviceSettings) => void): () => void;
+}
+
 export interface DriverClient {
   /** Subscribe to a specific event from a driver. */
   on(driver: string, event: string, listener: (data: unknown) => void): DriverSubscription;
-  /** Get the most recently-emitted value for a driver event. */
-  get(driver: string, event: string): Promise<unknown>;
-  /** Execute an action exposed by a driver. */
-  execute(driver: string, action: string, data?: unknown): Promise<unknown>;
+  /** Get the most recently emitted value for a driver event. */
+  get<T = unknown>(driver: string, event: string): Promise<T>;
+  /** Execute an action exposed by a driver and return its result. */
+  execute<T = unknown>(driver: string, action: string, data?: unknown): Promise<T>;
 }
 
 export interface StorageClient {
-  get<T = unknown>(key: string, fallback?: T): Promise<T | undefined>;
+  /** Returns the stored value, or `undefined` when the key is missing. */
+  get<T = unknown>(key: string): Promise<T | undefined>;
+  /** Returns the stored value, or `fallback` when the key is missing. */
+  get<T>(key: string, fallback: T): Promise<T>;
   set(key: string, value: unknown): Promise<void>;
   remove(key: string): Promise<void>;
   list(): Promise<string[]>;
+}
+
+export interface SettingsClient {
+  /**
+   * The app's settings as one nested object: stored values merged over the
+   * defaults declared in the manifest. Keys are the dotted field keys split
+   * into objects, so `projection.mode` is `settings.projection.mode`.
+   */
+  get<T extends object = Record<string, unknown>>(): Promise<T>;
+  /**
+   * Stores values by dotted key, e.g. `{ 'projection.mode': 'reflection' }`.
+   * Keys you don't pass keep their stored value, or keep following the
+   * manifest default when nothing was stored.
+   */
+  set(values: Readonly<Record<string, unknown>>): Promise<void>;
+}
+
+export interface AssetsClient {
+  /**
+   * Absolute URL of a file in the app, relative to the app root (e.g.
+   * `assets/logo.png`). Pass `appSlug` for a file of another installed app,
+   * such as a companion app's module; it resolves against that app's origin.
+   */
+  url(path: string, appSlug?: string): string;
 }
 
 export interface AppLogger {
@@ -120,26 +182,29 @@ export interface ExperienceRouter {
   onStateChange(listener: (state: RunningExperience) => void): () => void;
 }
 
-export type ExperienceLifecycle<TState = void> = {
-  /** Called once before `start`. Synchronous-only setup. */
-  init?: () => TState | Promise<TState>;
-  /** Called when the experience becomes active. */
-  start: (ctx: ExperienceRuntimeContext, state: TState) => void | Promise<void>;
-  /** Called every animation frame. Return early if you do not need a render loop. */
-  render?: (ctx: ExperienceRuntimeContext, state: TState, frame: FrameInfo) => void;
-  /** Called when the experience is being stopped. Release resources here. */
-  stop?: (ctx: ExperienceRuntimeContext, state: TState) => void | Promise<void>;
-};
-
 export interface FrameInfo {
+  /** `requestAnimationFrame` timestamp, comparable with `performance.now()`. */
   readonly timestamp: number;
+  /**
+   * Milliseconds since the previous frame, capped so a stall (a hidden
+   * window, a long task) doesn't make animations jump.
+   */
   readonly deltaMs: number;
+  /** Frames rendered before this one. */
   readonly frameCount: number;
 }
 
+/**
+ * An experience's lifecycle. The name, description and slug come from the
+ * app's manifest, and are available as `rt.app.experience`.
+ */
 export interface ExperienceDefinition<TState = void> {
-  readonly slug: string;
-  readonly name: string;
-  readonly description?: string;
-  readonly lifecycle: ExperienceLifecycle<TState>;
+  /** Builds the experience's state. Runs once, before `start`. */
+  init?(rt: ExperienceRuntimeContext): TState | Promise<TState>;
+  /** Called when the experience becomes active. */
+  start?(rt: ExperienceRuntimeContext, state: TState): void | Promise<void>;
+  /** Called every animation frame. */
+  render?(rt: ExperienceRuntimeContext, state: TState, frame: FrameInfo): void;
+  /** Called when the experience stops. Release what the runtime doesn't track. */
+  stop?(rt: ExperienceRuntimeContext, state: TState): void | Promise<void>;
 }

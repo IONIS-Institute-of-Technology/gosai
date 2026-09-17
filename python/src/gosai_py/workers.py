@@ -148,15 +148,16 @@ class SerialQueue:
         self._name = name
         self._idle_timeout_s = idle_timeout_s
         self._cond = threading.Condition()
-        self._tasks: deque[Callable[[], None]] = deque()
+        self._tasks: deque[tuple[Callable[[], None], Callable[[], None] | None]] = deque()
         self._thread: threading.Thread | None = None
         self._closed = False
 
-    def submit(self, task: Callable[[], None]) -> None:
+    def submit(self, task: Callable[[], None], cancel: Callable[[], None] | None = None) -> None:
+        """Queue `task`. `cancel` runs instead if the queue closes before `task` starts."""
         with self._cond:
             if self._closed:
                 raise RuntimeError(f"queue {self._name} is closed")
-            self._tasks.append(task)
+            self._tasks.append((task, cancel))
             if self._thread is None:
                 self._thread = threading.Thread(target=self._run, name=self._name, daemon=True)
                 self._thread.start()
@@ -164,13 +165,21 @@ class SerialQueue:
                 self._cond.notify()
 
     def close(self, timeout: float | None = None) -> bool:
-        """Refuse new tasks, finish queued ones, and wait for the thread.
+        """Refuse new tasks, cancel queued ones, and wait for the running task.
 
         Returns True when the worker thread has exited.
         """
         with self._cond:
             self._closed = True
+            pending = list(self._tasks)
+            self._tasks.clear()
             self._cond.notify_all()
+        for _task, cancel in pending:
+            if cancel is not None:
+                try:
+                    cancel()
+                except Exception:
+                    traceback.print_exc()
         return self.join(timeout)
 
     def join(self, timeout: float | None = None) -> bool:
@@ -193,7 +202,7 @@ class SerialQueue:
                 if not self._tasks:
                     self._thread = None
                     return
-                task = self._tasks.popleft()
+                task, _cancel = self._tasks.popleft()
             try:
                 task()
             except Exception:

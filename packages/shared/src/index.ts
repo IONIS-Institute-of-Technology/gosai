@@ -4,6 +4,5 @@ export * from './protocol.js';
 export * from './commands.js';
 export * from './capabilities.js';
 export * from './app-settings.js';
-export * from './homography.js';
 export * from './log-format.js';
 export * from './slug.js';

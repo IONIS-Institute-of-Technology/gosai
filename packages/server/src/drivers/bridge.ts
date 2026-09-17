@@ -126,7 +126,7 @@ export class PythonBridge implements DriverBridge {
 
   async start(): Promise<void> {
     if (this.process) throw new Error('Python bridge is already running');
-    const bridgeBin = join(this.options.pythonDir, '.venv', 'bin', 'gosai-bridge');
+    const bridgeBin = bridgeExecutable(this.options.pythonDir);
     if (!existsSync(bridgeBin)) {
       throw new Error(
         `gosai-bridge not found at ${bridgeBin}. Run \`uv sync\` inside the python/ directory.`,
@@ -422,4 +422,11 @@ function classifyNativeStderrLine(line: string): 'debug' | 'warn' {
     return 'debug';
   }
   return 'warn';
+}
+
+/** The venv's `gosai-bridge` entry point. Windows venvs use `Scripts` and `.exe`. */
+export function bridgeExecutable(pythonDir: string, platform = process.platform): string {
+  return platform === 'win32'
+    ? join(pythonDir, '.venv', 'Scripts', 'gosai-bridge.exe')
+    : join(pythonDir, '.venv', 'bin', 'gosai-bridge');
 }

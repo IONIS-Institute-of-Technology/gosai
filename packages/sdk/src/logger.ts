@@ -24,8 +24,8 @@ export class AppLoggerImpl implements AppLogger {
   }
 
   private send(level: LogLevel, message: string, data?: Record<string, unknown>): void {
-    // Best-effort: fire and forget. If the server isn't connected the message
-    // only reaches the browser console.
+    // Fire and forget, and mirror to the console so the message is visible
+    // in devtools even when the server is unreachable.
     if (level === 'error') console.error(`[${this.source}] ${message}`, data);
     else if (level === 'warn') console.warn(`[${this.source}] ${message}`, data);
     else console.log(`[${this.source}] ${message}`, data);
@@ -37,6 +37,8 @@ export class AppLoggerImpl implements AppLogger {
         message,
         data: data ?? null,
       })
-      .catch(() => undefined);
+      .catch(() => {
+        // Not connected: the console copy above is all we can do.
+      });
   }
 }

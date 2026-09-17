@@ -8,6 +8,7 @@ import {
   type WebFrameMain,
 } from 'electron';
 import { join } from 'node:path';
+import { appHostname } from '@gosai/shared/app-origin';
 import { mintAppToken } from '@gosai/shared/auth';
 import { ServerClient } from '@gosai/shared/client';
 import { IPC_CHANNELS } from './channels.js';
@@ -16,8 +17,6 @@ interface WindowRegistryOptions {
   readonly rootDir: string;
   /** Dashboard token for this launch. App window tokens derive from it. */
   readonly dashboardToken: string;
-  readonly serverHost?: string;
-  readonly serverPort?: number;
 }
 
 interface AppHostHandle {
@@ -69,6 +68,23 @@ const isDev = !app.isPackaged;
 const isMac = process.platform === 'darwin';
 const isLinux = process.platform === 'linux';
 
+/** Server bind addresses that `<slug>.localhost` (always loopback) can reach. */
+const LOOPBACK_REACHABLE_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '0.0.0.0', '::']);
+
+/** How long an app window gets to stop its experience before it is destroyed. */
+const APP_STOP_TIMEOUT_MS = 3000;
+
+/** Web preferences shared by the windows that run app code. */
+const APP_WEB_PREFERENCES = {
+  contextIsolation: true,
+  nodeIntegration: false,
+  sandbox: true,
+  backgroundThrottling: false,
+  // Kiosks are driven by gestures and may never get a click, so audio must
+  // start without one.
+  autoplayPolicy: 'no-user-gesture-required',
+} as const;
+
 export class WindowRegistry {
   private dashboard: BrowserWindow | null = null;
   private readonly appHosts = new Map<number, AppHostHandle>();
@@ -76,24 +92,27 @@ export class WindowRegistry {
   private readonly endingExperiences = new Set<string>();
   private powerSaveBlockerId: number | null = null;
   private shuttingDown = false;
-  private serverHost: string;
-  private serverPort: number;
+  private serverHost = '127.0.0.1';
+  private serverPort = 7777;
   /** Created on first use, so the dashboard token only goes to a known server address. */
   private client: ServerClient | null = null;
 
-  constructor(private readonly options: WindowRegistryOptions) {
-    this.serverHost = options.serverHost ?? '127.0.0.1';
-    this.serverPort = options.serverPort ?? 7777;
-  }
+  constructor(private readonly options: WindowRegistryOptions) {}
 
   /**
    * Points every window opened from now on, and main's own connection, at the
-   * given server. Called after the embedded server reports its (possibly
-   * ephemeral) port.
+   * given server. Called with the embedded server's ephemeral port, or the
+   * port of a server started separately in development.
    */
   setServerAddress(addr: { host: string; port: number }): void {
     this.serverHost = addr.host;
     this.serverPort = addr.port;
+    if (!LOOPBACK_REACHABLE_HOSTS.has(addr.host)) {
+      console.warn(
+        `[gosai-desktop] the server listens on ${addr.host}, but app windows connect through ` +
+          '<slug>.localhost, which resolves to loopback; they will not reach it',
+      );
+    }
     this.client?.close();
     this.client = null;
   }
@@ -118,12 +137,48 @@ export class WindowRegistry {
     return `http://${this.serverHost}:${this.serverPort}`;
   }
 
-  /** Query params every renderer window needs to find and authenticate with the server. */
+  /** Query params the dashboard needs to find and authenticate with the server. */
   private appendServerParams(query: URLSearchParams, token: string): URLSearchParams {
     query.set('serverHost', this.serverHost);
     query.set('serverPort', String(this.serverPort));
     query.set('token', token);
     return query;
+  }
+
+  /**
+   * URL of the host page for an app window, on the app's own origin
+   * `http://<slug>.localhost:<port>/`. Browsers resolve `*.localhost` to
+   * loopback, so `serverHost` isn't used: the server must listen on a
+   * loopback or wildcard address, which desktop and kiosk always do.
+   */
+  private appHostUrl(appSlug: string, launch: Record<string, string | undefined>): string {
+    const url = new URL(`http://${appHostname(appSlug)}:${this.serverPort}/`);
+    for (const [key, value] of Object.entries(launch)) {
+      if (value !== undefined) url.searchParams.set(key, value);
+    }
+    return url.toString();
+  }
+
+  /**
+   * Asks the page to stop its experience, waits for it up to
+   * APP_STOP_TIMEOUT_MS, then destroys the window. `destroy()` skips the
+   * page's unload handlers, so without this the experience's stop hook
+   * would never run.
+   */
+  private async stopAndDestroy(win: BrowserWindow): Promise<void> {
+    if (win.isDestroyed()) return;
+    win.hide();
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, APP_STOP_TIMEOUT_MS);
+    });
+    const stopped = win.webContents
+      .executeJavaScript('globalThis.gosaiHost?.stop()')
+      .then(() => undefined)
+      .catch(() => undefined);
+    await Promise.race([stopped, timeout]);
+    clearTimeout(timer);
+    if (!win.isDestroyed()) win.destroy();
   }
 
   /**
@@ -237,16 +292,10 @@ export class WindowRegistry {
       // creation. On macOS, creation-time fullscreen plus setKiosk() on show
       // makes the window drop out of fullscreen on the first open.
       fullscreen: wantsFullscreen && !isLinux && !isMac,
-      ...(isMac ? { simpleFullscreen: false } : {}),
       backgroundColor: '#000000',
       autoHideMenuBar: true,
       show: false,
-      webPreferences: {
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-        backgroundThrottling: false,
-      },
+      webPreferences: APP_WEB_PREFERENCES,
     });
 
     let shown = false;
@@ -303,24 +352,15 @@ export class WindowRegistry {
     win.webContents.once('did-finish-load', showWindow);
     fallbackTimer = setTimeout(showWindow, 3000);
 
-    const query = this.appendServerParams(
-      new URLSearchParams({
-        app: opts.appSlug,
+    void win.loadURL(
+      this.appHostUrl(opts.appSlug, {
         experience: opts.experienceSlug,
         display: String(display.id),
+        target: opts.targetAppSlug,
+        driverBinding: opts.driverBinding,
+        token,
       }),
-      token,
     );
-    if (opts.targetAppSlug) query.set('target', opts.targetAppSlug);
-    if (opts.driverBinding) query.set('driverBinding', opts.driverBinding);
-
-    if (isDev && process.env.ELECTRON_RENDERER_URL) {
-      void win.loadURL(`${process.env.ELECTRON_RENDERER_URL}/app-host.html?${query.toString()}`);
-    } else {
-      void win.loadFile(join(this.options.rootDir, '../renderer/app-host.html'), {
-        search: `?${query.toString()}`,
-      });
-    }
 
     const handle: AppHostHandle = {
       id: win.id,
@@ -332,6 +372,11 @@ export class WindowRegistry {
 
     this.appHosts.set(handle.id, handle);
     this.updatePowerSaveBlocker();
+    // A close from the window manager stops the experience like main's own close.
+    win.on('close', (event) => {
+      event.preventDefault();
+      void this.stopAndDestroy(win);
+    });
     win.on('closed', () => {
       if (!this.appHosts.delete(handle.id)) return;
       this.updatePowerSaveBlocker();
@@ -347,23 +392,20 @@ export class WindowRegistry {
     if (!handle) return false;
     this.appHosts.delete(windowId);
     this.updatePowerSaveBlocker();
-    if (!handle.window.isDestroyed()) handle.window.destroy();
-    if (!this.hasControlFor(handle.appSlug, handle.experienceSlug)) {
-      this.stopExperienceOnServer(handle.appSlug, handle.experienceSlug);
-    }
+    void this.stopAndDestroy(handle.window).then(() => {
+      if (!this.hasControlFor(handle.appSlug, handle.experienceSlug)) {
+        this.stopExperienceOnServer(handle.appSlug, handle.experienceSlug);
+      }
+    });
     return true;
   }
 
-  closeAllAppHosts(): void {
-    for (const handle of this.appHosts.values()) {
-      try {
-        if (!handle.window.isDestroyed()) handle.window.destroy();
-      } catch {
-        // already destroyed
-      }
-    }
+  /** Stops and closes every app-host window. */
+  async closeAllAppHosts(): Promise<void> {
+    const windows = [...this.appHosts.values()].map((handle) => handle.window);
     this.appHosts.clear();
     this.updatePowerSaveBlocker();
+    await Promise.all(windows.map((win) => this.stopAndDestroy(win)));
   }
 
   openControlWindow(opts: OpenControlWindowOptions): ControlWindowHandle {
@@ -387,12 +429,7 @@ export class WindowRegistry {
       autoHideMenuBar: true,
       alwaysOnTop: true,
       show: false,
-      webPreferences: {
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-        backgroundThrottling: false,
-      },
+      webPreferences: APP_WEB_PREFERENCES,
     });
 
     win.setAlwaysOnTop(true, 'screen-saver');
@@ -403,24 +440,15 @@ export class WindowRegistry {
       win.focus();
     });
 
-    const query = this.appendServerParams(
-      new URLSearchParams({
-        app: opts.appSlug,
+    void win.loadURL(
+      this.appHostUrl(opts.appSlug, {
         experience: opts.experienceSlug,
         role: 'control',
+        target: opts.targetAppSlug,
+        driverBinding: opts.driverBinding,
+        token,
       }),
-      token,
     );
-    if (opts.targetAppSlug) query.set('target', opts.targetAppSlug);
-    if (opts.driverBinding) query.set('driverBinding', opts.driverBinding);
-
-    if (isDev && process.env.ELECTRON_RENDERER_URL) {
-      void win.loadURL(`${process.env.ELECTRON_RENDERER_URL}/app-host.html?${query.toString()}`);
-    } else {
-      void win.loadFile(join(this.options.rootDir, '../renderer/app-host.html'), {
-        search: `?${query.toString()}`,
-      });
-    }
 
     const handle: ControlWindowHandle = {
       id: win.id,
@@ -431,8 +459,12 @@ export class WindowRegistry {
 
     this.controlWindows.set(handle.id, handle);
     this.updatePowerSaveBlocker();
-    win.on('close', () => {
-      this.endExperienceInternal(opts.appSlug, opts.experienceSlug, handle.id);
+    // Closing the control window ends the experience; every window of it,
+    // this one included, stops before it is destroyed.
+    win.on('close', (event) => {
+      if (this.shuttingDown) return;
+      event.preventDefault();
+      this.endExperienceInternal(opts.appSlug, opts.experienceSlug);
     });
 
     return handle;
@@ -453,16 +485,12 @@ export class WindowRegistry {
     return true;
   }
 
-  closeAllControlWindows(): void {
-    for (const handle of this.controlWindows.values()) {
-      try {
-        if (!handle.window.isDestroyed()) handle.window.close();
-      } catch {
-        // already destroyed
-      }
-    }
+  /** Stops and closes every control window. */
+  async closeAllControlWindows(): Promise<void> {
+    const windows = [...this.controlWindows.values()].map((handle) => handle.window);
     this.controlWindows.clear();
     this.updatePowerSaveBlocker();
+    await Promise.all(windows.map((win) => this.stopAndDestroy(win)));
   }
 
   listAppHosts(): Array<{
@@ -484,11 +512,7 @@ export class WindowRegistry {
     this.endExperienceInternal(appSlug, experienceSlug);
   }
 
-  private endExperienceInternal(
-    appSlug: string,
-    experienceSlug: string,
-    exceptWindowId?: number,
-  ): void {
+  private endExperienceInternal(appSlug: string, experienceSlug: string): void {
     if (this.shuttingDown) return;
 
     const key = `${appSlug}:${experienceSlug}`;
@@ -506,22 +530,16 @@ export class WindowRegistry {
     for (const [id, h] of this.controlWindows.entries()) {
       if (h.appSlug !== appSlug || h.experienceSlug !== experienceSlug) continue;
       this.controlWindows.delete(id);
-      if (id === exceptWindowId) continue;
       if (!h.window.isDestroyed()) toDestroy.push(h.window);
     }
     this.updatePowerSaveBlocker();
 
-    for (const w of toDestroy) {
-      try {
-        w.destroy();
-      } catch {
-        // already destroyed
-      }
-    }
-
-    this.stopExperienceOnServer(appSlug, experienceSlug);
-    this.notifyExperienceEnded(appSlug, experienceSlug);
-    this.endingExperiences.delete(key);
+    // Let the windows stop the experience before the server tears down its drivers.
+    void Promise.all(toDestroy.map((w) => this.stopAndDestroy(w))).then(() => {
+      this.stopExperienceOnServer(appSlug, experienceSlug);
+      this.notifyExperienceEnded(appSlug, experienceSlug);
+      this.endingExperiences.delete(key);
+    });
   }
 
   private hasControlFor(appSlug: string, experienceSlug: string): boolean {

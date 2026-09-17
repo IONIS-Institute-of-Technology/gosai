@@ -35,7 +35,7 @@ const server = await createServer({
   paths,
   pythonDir: envPath('GOSAI_PYTHON_DIR') ?? layout.python,
   ...(existsSync(builtinAppsDir) ? { builtinAppsDir } : {}),
-  sdkRuntimePath: envPath('GOSAI_SDK_RUNTIME') ?? layout.sdkRuntime,
+  sdkDir: envPath('GOSAI_SDK_DIR') ?? layout.sdkDir,
   enablePython: process.env.GOSAI_PYTHON !== '0',
   dashboardToken,
   allowedOrigins: listEnv('GOSAI_ALLOWED_ORIGINS'),
@@ -54,18 +54,33 @@ if (!providedToken) {
 // from this line.
 console.log(`GOSAI_READY ${JSON.stringify({ port: server.port, host, pid: process.pid })}`);
 
-const shutdown = async (): Promise<void> => {
+let stopping = false;
+const shutdown = async (reason: string): Promise<void> => {
+  if (stopping) return;
+  stopping = true;
+  console.log(`[gosai-server] shutting down (${reason})`);
   await server.stop();
   process.exit(0);
 };
 
-process.on('SIGINT', () => void shutdown());
-process.on('SIGTERM', () => void shutdown());
+process.on('SIGINT', () => void shutdown('SIGINT'));
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
+
+// The desktop app keeps a pipe to our stdin and sets this variable. The pipe
+// closes when Electron exits for any reason, including a crash or SIGKILL, so
+// the server stops the Python bridge and exits instead of holding its port.
+// Unlike process groups, this also works on Windows.
+if (process.env.GOSAI_EXIT_ON_STDIN_CLOSE === '1') {
+  process.stdin.on('end', () => void shutdown('stdin closed'));
+  process.stdin.on('close', () => void shutdown('stdin closed'));
+  process.stdin.resume();
+}
 
 interface InstallLayout {
   readonly python: string;
   readonly builtinApps: string;
-  readonly sdkRuntime: string;
+  /** The built SDK: `index.js`, `host.js`, `app-host.js` and their chunks. */
+  readonly sdkDir: string;
 }
 
 /**
@@ -83,14 +98,14 @@ function installLayout(): InstallLayout {
     return {
       python: join(resources, 'python'),
       builtinApps: join(resources, 'apps'),
-      sdkRuntime: join(resources, 'sdk', 'browser.js'),
+      sdkDir: join(resources, 'sdk'),
     };
   }
   const repo = resolve(import.meta.dir, '..', '..', '..');
   return {
     python: join(repo, 'python'),
     builtinApps: join(repo, 'apps'),
-    sdkRuntime: join(repo, 'packages', 'sdk', 'dist', 'browser.js'),
+    sdkDir: join(repo, 'packages', 'sdk', 'dist'),
   };
 }
 

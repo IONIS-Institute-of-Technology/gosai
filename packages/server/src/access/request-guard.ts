@@ -5,7 +5,12 @@
  * 127.0.0.1 still sends `Host: evil.example`. The Origin check stops other web
  * pages from reading responses. Requests without an Origin header (Electron
  * main, scripts, `<img>` loads) pass the Origin check.
+ *
+ * App origins (`http://<slug>.localhost:<port>`, see apps/app-host.ts) count
+ * as loopback for both checks.
  */
+
+import { appSlugFromHostname } from '@gosai/shared/app-origin';
 
 const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '[::1]']);
 const WILDCARD_BIND_HOSTS = new Set(['0.0.0.0', '::', '[::]']);
@@ -19,7 +24,7 @@ export interface RequestGuardOptions {
   readonly allowedHosts?: readonly string[];
   /**
    * Extra origins, compared exactly. Desktop main adds `file://` and `null`
-   * for its renderer windows. Loopback http origins on any port are always allowed.
+   * for the dashboard window. Loopback http origins on any port are always allowed.
    */
   readonly allowedOrigins?: readonly string[];
 }
@@ -59,7 +64,8 @@ export class RequestGuard {
     }
     if (url.username || url.password || url.pathname !== '/') return false;
     const port = url.port === '' ? 80 : Number(url.port);
-    return port === this.options.port() && this.hostnames.has(url.hostname);
+    if (port !== this.options.port()) return false;
+    return this.hostnames.has(url.hostname) || appSlugFromHostname(url.hostname) !== null;
   }
 
   originAllowed(origin: string): boolean {
@@ -70,7 +76,11 @@ export class RequestGuard {
     } catch {
       return false;
     }
-    return url.protocol === 'http:' && LOOPBACK_HOSTNAMES.has(url.hostname);
+    if (url.protocol !== 'http:') return false;
+    if (LOOPBACK_HOSTNAMES.has(url.hostname)) return true;
+    // App origins only exist on this server, so another port is someone else.
+    const port = url.port === '' ? 80 : Number(url.port);
+    return appSlugFromHostname(url.hostname) !== null && port === this.options.port();
   }
 
   /** CORS headers for an allowed request. Never a wildcard. */

@@ -3,18 +3,36 @@
   "slug": "hello-gosai",
   "name": "Hello GOSAI",
   "version": "0.1.0",
-  "description": "Minimal GOSAI app showing experience lifecycle, driver subscription, and canvas rendering.",
+  "description": "Minimal GOSAI app: a canvas, a driver subscription, storage and settings.",
   "author": "GOSAI",
   "default": "main",
-  "requirements": { "display": true },
+  "requirements": {
+    "display": true
+  },
   "experiences": [
     {
       "slug": "main",
       "name": "Main",
-      "description": "Bouncing dot driven by heartbeat ticks.",
+      "description": "A dot circling the screen and a heartbeat tick counter.",
       "entry": "dist/main.js",
       "drivers": ["heartbeat"]
     }
   ],
-  "startup": ["main"]
+  "startup": ["main"],
+  "settings": {
+    "groups": [
+      {
+        "label": "Display",
+        "fields": [
+          {
+            "key": "dot.color",
+            "label": "Dot color",
+            "type": "string",
+            "description": "Any CSS color.",
+            "default": "#4ade80"
+          }
+        ]
+      }
+    ]
+  }
 }

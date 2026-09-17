@@ -14,5 +14,5 @@ export const SERVER_PORT: number = Number.parseInt(params.get('serverPort') || '
 export const SERVER_BASE_URL = `http://${SERVER_HOST}:${SERVER_PORT}`;
 export const SERVER_WS_URL = `ws://${SERVER_HOST}:${SERVER_PORT}/ws`;
 
-/** Dashboard token for the dashboard window, app token for app windows. */
+/** Dashboard token for this window. */
 export const SERVER_TOKEN: string = params.get('token') ?? '';

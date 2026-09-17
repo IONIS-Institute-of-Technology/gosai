@@ -9,6 +9,7 @@
  */
 
 import { z } from 'zod';
+import { isConnectSource } from './app-origin.js';
 import { isValidSettingKey } from './app-settings.js';
 import { CAPABILITY_INFO, isCapability, type Capability } from './capabilities.js';
 import { isReservedSlug, isValidSlug, SLUG_PATTERN } from './slug.js';
@@ -17,7 +18,7 @@ import type {
   AppDeviceSettings,
   AppDeviceSettingsPatch,
   AppManifest,
-  AppNetwork,
+  AppNetworkSchema,
   AppRequirements,
   AppSettingsField,
   AppSettingsSchema,
@@ -215,23 +216,18 @@ const requestableCapabilitySchema = z
       .map(([name]) => name),
   });
 
-/**
- * `scheme://host[:port]` with scheme http, https, ws or wss. No path, and
- * nothing that could break out of a CSP source list: no quotes, `;`, `*` or
- * spaces.
- */
-export const NETWORK_ORIGIN_PATTERN =
-  /^(?:https?|wss?):\/\/(?:[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/;
-
 const networkSchema = z.strictObject({
   connect: z
     .array(
       z
         .string()
-        .regex(NETWORK_ORIGIN_PATTERN, 'must be scheme://host[:port] with http, https, ws or wss'),
+        .refine(
+          isConnectSource,
+          'must be scheme://host[:port] with an http, https, ws or wss scheme and no path',
+        ),
     )
     .optional(),
-}) satisfies z.ZodType<AppNetwork>;
+}) satisfies z.ZodType<AppNetworkSchema>;
 
 /** The `gosai.app.json` schema. `$schema` is accepted so editors can validate. */
 export const appManifestSchema = z
