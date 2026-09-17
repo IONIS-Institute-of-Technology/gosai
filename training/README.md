@@ -31,8 +31,9 @@ it finishes, commit the model and its metadata so they ship with the app:
 git add python/src/gosai_py/drivers/ball_models/ball.onnx python/src/gosai_py/drivers/ball_models/ball.onnx.json
 ```
 
-Only `download` needs the API key, so later steps can drop `--env-file .env`.
-Exporting `ROBOFLOW_API_KEY` in your shell works too.
+The API key is only needed while a dataset is missing from `models/<m>/data/raw/`;
+once they are downloaded, `download` and `all` skip them and run without
+`--env-file .env`. Exporting `ROBOFLOW_API_KEY` in your shell works too.
 
 > Requirements: [uv](https://docs.astral.sh/uv/) and Python 3.12. Training needs an
 > NVIDIA GPU or Apple Silicon for reasonable speed; CPU works but is slow.
@@ -95,7 +96,7 @@ uv run gosai-train frames      # extract frames -> data/custom/images/
 uv run gosai-train autolabel
 
 # Fix wrong or missing boxes (Label Studio, labelImg, or Roboflow), then retrain.
-uv run --env-file .env gosai-train all
+uv run gosai-train all
 ```
 
 Frames from one video always land on the same side of the train/val split, so
@@ -174,12 +175,12 @@ under `src/gosai_train/pipelines/` and register its `type` in `registry.py`.
 
 ## Configuration (per model, under `models/<name>/configs/`)
 
-| File             | What                                                                                    |
-| ---------------- | --------------------------------------------------------------------------------------- |
-| `datasets.yaml`  | Roboflow datasets to download and merge, each with a pinned `version`; `cap`/`enabled`. |
-| `classes.yaml`   | Manual `overrides:` for class `keep`/`drop` decisions.                                  |
-| `negatives.yaml` | Negative ratio, glare synthesis, optional external negative sources.                    |
-| `train.yaml`     | Base weights and their sha256, epochs, image size, device, augmentation, motion blur.   |
+| File             | What                                                                                                      |
+| ---------------- | --------------------------------------------------------------------------------------------------------- |
+| `datasets.yaml`  | Roboflow datasets to download and merge, each with a `version` (pin it; `latest` warns); `cap`/`enabled`. |
+| `classes.yaml`   | Manual `overrides:` for class `keep`/`drop` decisions.                                                    |
+| `negatives.yaml` | Negative ratio, glare synthesis, optional external negative sources.                                      |
+| `train.yaml`     | Base weights and their sha256, epochs, image size, device, augmentation, motion blur.                     |
 
 Tips:
 
@@ -232,17 +233,17 @@ at runtime. How the driver picks an ONNX Runtime backend is described in
 from what `prepare` and `train` recorded, and `install` refuses a file whose sha256
 does not match.
 
-| Field            | Meaning                                                                                                                        |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `schema_version` | `1`                                                                                                                            |
-| `model`          | Model name under `training/models/`                                                                                            |
-| `sha256`         | Hex sha256 of the ONNX file                                                                                                    |
-| `input`          | `{ "height", "width" }` of the fixed ONNX input, from `infer_imgsz`                                                            |
-| `class_names`    | Class names by index                                                                                                           |
-| `run`            | Training run folder name, or `null` for weights not trained here                                                               |
-| `base_weights`   | Base checkpoint the run started from, or `null`                                                                                |
-| `git_sha`        | Commit checked out when training started, or `null`                                                                            |
-| `git_dirty`      | Whether that checkout had uncommitted changes, or `null`                                                                       |
-| `datasets`       | Dataset name to Roboflow version used by `prepare`, or `null`                                                                  |
-| `metrics`        | ONNX scores on the merged val split: `split`, `images`, `map50`, `map50_95`, `precision`, `recall`; `null` without a val split |
-| `exported_at`    | UTC timestamp, ISO 8601                                                                                                        |
+| Field            | Meaning                                                                                                                                                                                  |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `schema_version` | `1`                                                                                                                                                                                      |
+| `model`          | Model name under `training/models/`                                                                                                                                                      |
+| `sha256`         | Hex sha256 of the ONNX file                                                                                                                                                              |
+| `input`          | `{ "height", "width" }` of the fixed ONNX input, from `infer_imgsz`                                                                                                                      |
+| `class_names`    | Class names by index                                                                                                                                                                     |
+| `run`            | Training run folder name, or `null` for weights not trained here                                                                                                                         |
+| `base_weights`   | Base checkpoint the run started from, or `null`                                                                                                                                          |
+| `git_sha`        | Commit checked out when training started, or `null`                                                                                                                                      |
+| `git_dirty`      | Whether that checkout had uncommitted changes, or `null`                                                                                                                                 |
+| `datasets`       | Dataset name to Roboflow version used by `prepare`, or `null`                                                                                                                            |
+| `metrics`        | ONNX scores on the merged test split (val if test is empty): `split` (`test` or `val`), `images`, `map50`, `map50_95`, `precision`, `recall`; `null` without labelled test or val images |
+| `exported_at`    | UTC timestamp, ISO 8601                                                                                                                                                                  |

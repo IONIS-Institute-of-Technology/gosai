@@ -77,4 +77,7 @@ def run(ctx: ModelContext, args: Namespace) -> None:
     console.print(f"[green]done[/] wrote {labelled} label files ({boxes_total} boxes) to {ctx.custom_labels}")
     if args.preview:
         console.print(f"        previews in {ctx.custom_previews}")
-    console.print("Review the boxes, fix mistakes, then re-run `uv run gosai-train all`.")
+    console.print(
+        "Review the boxes, fix mistakes, then retrain with `uv run gosai-train prepare` "
+        "and `uv run gosai-train train` (or `all`)."
+    )

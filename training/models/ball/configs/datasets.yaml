@@ -2,9 +2,11 @@
 #
 # Add more by appending entries. Each is parsed from a Roboflow Universe URL:
 #   https://universe.roboflow.com/<workspace>/<project>/
-# Every enabled entry needs an integer `version` (see the project's Versions
-# page) so a training run can be reproduced. `download` refuses unpinned entries
-# and a raw/<name> folder holding a different version.
+# `version` is an integer pin (see the project's Versions page) or `latest`.
+# `latest` downloads the newest version and warns: pin the number it prints so a
+# training run can be reproduced. The downloaded version is recorded in
+# raw/<name>/gosai-dataset.json; `download` refuses a folder holding a version
+# other than the pinned one.
 #
 # Per-dataset knobs (all optional):
 #   enabled: false          skip the dataset entirely (download and prepare)
@@ -20,19 +22,19 @@ datasets:
   - name: billiard-8
     workspace: object-detection-billiard
     project: billiard-8
-    version: null # TODO: pin the version the shipped ball.onnx was trained on
+    version: latest # TODO: pin once the version behind the shipped ball.onnx is known
 
   - name: wdzpn
     workspace: '-ahcxq'
     project: '-wdzpn'
-    version: null # TODO: pin the version the shipped ball.onnx was trained on
+    version: latest # TODO: pin once the version behind the shipped ball.onnx is known
 
   # Sloppy labelling (junk class names, unlabelled stock photos): its no-ball
   # frames cannot be trusted as negatives.
   - name: pool-v2
     workspace: pool-table
     project: pool-v2
-    version: null # TODO: pin the version the shipped ball.onnx was trained on
+    version: latest # TODO: pin once the version behind the shipped ball.onnx is known
     trust_negatives: false
 
   # Broadcast side-view snooker: useful variety, but a domain mismatch with a
@@ -40,5 +42,5 @@ datasets:
   - name: snooker-vision
     workspace: morganlewis
     project: snooker-vision-tjn0z
-    version: null # TODO: pin the version the shipped ball.onnx was trained on
+    version: latest # TODO: pin once the version behind the shipped ball.onnx is known
     cap: 800
