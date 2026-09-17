@@ -69,7 +69,7 @@ bun run package:kiosk -- apps/interactive-pool --macos    # macOS DMG
 
 Options: `--experience <slug>` (default: the manifest's `default`),
 `--display <index>` (default: primary), `--python-extras <list>` (extra
-Python dependency groups such as `speech,realsense`), `--windowed`,
+Python dependency groups such as `speech`), `--windowed`,
 `--skip-build`.
 
 The bundle contains the same runtime as the regular desktop package

@@ -20,9 +20,6 @@ dependencies = [
 gpu = [
     "onnxruntime-gpu[cuda,cudnn]>=1.30.0; sys_platform == 'linux' or sys_platform == 'win32'",
 ]
-realsense = [
-    "pyrealsense2>=2.55.0; sys_platform != 'darwin'",
-]
 speech = [
     "ctranslate2>=4.8.1",
     "faster-whisper>=1.2.1",

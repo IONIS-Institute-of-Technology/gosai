@@ -272,9 +272,6 @@ dependencies = [
 gpu = [
     { name = "onnxruntime-gpu", extra = ["cuda", "cudnn"], marker = "(sys_platform == 'linux' and extra == 'extra-8-gosai-py-gpu') or (sys_platform == 'win32' and extra == 'extra-8-gosai-py-gpu') or (extra == 'extra-8-gosai-py-gpu' and extra == 'group-8-gosai-py-cpu')" },
 ]
-realsense = [
-    { name = "pyrealsense2", marker = "sys_platform == 'linux' or sys_platform == 'win32' or (extra == 'extra-8-gosai-py-gpu' and extra == 'group-8-gosai-py-cpu')" },
-]
 speech = [
     { name = "ctranslate2" },
     { name = "faster-whisper" },
@@ -299,10 +296,9 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.5.0" },
     { name = "onnxruntime-gpu", extras = ["cuda", "cudnn"], marker = "(sys_platform == 'linux' and extra == 'gpu') or (sys_platform == 'win32' and extra == 'gpu')", specifier = ">=1.30.0" },
     { name = "opencv-contrib-python", specifier = ">=5.0.0" },
-    { name = "pyrealsense2", marker = "sys_platform != 'darwin' and extra == 'realsense'", specifier = ">=2.55.0" },
     { name = "sounddevice", specifier = ">=0.5.0" },
 ]
-provides-extras = ["gpu", "realsense", "speech"]
+provides-extras = ["gpu", "speech"]
 
 [package.metadata.requires-dev]
 cpu = [{ name = "onnxruntime", specifier = ">=1.30.0" }]
@@ -806,19 +802,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f3/91/9c6ee907786a473bf81c5f53cf703ba0957b23ab84c264080fb5a450416f/pyparsing-3.3.2.tar.gz", hash = "sha256:c777f4d763f140633dcb6d8a3eda953bf7a214dc4eff598413c070bcdc117cbc", size = 6851574, upload-time = "2026-01-21T03:57:59.36Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/10/bd/c038d7cc38edc1aa5bf91ab8068b63d4308c66c4c8bb3cbba7dfbc049f9c/pyparsing-3.3.2-py3-none-any.whl", hash = "sha256:850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d", size = 122781, upload-time = "2026-01-21T03:57:55.912Z" },
-]
-
-[[package]]
-name = "pyrealsense2"
-version = "2.58.3.10794"
-source = { registry = "https://pypi.org/simple" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b6/1e/e6e1a87775d20ced66674ecd5f1ac80425e38911c94780bf6dc6704b7b56/pyrealsense2-2.58.3.10794-cp312-cp312-manylinux1_x86_64.whl", hash = "sha256:39b5b733b310affefe1c09bab067e7d01f72f7ca7aa2cbe66ce09eeee4899ca6", size = 12964952, upload-time = "2026-07-19T15:54:58.876Z" },
-    { url = "https://files.pythonhosted.org/packages/59/39/44caee19f02e5c52f110299653e06ab5dc3573489b6991b9a74d5c680f97/pyrealsense2-2.58.3.10794-cp312-cp312-win_amd64.whl", hash = "sha256:c51f6ee6527c1d6f1e0bbee8c1e45b05431ac1b5340d78fb6d3157d541a555e7", size = 9055011, upload-time = "2026-07-19T15:55:06.242Z" },
-    { url = "https://files.pythonhosted.org/packages/04/18/db78ff0e1506932144db7b2dd4dd6e90eb774871db3a65a297eb046d75b5/pyrealsense2-2.58.3.10794-cp313-cp313-manylinux1_x86_64.whl", hash = "sha256:83c78abf536029feec35166391e7ac45547a9c39257b8ab843213b6b2d79ba49", size = 12965397, upload-time = "2026-07-19T15:55:11.836Z" },
-    { url = "https://files.pythonhosted.org/packages/43/57/a16a1686e45560610937d0228da4857577053cedea6da4343085d5843008/pyrealsense2-2.58.3.10794-cp313-cp313-win_amd64.whl", hash = "sha256:5d97e0d23bddb2b0b12a5a11914e7b5152030b155579046ba3e459b4a1578f70", size = 9055133, upload-time = "2026-07-19T15:55:16.139Z" },
-    { url = "https://files.pythonhosted.org/packages/8c/d7/b88f59ef0e070d7146b53feddf225ec3cd6d98910a37afabfc28424e777b/pyrealsense2-2.58.3.10794-cp314-cp314-manylinux1_x86_64.whl", hash = "sha256:073a67f731c5472eb11f72a4dac04405738efe64f6352944b949b2f7cc873e8a", size = 13434422, upload-time = "2026-07-19T15:55:22.074Z" },
-    { url = "https://files.pythonhosted.org/packages/50/19/8ffe4e0fae9e1b9681663298998fcd885e470f0f7cdb8e555e3fb7d9c724/pyrealsense2-2.58.3.10794-cp314-cp314-win_amd64.whl", hash = "sha256:d34e0636a8b9057dae0fa4a30b71f9c31456f5a321c69fabc5cde273b8c642d2", size = 9324557, upload-time = "2026-07-19T15:55:26.631Z" },
 ]
 
 [[package]]

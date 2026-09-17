@@ -83,7 +83,6 @@ bun install
 bun run python:sync          # creates python/.venv with uv (CV + audio included)
 bun run python:sync -- --extra gpu --no-group cpu # CUDA onnxruntime on NVIDIA GPUs
 bun run python:sync -- --extra speech    # for the speech-to-text driver
-bun run python:sync -- --extra realsense # for Intel RealSense cameras
 bun run build:sdk           # builds /sdk-runtime.js for app-host windows
 bun run build:apps          # builds built-in app entry bundles
 bun run dev
