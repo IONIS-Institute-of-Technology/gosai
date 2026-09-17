@@ -12,7 +12,7 @@ let server: GosaiServer;
 let base: string;
 let sdkDir: string;
 
-function writeApp(dir: string, slug: string): void {
+function writeApp(dir: string, slug: string, extra: Record<string, unknown> = {}): void {
   mkdirSync(join(dir, 'dist'), { recursive: true });
   writeFileSync(
     join(dir, 'gosai.app.json'),
@@ -21,6 +21,7 @@ function writeApp(dir: string, slug: string): void {
       name: slug,
       version: '0.0.0',
       experiences: [{ slug: 'main', name: 'Main', entry: 'dist/main.js' }],
+      ...extra,
     }),
   );
   writeFileSync(join(dir, 'dist', 'main.js'), `export const slug = '${slug}';`);
@@ -38,6 +39,9 @@ beforeAll(async () => {
   for (const dir of Object.values(paths)) mkdirSync(dir, { recursive: true });
   const builtin = join(tmp, 'builtin');
   writeApp(join(builtin, 'pool'), 'pool');
+  writeApp(join(builtin, 'relay'), 'relay', {
+    network: { connect: ['ws://relay.local:8080', 'http://192.168.1.20'] },
+  });
   // Installed apps keep storage and settings inside their install directory.
   writeApp(join(paths.apps, 'other'), 'other');
   writeFileSync(join(tmp, 'outside.txt'), 'outside');
@@ -347,6 +351,14 @@ describe('WebSocket access', () => {
 
 describe('app origins', () => {
   const appHost = (slug: string): string => `${slug}.localhost:${server.port}`;
+  const directives = (csp: string | null): Map<string, string[]> =>
+    new Map(
+      (csp ?? '')
+        .split(';')
+        .map((part) => part.trim().split(/\s+/))
+        .filter((words) => words[0])
+        .map(([name, ...values]) => [name!, values]),
+    );
 
   test('serves the host page with a CSP that allows the import map by hash', async () => {
     const res = await fetch(`${base}/?experience=main`, { headers: { host: appHost('pool') } });
@@ -356,12 +368,65 @@ describe('app origins', () => {
     expect(csp).not.toContain('unsafe-inline');
     const importMap = /<script type="importmap">(.*?)<\/script>/.exec(html)![1]!;
     const hash = new Bun.CryptoHasher('sha256').update(importMap).digest('base64');
-    expect(csp).toContain(`'sha256-${hash}'`);
+    expect(directives(csp).get('script-src')).toContain(`'sha256-${hash}'`);
     expect(JSON.parse(importMap).imports).toEqual({
       '@gosai/sdk': '/sdk/index.js',
       '@gosai/sdk/': '/sdk/',
     });
     expect(res.headers.get('referrer-policy')).toBe('no-referrer');
+  });
+
+  test('connect-src allows blob and data URLs and TLS, but not plain http or ws', async () => {
+    const res = await fetch(`${base}/`, { headers: { host: appHost('pool') } });
+    const connect = directives(res.headers.get('content-security-policy')).get('connect-src');
+    expect(connect).toEqual(["'self'", 'blob:', 'data:', 'https:', 'wss:']);
+  });
+
+  test("the manifest's network.connect entries extend only that app's connect-src", async () => {
+    const relay = await fetch(`${base}/`, { headers: { host: appHost('relay') } });
+    expect(directives(relay.headers.get('content-security-policy')).get('connect-src')).toEqual([
+      "'self'",
+      'blob:',
+      'data:',
+      'https:',
+      'wss:',
+      'ws://relay.local:8080',
+      'http://192.168.1.20',
+    ]);
+    const pool = await fetch(`${base}/`, { headers: { host: appHost('pool') } });
+    expect(pool.headers.get('content-security-policy')).not.toContain('relay.local');
+  });
+
+  test('every response on an app host carries the policy, and only there', async () => {
+    const policy = (await fetch(`${base}/`, { headers: { host: appHost('pool') } })).headers.get(
+      'content-security-policy',
+    );
+    for (const path of ['/v1/apps/pool/static/dist/main.js', '/sdk/index.js', '/gosai.app.json']) {
+      const res = await fetch(`${base}${path}`, { headers: { host: appHost('pool') } });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-security-policy')).toBe(policy);
+    }
+    const loopback = await fetch(`${base}/v1/apps/pool/static/dist/main.js`);
+    expect(loopback.headers.get('content-security-policy')).toBeNull();
+  });
+
+  test("an app host serves only its own app's static files", async () => {
+    const own = await fetch(`${base}/v1/apps/relay/static/dist/main.js`, {
+      headers: { host: appHost('relay') },
+    });
+    expect(own.status).toBe(200);
+    const other = await fetch(`${base}/v1/apps/pool/static/dist/main.js`, {
+      headers: { host: appHost('relay') },
+    });
+    expect(other.status).toBe(404);
+    // Another app's page may still import it from that app's origin.
+    const crossOrigin = await fetch(`${base}/v1/apps/pool/static/dist/main.js`, {
+      headers: { host: appHost('pool'), origin: `http://${appHost('relay')}` },
+    });
+    expect(crossOrigin.status).toBe(200);
+    expect(crossOrigin.headers.get('access-control-allow-origin')).toBe(
+      `http://${appHost('relay')}`,
+    );
   });
 
   test('only app hostnames get a host page and a manifest', async () => {

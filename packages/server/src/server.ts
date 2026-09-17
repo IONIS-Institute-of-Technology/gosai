@@ -18,6 +18,7 @@ import { canAccessApp, commandDenial } from './access/policy.js';
 import { readBearerToken, RequestGuard } from './access/request-guard.js';
 import { resolveStaticFile } from './apps/static-files.js';
 import {
+  appContentSecurityPolicy,
   appOriginDenial,
   appSlugFromHost,
   hostPageResponse,
@@ -144,6 +145,16 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
     await next();
     for (const [name, value] of Object.entries(guard.corsHeaders(c.req.raw))) {
       c.header(name, value);
+    }
+    // Every response on an app origin carries the app's policy, so a worker or
+    // frame started from the app's files can't escape it.
+    const hostSlug = appSlugFromHost(c.req.header('host'));
+    if (hostSlug) {
+      const connect = apps.getApp(hostSlug)?.manifest.network?.connect;
+      c.header(
+        'content-security-policy',
+        appContentSecurityPolicy({ port: boundPort, ...(connect ? { connect } : {}) }),
+      );
     }
   });
   app.options('*', (c) => c.body(null, 204));
@@ -287,6 +298,10 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
   app.get('/v1/apps/:slug/static/*', async (c) => {
     const slug = c.req.param('slug');
     if (!isValidSlug(slug)) return c.json({ error: 'invalid app slug' }, 400);
+    // An app origin only serves its own files, so one app's pages can't run
+    // with another app's origin. Other apps' files load from their origins.
+    const hostSlug = appSlugFromHost(c.req.header('host'));
+    if (hostSlug !== null && hostSlug !== slug) return c.json({ error: 'not found' }, 404);
     const installed = apps.getApp(slug);
     if (!installed) return c.json({ error: 'app not found' }, 404);
     const prefix = `/v1/apps/${slug}/static/`;

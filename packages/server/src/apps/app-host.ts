@@ -23,22 +23,57 @@ export const HOST_PAGE_IMPORT_MAP = JSON.stringify({
 
 const IMPORT_MAP_HASH = createHash('sha256').update(HOST_PAGE_IMPORT_MAP).digest('base64');
 
-export const HOST_PAGE_CSP = [
-  "default-src 'self'",
-  // 'wasm-unsafe-eval' only allows compiling WebAssembly, which in-browser ML libraries need.
-  `script-src 'self' 'sha256-${IMPORT_MAP_HASH}' 'wasm-unsafe-eval'`,
-  "style-src 'self'",
-  "img-src 'self' data: blob:",
-  "media-src 'self' data: blob:",
-  "font-src 'self' data:",
-  // External services over TLS only; plain http and ws would reach other local services.
-  "connect-src 'self' https: wss:",
-  "worker-src 'self' blob:",
-  "object-src 'none'",
-  "base-uri 'none'",
-  "form-action 'none'",
-  "frame-ancestors 'none'",
-].join('; ');
+export interface AppPolicyOptions {
+  /** Port the server listens on; app origins are only trusted on it. */
+  readonly port: number;
+  /** Extra `connect-src` origins from the manifest's `network.connect`. */
+  readonly connect?: readonly string[];
+}
+
+/**
+ * Content Security Policy for everything served on an app origin: the host
+ * page, the app's static files (which may start workers or frames) and the
+ * SDK bundle.
+ */
+export function appContentSecurityPolicy(options: AppPolicyOptions): string {
+  // Other app origins on this server, so an app can import a companion app's
+  // module, as the calibration runner does with the target's calibration entry.
+  const appOrigins = `http://*.localhost:${options.port}`;
+  // Re-checked here so a manifest that skipped validation can't inject directives.
+  const connect = (options.connect ?? []).filter(isConnectSource);
+  return [
+    "default-src 'self'",
+    // 'wasm-unsafe-eval' only allows compiling WebAssembly, which in-browser ML libraries need.
+    `script-src 'self' ${appOrigins} 'sha256-${IMPORT_MAP_HASH}' 'wasm-unsafe-eval'`,
+    "style-src 'self'",
+    "img-src 'self' data: blob:",
+    "media-src 'self' data: blob:",
+    "font-src 'self' data:",
+    // blob: and data: cover loaders that fetch embedded resources, e.g. GLTF
+    // textures and ML model weights. Plain http and ws to other hosts would
+    // reach local services, so apps list the ones they need in the manifest.
+    ["connect-src 'self' blob: data: https: wss:", ...connect].join(' '),
+    "worker-src 'self' blob:",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+  ].join('; ');
+}
+
+const CONNECT_SOURCE =
+  /^(?:https?|wss?):\/\/(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*|\[[0-9A-Fa-f:.]+\])(?::(\d{1,5}))?$/;
+
+/**
+ * Whether `value` is a plain `scheme://host[:port]` origin with an http,
+ * https, ws or wss scheme: no path, query, wildcard, quote or whitespace.
+ */
+export function isConnectSource(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const match = CONNECT_SOURCE.exec(value);
+  if (!match) return false;
+  return match[1] === undefined || Number(match[1]) <= 65535;
+}
 
 export const HOST_PAGE_HTML = `<!doctype html>
 <html lang="en">
@@ -54,11 +89,11 @@ export const HOST_PAGE_HTML = `<!doctype html>
 </html>
 `;
 
+/** The host page. The server adds the app's CSP to every app-origin response. */
 export function hostPageResponse(): Response {
   return new Response(HOST_PAGE_HTML, {
     headers: {
       'content-type': 'text/html; charset=utf-8',
-      'content-security-policy': HOST_PAGE_CSP,
       // The page URL carries the app token until the loader strips it.
       'referrer-policy': 'no-referrer',
       'cache-control': 'no-store',

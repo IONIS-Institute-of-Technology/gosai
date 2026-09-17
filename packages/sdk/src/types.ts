@@ -141,8 +141,12 @@ export interface SettingsClient {
 }
 
 export interface AssetsClient {
-  /** Absolute URL of a file in the app, relative to the app root (e.g. `assets/logo.png`). */
-  url(path: string): string;
+  /**
+   * Absolute URL of a file in the app, relative to the app root (e.g.
+   * `assets/logo.png`). Pass `appSlug` for a file of another installed app,
+   * such as a companion app's module; it resolves against that app's origin.
+   */
+  url(path: string, appSlug?: string): string;
 }
 
 export interface AppLogger {

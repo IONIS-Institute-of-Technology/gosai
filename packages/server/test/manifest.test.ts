@@ -199,6 +199,37 @@ describe('validateManifest', () => {
     ).toThrow(ManifestError);
   });
 
+  test('parses network.connect origins', () => {
+    const m = validateManifest(PATH, {
+      slug: 'n',
+      name: 'N',
+      version: '0.1.0',
+      experiences: [{ slug: 'a', name: 'A', entry: './a.ts' }],
+      network: { connect: ['ws://relay.local:8080', 'https://api.example.com'] },
+    });
+    expect(m.network).toEqual({ connect: ['ws://relay.local:8080', 'https://api.example.com'] });
+  });
+
+  test('rejects network.connect entries that are not plain origins', () => {
+    for (const network of [
+      { connect: 'ws://relay.local' },
+      { connect: ['ws://relay.local/socket'] },
+      { connect: ['ws://*.local'] },
+      { connect: ["ws://a.local 'unsafe-inline'"] },
+      ['ws://relay.local'],
+    ]) {
+      expect(() =>
+        validateManifest(PATH, {
+          slug: 'n',
+          name: 'N',
+          version: '0.1.0',
+          experiences: [{ slug: 'a', name: 'A', entry: './a.ts' }],
+          network,
+        }),
+      ).toThrow(ManifestError);
+    }
+  });
+
   test('parses required calibration metadata', () => {
     const m = validateManifest(PATH, {
       slug: 'c',

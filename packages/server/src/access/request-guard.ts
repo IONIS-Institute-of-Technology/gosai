@@ -77,7 +77,10 @@ export class RequestGuard {
       return false;
     }
     if (url.protocol !== 'http:') return false;
-    return LOOPBACK_HOSTNAMES.has(url.hostname) || appSlugFromHostname(url.hostname) !== null;
+    if (LOOPBACK_HOSTNAMES.has(url.hostname)) return true;
+    // App origins only exist on this server, so another port is someone else.
+    const port = url.port === '' ? 80 : Number(url.port);
+    return appSlugFromHostname(url.hostname) !== null && port === this.options.port();
   }
 
   /** CORS headers for an allowed request. Never a wildcard. */

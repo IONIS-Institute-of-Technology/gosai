@@ -4,7 +4,9 @@ import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { appSlugFromHostname } from '@gosai/shared/app-origin';
 import {
+  appContentSecurityPolicy,
   appOriginDenial,
+  isConnectSource,
   appSlugFromHost,
   appSlugFromOrigin,
   resolveSdkFile,
@@ -80,5 +82,50 @@ describe('resolveSdkFile', () => {
     for (const name of ['../index.js', '..', '.hidden.js', 'nested.js', 'missing', 'a/b.js']) {
       expect(resolveSdkFile(dir, name)).toBeNull();
     }
+  });
+});
+
+describe('network.connect sources', () => {
+  test('accepts plain scheme://host[:port] origins', () => {
+    for (const source of [
+      'ws://relay.local:8080',
+      'wss://example.com',
+      'http://192.168.1.20',
+      'https://api.example.com:443',
+      'ws://[fe80::1]:9000',
+      'http://localhost:65535',
+    ]) {
+      expect(isConnectSource(source)).toBe(true);
+    }
+  });
+
+  test('rejects anything that could change the policy or widen it', () => {
+    for (const source of [
+      'ftp://example.com',
+      'ws://relay.local:8080/path',
+      'ws://relay.local/',
+      'ws://*.local',
+      "ws://a.local 'unsafe-eval'",
+      'ws://a.local;script-src *',
+      'ws://a.local:70000',
+      '"ws://a.local"',
+      'ws://',
+      'relay.local:8080',
+      'ws://-bad.local',
+      42,
+    ]) {
+      expect(isConnectSource(source)).toBe(false);
+    }
+  });
+
+  test('the policy appends valid sources and drops invalid ones', () => {
+    const csp = appContentSecurityPolicy({
+      port: 7777,
+      connect: ['ws://relay.local:8080', "ws://x; script-src 'unsafe-inline'"],
+    });
+    const connect = csp.split('; ').find((d) => d.startsWith('connect-src'));
+    expect(connect).toBe("connect-src 'self' blob: data: https: wss: ws://relay.local:8080");
+    expect(csp).not.toContain('unsafe-inline');
+    expect(csp).toContain("script-src 'self' http://*.localhost:7777 ");
   });
 });

@@ -109,6 +109,19 @@ export interface AppManifest {
    * (possibly nested) JSON object, which the app reads via `rt.storage`.
    */
   readonly settings?: AppSettingsSchema;
+  /** Network access beyond the defaults the app window's security policy allows. */
+  readonly network?: AppNetworkSchema;
+}
+
+/** Extra network access an app requests (see {@link AppManifest.network}). */
+export interface AppNetworkSchema {
+  /**
+   * Origins the app's pages may connect to on top of their own origin and any
+   * `https:` or `wss:` URL, as plain `scheme://host[:port]` strings with an
+   * `http`, `https`, `ws` or `wss` scheme. For services on the local network,
+   * such as `ws://relay.local:8080`.
+   */
+  readonly connect?: readonly string[];
 }
 
 /** Device kinds an app declares it needs, so the dashboard can offer pickers. */
