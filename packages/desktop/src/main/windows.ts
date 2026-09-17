@@ -70,6 +70,9 @@ const isDev = !app.isPackaged;
 const isMac = process.platform === 'darwin';
 const isLinux = process.platform === 'linux';
 
+/** Server bind addresses that `<slug>.localhost` (always loopback) can reach. */
+const LOOPBACK_REACHABLE_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '0.0.0.0', '::']);
+
 /** How long an app window gets to stop its experience before it is destroyed. */
 const APP_STOP_TIMEOUT_MS = 3000;
 
@@ -106,6 +109,12 @@ export class WindowRegistry {
   setServerAddress(addr: { host: string; port: number }): void {
     this.serverHost = addr.host;
     this.serverPort = addr.port;
+    if (!LOOPBACK_REACHABLE_HOSTS.has(addr.host)) {
+      console.warn(
+        `[gosai-desktop] the server listens on ${addr.host}, but app windows connect through ` +
+          '<slug>.localhost, which resolves to loopback; they will not reach it',
+      );
+    }
   }
 
   get serverBaseUrl(): string {
@@ -121,9 +130,10 @@ export class WindowRegistry {
   }
 
   /**
-   * URL of the host page for an app window. The server serves it on the
-   * app's own origin, `http://<slug>.localhost:<port>/`, which resolves to
-   * loopback whatever address the server binds.
+   * URL of the host page for an app window, on the app's own origin
+   * `http://<slug>.localhost:<port>/`. Browsers resolve `*.localhost` to
+   * loopback, so `serverHost` isn't used: the server must listen on a
+   * loopback or wildcard address, which desktop and kiosk always do.
    */
   private appHostUrl(appSlug: string, launch: Record<string, string | undefined>): string {
     const url = new URL(`http://${appHostname(appSlug)}:${this.serverPort}/`);
@@ -347,6 +357,11 @@ export class WindowRegistry {
 
     this.appHosts.set(handle.id, handle);
     this.updatePowerSaveBlocker();
+    // A close from the window manager stops the experience like main's own close.
+    win.on('close', (event) => {
+      event.preventDefault();
+      void this.stopAndDestroy(win);
+    });
     win.on('closed', () => {
       if (!this.appHosts.delete(handle.id)) return;
       this.updatePowerSaveBlocker();
@@ -429,8 +444,12 @@ export class WindowRegistry {
 
     this.controlWindows.set(handle.id, handle);
     this.updatePowerSaveBlocker();
-    win.on('close', () => {
-      this.endExperienceInternal(opts.appSlug, opts.experienceSlug, handle.id);
+    // Closing the control window ends the experience; every window of it,
+    // this one included, stops before it is destroyed.
+    win.on('close', (event) => {
+      if (this.shuttingDown) return;
+      event.preventDefault();
+      this.endExperienceInternal(opts.appSlug, opts.experienceSlug);
     });
 
     return handle;
@@ -478,11 +497,7 @@ export class WindowRegistry {
     this.endExperienceInternal(appSlug, experienceSlug);
   }
 
-  private endExperienceInternal(
-    appSlug: string,
-    experienceSlug: string,
-    exceptWindowId?: number,
-  ): void {
+  private endExperienceInternal(appSlug: string, experienceSlug: string): void {
     if (this.shuttingDown) return;
 
     const key = `${appSlug}:${experienceSlug}`;
@@ -500,7 +515,6 @@ export class WindowRegistry {
     for (const [id, h] of this.controlWindows.entries()) {
       if (h.appSlug !== appSlug || h.experienceSlug !== experienceSlug) continue;
       this.controlWindows.delete(id);
-      if (id === exceptWindowId) continue;
       if (!h.window.isDestroyed()) toDestroy.push(h.window);
     }
     this.updatePowerSaveBlocker();
