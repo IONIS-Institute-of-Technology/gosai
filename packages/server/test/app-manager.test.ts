@@ -17,6 +17,9 @@ interface DriverCall {
 class StubDrivers {
   readonly subscribes: DriverCall[] = [];
   readonly unsubscribes: DriverCall[] = [];
+  /** Live leases per driver, counted like DriverManager does. */
+  readonly leases = new Map<string, number>();
+  readonly failing = new Set<string>();
 
   async subscribe(
     binding: string,
@@ -25,6 +28,8 @@ class StubDrivers {
     subscriber: string,
   ): Promise<void> {
     this.subscribes.push({ binding, driver, event, subscriber });
+    if (this.failing.has(driver)) throw new Error(`${driver} failed to start`);
+    this.leases.set(driver, (this.leases.get(driver) ?? 0) + 1);
   }
 
   async unsubscribe(
@@ -34,7 +39,23 @@ class StubDrivers {
     subscriber: string,
   ): Promise<void> {
     this.unsubscribes.push({ binding, driver, event, subscriber });
+    const count = this.leases.get(driver) ?? 0;
+    if (count <= 1) this.leases.delete(driver);
+    else this.leases.set(driver, count - 1);
   }
+}
+
+function makePaths(): { root: string; apps: string; logs: string; data: string; config: string } {
+  const tmp = mkdtempSync(join(tmpdir(), 'gosai-app-manager-'));
+  const paths = {
+    root: tmp,
+    apps: join(tmp, 'apps'),
+    logs: join(tmp, 'logs'),
+    data: join(tmp, 'data'),
+    config: join(tmp, 'config'),
+  };
+  for (const dir of Object.values(paths)) mkdirSync(dir, { recursive: true });
+  return paths;
 }
 
 describe('app manager', () => {
@@ -101,6 +122,35 @@ describe('app manager', () => {
         subscriber: 'calibration::calibrate',
       },
     ]);
+  });
+
+  test('a failed start releases the drivers it took, and retries do not pile up', async () => {
+    const paths = makePaths();
+    writeApp(paths.apps, 'pool', 'main', ['camera', 'calibration']);
+    const drivers = new StubDrivers();
+    drivers.failing.add('calibration');
+    const manager = new AppManager({
+      paths,
+      logger: new Logger({ logsDir: paths.logs }),
+      bus: new EventBus(),
+      drivers: drivers as unknown as DriverManager,
+    });
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await expect(manager.startExperience('pool', 'main')).rejects.toThrow(
+        'calibration failed to start',
+      );
+      expect(drivers.leases.size).toBe(0);
+      expect(manager.listRunningExperiences()[0]?.state).toBe('crashed');
+    }
+
+    drivers.failing.clear();
+    await manager.startExperience('pool', 'main');
+    expect(Object.fromEntries(drivers.leases)).toEqual({ camera: 1, calibration: 1 });
+
+    await manager.stopExperience('pool', 'main');
+    expect(drivers.leases.size).toBe(0);
+    expect(manager.listRunningExperiences()).toEqual([]);
   });
 });
 

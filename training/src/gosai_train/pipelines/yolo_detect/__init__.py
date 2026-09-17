@@ -1,4 +1,4 @@
-"""YOLO single/multi-class object-detection training pipeline.
+"""YOLO object-detection training pipeline.
 
 Stages operate on a :class:`~gosai_train.context.ModelContext` so the same code
 serves any number of models. Each stage exposes ``run(ctx, args)``.
@@ -6,8 +6,9 @@ serves any number of models. Each stage exposes ``run(ctx, args)``.
 
 from __future__ import annotations
 
-from typing import Any
+from argparse import Namespace
 
+from ...context import ModelContext
 from . import (
     autolabel,
     download,
@@ -22,16 +23,15 @@ from . import (
 )
 
 
-def run_all(ctx: Any, args: Any = None) -> None:
+def run_all(ctx: ModelContext, args: Namespace) -> None:
     download.run(ctx, args)
     negatives.run(ctx, args)
     prepare.run(ctx, args)
-    train.run(ctx, args)
-    export.run(ctx, args)
-    install.run(ctx, args)
+    weights = train.run(ctx, args)
+    export.run(ctx, Namespace(formats=args.formats, weights=str(weights)))
+    install.run(ctx, Namespace(src=None))
 
 
-# Command name -> callable(ctx, args). Drives the CLI for this model type.
 COMMANDS = {
     "download": download.run,
     "negatives": negatives.run,

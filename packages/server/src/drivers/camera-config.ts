@@ -1,24 +1,85 @@
-import type { AppDeviceSettings, CameraSettings } from '@gosai/shared';
+import type {
+  AppDeviceSettings,
+  CameraSettings,
+  GlobalConfig,
+  MicrophoneSettings,
+} from '@gosai/shared';
 import type { ChildLogger } from '../logger/index.js';
-import type { DriverManager } from './manager.js';
+import { SYSTEM_BINDING, type DriverManager } from './manager.js';
 
-/** Hot-apply camera settings to a binding's running camera instance. */
+/** Where device settings come from: the global config and per-app overrides. */
+export interface DeviceSettingsSources {
+  readonly config: { get(): GlobalConfig };
+  readonly appSettings: { get(appSlug: string): AppDeviceSettings };
+}
+
+export type ResolvedCameraSettings = Required<CameraSettings>;
+
+/**
+ * The one place that decides a binding's camera settings. The per-app block
+ * wins field by field, so an app that only pins a device still inherits the
+ * global resolution, frame rate and rotation.
+ */
+export function resolveCameraSettings(
+  global: CameraSettings,
+  app: Partial<CameraSettings> | undefined,
+): ResolvedCameraSettings {
+  return {
+    device: app?.device ?? global.device,
+    width: app?.width ?? global.width,
+    height: app?.height ?? global.height,
+    fps: app?.fps ?? global.fps,
+    rotation: app?.rotation ?? global.rotation ?? 0,
+  };
+}
+
+function appSettingsFor(sources: DeviceSettingsSources, binding: string): AppDeviceSettings {
+  return binding === SYSTEM_BINDING ? {} : sources.appSettings.get(binding);
+}
+
+export function cameraSettingsFor(
+  sources: DeviceSettingsSources,
+  binding: string,
+): ResolvedCameraSettings {
+  return resolveCameraSettings(
+    sources.config.get().camera,
+    appSettingsFor(sources, binding).camera,
+  );
+}
+
+/** Startup config for a driver instance, used by `DriverManager.getDriverConfig`. */
+export function driverConfigFor(
+  sources: DeviceSettingsSources,
+  binding: string,
+  driver: string,
+): Record<string, unknown> | undefined {
+  if (driver === 'camera') return { ...cameraSettingsFor(sources, binding) };
+  const app = appSettingsFor(sources, binding);
+  if (driver === 'microphone') return app.microphone ? { ...app.microphone } : undefined;
+  if (driver === 'speaker') return app.speaker ? { ...app.speaker } : undefined;
+  return undefined;
+}
+
+function sameCamera(a: ResolvedCameraSettings, b: ResolvedCameraSettings): boolean {
+  return (
+    a.device === b.device &&
+    a.width === b.width &&
+    a.height === b.height &&
+    a.fps === b.fps &&
+    a.rotation === b.rotation
+  );
+}
+
+/** Hot-apply resolved camera settings to a binding's running camera instance. */
 export async function applyCameraSettings(
   drivers: DriverManager,
   binding: string,
-  settings: CameraSettings,
+  settings: ResolvedCameraSettings,
   log: ChildLogger,
 ): Promise<void> {
   if (!drivers.isInstanceRunning(binding, 'camera')) return;
-
   try {
-    await drivers.execute(binding, 'camera', 'set_mode', {
-      device: settings.device,
-      width: settings.width,
-      height: settings.height,
-      fps: settings.fps,
-      rotation: settings.rotation ?? 0,
-    });
+    await drivers.execute(binding, 'camera', 'set_mode', { ...settings });
   } catch (err) {
     log.warn('failed to apply camera settings to running driver', {
       binding,
@@ -29,37 +90,66 @@ export async function applyCameraSettings(
 }
 
 /**
- * Hot-apply a binding's persisted per-app device settings to its running
- * driver instances. Camera and microphone are exclusive per app, so their
- * settings can be applied live; the speaker is shared, so device changes there
- * take effect on the next start rather than disrupting other apps.
+ * Hot-apply a global camera change to every running camera whose resolved
+ * settings changed. Call after the config store has been updated.
+ */
+export async function applyGlobalCameraSettings(
+  drivers: DriverManager,
+  sources: DeviceSettingsSources,
+  previousGlobal: CameraSettings,
+  log: ChildLogger,
+): Promise<void> {
+  for (const binding of drivers.runningBindings('camera')) {
+    const app = appSettingsFor(sources, binding).camera;
+    const next = cameraSettingsFor(sources, binding);
+    if (sameCamera(resolveCameraSettings(previousGlobal, app), next)) continue;
+    await applyCameraSettings(drivers, binding, next, log);
+  }
+}
+
+/**
+ * Hot-apply a binding's per-app device settings to its running driver
+ * instances. Call after the app settings store has been updated. Camera and
+ * microphone are exclusive per app, so their settings can be applied live; the
+ * speaker is shared, so device changes there take effect on the next start
+ * rather than disrupting other apps.
  */
 export async function applyAppDeviceSettings(
   drivers: DriverManager,
+  sources: DeviceSettingsSources,
   binding: string,
-  settings: AppDeviceSettings,
+  previous: AppDeviceSettings,
   log: ChildLogger,
 ): Promise<void> {
-  if (settings.camera) {
-    await applyCameraSettings(drivers, binding, settings.camera, log);
+  const next = appSettingsFor(sources, binding);
+  const global = sources.config.get().camera;
+  const camera = resolveCameraSettings(global, next.camera);
+  if (!sameCamera(resolveCameraSettings(global, previous.camera), camera)) {
+    await applyCameraSettings(drivers, binding, camera, log);
   }
 
-  if (settings.microphone && drivers.isInstanceRunning(binding, 'microphone')) {
+  if (next.microphone && drivers.isInstanceRunning(binding, 'microphone')) {
     try {
-      await drivers.execute(binding, 'microphone', 'set_device', settings.microphone.device);
-      if (settings.microphone.samplerate != null) {
-        await drivers.execute(
-          binding,
-          'microphone',
-          'set_samplerate',
-          settings.microphone.samplerate,
-        );
-      }
+      await applyMicrophoneSettings(drivers, binding, next.microphone, previous.microphone);
     } catch (err) {
       log.warn('failed to apply microphone settings to running driver', {
         binding,
         err: String(err),
       });
     }
+  }
+}
+
+async function applyMicrophoneSettings(
+  drivers: DriverManager,
+  binding: string,
+  next: MicrophoneSettings,
+  previous: MicrophoneSettings | undefined,
+): Promise<void> {
+  if (next.device !== previous?.device) {
+    await drivers.execute(binding, 'microphone', 'set_device', next.device);
+  }
+  if (next.samplerate != null && next.samplerate !== previous?.samplerate) {
+    await drivers.execute(binding, 'microphone', 'set_samplerate', next.samplerate);
   }
 }

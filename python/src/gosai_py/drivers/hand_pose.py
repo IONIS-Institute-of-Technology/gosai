@@ -34,8 +34,7 @@ import threading
 import time
 from typing import Any, ClassVar
 
-from gosai_py.driver import DriverContext
-from gosai_py.processor import BaseProcessor
+from gosai_py.driver import BaseDriver, DriverContext
 from gosai_py.runtime import mediapipe_base_options
 from gosai_py.runtime.models import Model, resolve_model
 
@@ -49,10 +48,11 @@ MODEL = Model.download(
 )
 
 
-class HandPoseDriver(BaseProcessor):
+class HandPoseDriver(BaseDriver):
     name: ClassVar[str] = "hand_pose"
     description: ClassVar[str] = "Hand landmark detection (MediaPipe Hands)."
     events: ClassVar[tuple[str, ...]] = ("raw_data",)
+    stream_events: ClassVar[tuple[str, ...]] = ("raw_data",)
     actions: ClassVar[tuple[str, ...]] = (
         "set_flip",
         "set_window",
@@ -87,7 +87,6 @@ class HandPoseDriver(BaseProcessor):
         self._last_ts_ms = 0
 
     def pre_run(self) -> None:
-        super().pre_run()
         try:
             import mediapipe as mp  # type: ignore[import-not-found]
             from mediapipe.tasks import python as mp_python  # type: ignore[import-not-found]
@@ -116,15 +115,12 @@ class HandPoseDriver(BaseProcessor):
             self._mp_image_format = mp.ImageFormat.SRGBA if self._mp_uses_rgba else mp.ImageFormat.SRGB
             self.set_runtime_info(info)
             self.log("info", "MediaPipe HandLandmarker initialised")
-            self.start_latest_worker()
         except Exception as exc:
             self.log("error", f"hand_pose: failed to create detector: {exc!r}")
             self._detector = None
             raise
 
     def cleanup(self) -> None:
-        self.stop_latest_worker()
-        super().cleanup()
         # Drop the detector without calling close(). MediaPipe's native
         # teardown can SIGSEGV when close races with in-flight inference or
         # camera callbacks; the bridge process exits shortly after anyway.
@@ -151,47 +147,42 @@ class HandPoseDriver(BaseProcessor):
             self._homography = None
             return {"ok": True, "cleared": True}
         if not isinstance(data, list) or len(data) != 9:
-            return {"ok": False, "error": "homography must be a length-9 list"}
-        try:
-            import numpy as np  # type: ignore[import-not-found]
-        except ImportError as exc:
-            return {"ok": False, "error": f"numpy required: {exc}"}
+            raise ValueError("homography must be a length-9 list")
+        import numpy as np  # type: ignore[import-not-found]
+
         try:
             self._homography = np.asarray(data, dtype=np.float64).reshape(3, 3)
         except (TypeError, ValueError) as exc:
-            return {"ok": False, "error": f"invalid matrix: {exc}"}
+            raise ValueError(f"invalid matrix: {exc}") from exc
         return {"ok": True}
 
     def _set_frame_size(self, data: Any) -> dict[str, Any]:
         if not isinstance(data, dict):
-            return {"ok": False, "error": "frame_size must be { width, height }"}
+            raise ValueError("frame_size must be { width, height }")
         try:
             w = int(data["width"])
             h = int(data["height"])
         except (KeyError, TypeError, ValueError) as exc:
-            return {"ok": False, "error": f"frame_size requires width/height: {exc}"}
+            raise ValueError(f"frame_size requires width/height: {exc}") from exc
         if w <= 0 or h <= 0:
-            return {"ok": False, "error": "frame_size must be positive"}
+            raise ValueError("frame_size must be positive")
         self._frame_size = (w, h)
         return {"ok": True, "width": w, "height": h}
 
     def _set_surface_size(self, data: Any) -> dict[str, Any]:
         if not isinstance(data, dict):
-            return {"ok": False, "error": "surface_size must be { width, height }"}
+            raise ValueError("surface_size must be { width, height }")
         try:
             w = int(data["width"])
             h = int(data["height"])
         except (KeyError, TypeError, ValueError) as exc:
-            return {"ok": False, "error": f"surface_size requires width/height: {exc}"}
+            raise ValueError(f"surface_size requires width/height: {exc}") from exc
         if w <= 0 or h <= 0:
-            return {"ok": False, "error": "surface_size must be positive"}
+            raise ValueError("surface_size must be positive")
         self._surface_size = (w, h)
         return {"ok": True, "width": w, "height": h}
 
     def on_data(self, driver: str, event: str, data: Any) -> None:
-        self.queue_latest_data(driver, event, data)
-
-    def process_latest_data(self, driver: str, event: str, data: Any) -> None:
         if self.stop_requested() or not isinstance(data, dict):
             return
         with self._detector_lock:

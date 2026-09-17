@@ -1,21 +1,45 @@
-"""Optional EXTERNAL negatives + glare synthesis into <model>/data/negatives_pool.
+"""Optional external negatives and glare synthesis into <model>/data/negatives_pool.
 
 In-domain negatives (empty tables, pockets, hands) are mined automatically by
-`prepare`. This step only adds optional out-of-domain hard negatives and is OFF
-by default, so `make all` works fully offline.
+`prepare`. This step only adds optional out-of-domain hard negatives. External
+sources are off by default, so `gosai-train all` works offline.
 """
 
 from __future__ import annotations
 
+import importlib
 import shutil
 import tempfile
 import zipfile
+from argparse import Namespace
 from pathlib import Path
 from typing import Any
 
 from ...context import ModelContext
 from ...util import console, iter_images, load_yaml
 from .sources import collect_datasets, load_overrides
+
+GLARE_PREFIX = "synthetic-glare"
+
+
+def pool_prefix(path: Path) -> str:
+    """Source name of a pool image, from its ``<source>__<index>`` file name."""
+    return path.name.split("__", 1)[0]
+
+
+def prune_pool(pool_dir: Path, enabled_names: set[str]) -> dict[str, int]:
+    """Delete pool images not from an enabled source (including old synthetic glare).
+
+    Returns how many images each enabled source still has, so they aren't fetched again.
+    """
+    kept: dict[str, int] = {}
+    for image in list(iter_images(pool_dir)):
+        prefix = pool_prefix(image)
+        if prefix in enabled_names:
+            kept[prefix] = kept.get(prefix, 0) + 1
+        else:
+            image.unlink()
+    return kept
 
 
 def _images_dir(ctx: ModelContext) -> Path:
@@ -42,6 +66,16 @@ def _maybe_unzip(path: Path, into: Path) -> None:
             zf.extractall(into)
 
 
+def _import_extra(module: str) -> Any:
+    try:
+        return importlib.import_module(module)
+    except ModuleNotFoundError as exc:
+        raise SystemExit(
+            f"{module} is not installed; external negative sources need "
+            "`uv sync --extra negatives`"
+        ) from exc
+
+
 def _fetch_source(ctx: ModelContext, source: dict[str, Any], tmp: Path) -> int:
     name = source.get("name", "source")
     cap = int(source.get("cap", 300))
@@ -50,12 +84,10 @@ def _fetch_source(ctx: ModelContext, source: dict[str, Any], tmp: Path) -> int:
     target.mkdir(parents=True, exist_ok=True)
 
     if kind == "gdrive_folder":
-        import gdown  # type: ignore[import-not-found]
-
+        gdown = _import_extra("gdown")
         gdown.download_folder(id=source["id"], output=str(target), quiet=False, use_cookies=False)
     elif kind == "gdrive_file":
-        import gdown  # type: ignore[import-not-found]
-
+        gdown = _import_extra("gdown")
         out = target / "download.zip"
         gdown.download(id=source["id"], output=str(out), quiet=False)
         _maybe_unzip(out, target)
@@ -64,8 +96,7 @@ def _fetch_source(ctx: ModelContext, source: dict[str, Any], tmp: Path) -> int:
         if not url:
             console.print(f"[yellow]skip[/] {name}: empty url")
             return 0
-        import requests  # type: ignore[import-not-found]
-
+        requests = _import_extra("requests")
         out = target / "download.zip"
         with requests.get(url, stream=True, timeout=120) as resp:
             resp.raise_for_status()
@@ -80,35 +111,20 @@ def _fetch_source(ctx: ModelContext, source: dict[str, Any], tmp: Path) -> int:
     return _copy_capped(ctx, target, name, cap)
 
 
-def _indomain_negative_bases(ctx: ModelContext) -> list[Path]:
-    """No-ball frames mined from the downloaded datasets (real table frames)."""
-    try:
-        _positives, negatives = collect_datasets(ctx, load_overrides(ctx))
-    except Exception:
-        return []
-    return [s.image for s in negatives]
-
-
 def _glare_overlay(ctx: ModelContext, count: int) -> int:
     """Composite flare-ish bright blobs onto no-ball frames to mimic glare/sun rays."""
     import random
 
-    import cv2  # type: ignore[import-not-found]
-    import numpy as np  # type: ignore[import-not-found]
+    import cv2
+    import numpy as np
 
-    # Prefer real in-domain table frames (no ball), then any drop-in / fetched negatives.
-    candidates = (
-        _indomain_negative_bases(ctx)
+    # Prefer real in-domain table frames (no ball), then drop-in and fetched negatives.
+    _positives, indomain = collect_datasets(ctx, load_overrides(ctx))
+    bases = (
+        [s.image for s in indomain]
         + list(iter_images(ctx.dropin_neg_dir))
-        + [p for p in iter_images(ctx.neg_pool_dir) if "glare__" not in p.name]
+        + list(iter_images(ctx.neg_pool_dir))
     )
-    seen: set[str] = set()
-    bases: list[Path] = []
-    for p in candidates:
-        key = str(p)
-        if key not in seen:
-            seen.add(key)
-            bases.append(p)
     if not bases:
         console.print(
             "[yellow]glare[/] no base frames found (run `download` first); skipping"
@@ -148,30 +164,37 @@ def _glare_overlay(ctx: ModelContext, count: int) -> int:
         glow3 = (glow[:, :, None] * strength)
         warm = np.array([235, 245, 255], dtype=np.float32)  # BGR, slightly warm white
         blended = img.astype(np.float32) * (1 - glow3) + warm * glow3
-        dst = out / f"glare__{i:05d}.jpg"
+        dst = out / f"{GLARE_PREFIX}__{i:05d}.jpg"
         cv2.imwrite(str(dst), np.clip(blended, 0, 255).astype("uint8"))
         made += 1
     return made
 
 
-def run(ctx: ModelContext, args: Any = None) -> None:
+def run(ctx: ModelContext, args: Namespace) -> None:
     cfg = load_yaml(ctx.negatives_config)
-    sources = cfg.get("sources", []) or []
-    glare = cfg.get("glare_overlay", {}) or {}
+    sources = cfg.get("sources") or []
+    glare = cfg.get("glare_overlay") or {}
+
+    enabled = [s for s in sources if s.get("enabled")]
+    enabled_names = {s.get("name", "source") for s in enabled}
+    # Glare is regenerated below; enabled sources already in the pool aren't downloaded again.
+    fetched = prune_pool(ctx.neg_pool_dir, enabled_names - {GLARE_PREFIX})
 
     total = 0
-    enabled = [s for s in sources if s.get("enabled")]
-    if enabled:
-        with tempfile.TemporaryDirectory() as td:
-            tmp = Path(td)
-            for source in enabled:
-                name = source.get("name", "source")
-                try:
-                    added = _fetch_source(ctx, source, tmp)
-                    total += added
-                    console.print(f"[green]+{added}[/] negatives from {name}")
-                except Exception as exc:  # pragma: no cover - network heavy
-                    console.print(f"[yellow]warn[/] {name}: {exc!r}")
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        for source in enabled:
+            name = source.get("name", "source")
+            if fetched.get(name):
+                console.print(
+                    f"[yellow]skip[/] {name}: {fetched[name]} negatives already in the pool "
+                    "(delete them to fetch again)"
+                )
+                total += fetched[name]
+                continue
+            added = _fetch_source(ctx, source, tmp)
+            total += added
+            console.print(f"[green]+{added}[/] negatives from {name}")
 
     if glare.get("enabled"):
         added = _glare_overlay(ctx, int(glare.get("count", 200)))
@@ -180,7 +203,7 @@ def run(ctx: ModelContext, args: Any = None) -> None:
 
     if total == 0:
         console.print(
-            "[yellow]nothing to do[/] no external sources enabled. "
+            "[yellow]nothing to do[/] no external sources or glare synthesis enabled. "
             "In-domain negatives are mined during `prepare`."
         )
     else:

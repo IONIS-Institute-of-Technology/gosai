@@ -28,6 +28,8 @@ class MicrophoneDriver(BaseDriver):
     name: ClassVar[str] = "microphone"
     description: ClassVar[str] = "Audio input via sounddevice."
     events: ClassVar[tuple[str, ...]] = ("audio_stream", "settings")
+    # About 4 s of blocks at 16 kHz while Node reads slowly.
+    buffered_events: ClassVar[dict[str, int]] = {"audio_stream": 64}
     actions: ClassVar[tuple[str, ...]] = ("list_devices", "set_device", "set_samplerate")
     loop_interval_s: ClassVar[float | None] = None  # callback driven
 
@@ -79,7 +81,7 @@ class MicrophoneDriver(BaseDriver):
         try:
             import sounddevice as sd  # type: ignore[import-not-found]
         except ImportError as exc:
-            return {"ok": False, "error": f"sounddevice not available: {exc}"}
+            raise RuntimeError(f"sounddevice not available: {exc}") from exc
         devices = sd.query_devices()
         defaults = sd.default.device
         return {

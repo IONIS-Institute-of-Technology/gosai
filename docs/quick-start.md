@@ -119,6 +119,9 @@ bun run test
 bun run python:check
 ```
 
-End-to-end checks live in `packages/server/test/phase*-e2e.ts`. Each one
-boots a fresh server, exercises a vertical slice, and tears down. They
-require the workspace's `python/.venv` to be present.
+`bun run test` includes a contract test that drives the real Python bridge
+with the `heartbeat` driver; it is skipped when `python/.venv` is missing.
+
+`packages/server/test/phase7-e2e.ts` boots a server, installs the template app
+from a local git repo, runs and stops it, then uninstalls it. It only runs
+when `GOSAI_E2E_INSTALL=1` is set (`bun run --filter @gosai/server test:install`).

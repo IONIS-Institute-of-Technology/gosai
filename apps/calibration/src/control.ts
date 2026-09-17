@@ -707,8 +707,6 @@ async function runCompute(rt: ExperienceRuntimeContext, state: ControlState): Pr
       frame_size: frameSizeParam,
       surface_size: surfaceSize,
     })) as {
-      ok: boolean;
-      error?: string;
       matrix?: number[];
       inverse?: number[];
       surface_matrix?: number[] | null;
@@ -722,14 +720,6 @@ async function runCompute(rt: ExperienceRuntimeContext, state: ControlState): Pr
       reprojection_error_mean?: number;
       reprojection_error_max?: number;
     };
-    if (!result.ok) {
-      rt.log.error('compute failed', { err: result.error });
-      state.dom.status.textContent = `compute failed: ${result.error ?? 'unknown'}`;
-      state.dom.status.style.background = 'rgba(239,68,68,0.85)';
-      state.busy = false;
-      state.dom.backBtn.disabled = false;
-      return;
-    }
     if (Array.isArray(result.matrix)) {
       const storage = state.context.targetStorage;
       await storage.set(STORAGE_KEYS.Homography, result.matrix);
@@ -781,8 +771,10 @@ async function runCompute(rt: ExperienceRuntimeContext, state: ControlState): Pr
       });
     }
   } catch (err) {
-    rt.log.error('compute threw', { err: String(err) });
-    state.dom.status.textContent = `compute error: ${String(err)}`;
+    // The driver rejects when it cannot compute, e.g. too few markers detected.
+    const message = err instanceof Error ? err.message : String(err);
+    rt.log.error('compute failed', { err: message });
+    state.dom.status.textContent = `compute failed: ${message}`;
     state.dom.status.style.background = 'rgba(239,68,68,0.85)';
     state.busy = false;
     state.dom.backBtn.disabled = false;

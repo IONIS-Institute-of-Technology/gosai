@@ -54,7 +54,6 @@ gosai/
 │   └── src/gosai_py/
 │        ├── bridge.py    Node↔Python JSON-lines bridge
 │        ├── driver.py    BaseDriver
-│        ├── processor.py BaseProcessor
 │        └── drivers/     Built-in drivers (camera, pose, hand_pose, ...)
 ├── apps/               Built-in apps (calibration, interactive-pool, second-self)
 ├── templates/basic/    Starter template

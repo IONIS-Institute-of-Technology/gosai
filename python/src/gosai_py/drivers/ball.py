@@ -58,8 +58,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, ClassVar, NamedTuple
 
-from gosai_py.driver import DriverContext
-from gosai_py.processor import BaseProcessor
+from gosai_py.driver import BaseDriver, DriverContext
 from gosai_py.runtime import create_onnx_session
 from gosai_py.runtime.models import Model, resolve_model
 
@@ -332,10 +331,11 @@ class _BallTracker:
 
 # ── Driver ───────────────────────────────────────────────────────────────
 
-class BallDriver(BaseProcessor):
+class BallDriver(BaseDriver):
     name: ClassVar[str] = "ball"
     description: ClassVar[str] = "YOLO-based ball detector (ONNX Runtime)."
     events: ClassVar[tuple[str, ...]] = ("balls", "fps")
+    stream_events: ClassVar[tuple[str, ...]] = ("balls", "fps")
     actions: ClassVar[tuple[str, ...]] = (
         "set_homography",
         "set_output_size",
@@ -371,7 +371,6 @@ class BallDriver(BaseProcessor):
         self._cuda_device_id: int | None = None
 
     def pre_run(self) -> None:
-        super().pre_run()
         self._load_session()
 
     def _load_session(self) -> None:
@@ -384,11 +383,6 @@ class BallDriver(BaseProcessor):
         self._input_name, self._input_size = _input_spec(session)
         self._session = session
         self.set_runtime_info(dict(info))
-        self.start_latest_worker()
-
-    def cleanup(self) -> None:
-        self.stop_latest_worker()
-        super().cleanup()
 
     def execute(self, action: str, data: Any) -> Any:
         if action == "set_homography":
@@ -420,9 +414,6 @@ class BallDriver(BaseProcessor):
     # ------------------------------------------------------------------
 
     def on_data(self, driver: str, event: str, data: Any) -> None:
-        self.queue_latest_data(driver, event, data)
-
-    def process_latest_data(self, driver: str, event: str, data: Any) -> None:
         if not isinstance(data, dict) or self._session is None:
             return
         frame = data.get("_frame")
@@ -499,18 +490,16 @@ class BallDriver(BaseProcessor):
     # ------------------------------------------------------------------
 
     def _set_homography(self, data: Any) -> dict[str, Any]:
-        try:
-            import numpy as np  # type: ignore[import-not-found]
-        except ImportError as exc:
-            return {"ok": False, "error": f"numpy required: {exc}"}
+        import numpy as np  # type: ignore[import-not-found]
+
         if not isinstance(data, list) or len(data) != 9:
-            return {"ok": False, "error": "homography must be a length-9 list"}
+            raise ValueError("homography must be a length-9 list")
         self._homography = np.asarray(data, dtype=np.float32).reshape(3, 3)
         return {"ok": True}
 
     def _set_output_size(self, data: Any) -> dict[str, Any]:
         if not isinstance(data, dict):
-            return {"ok": False, "error": "output size must be { width, height }"}
+            raise ValueError("output size must be { width, height }")
         width = int(data.get("width", self._output_size[0]))
         height = int(data.get("height", self._output_size[1]))
         self._output_size = (width, height)

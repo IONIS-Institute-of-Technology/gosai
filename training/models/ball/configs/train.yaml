@@ -1,6 +1,9 @@
-# Fine-tuning settings for the single-class ball detector.
+# Fine-tuning settings for the single-class ball detector. Keys other than
+# model, model_sha256, device, infer_imgsz and motion_blur go to Ultralytics as-is.
 
-model: yolo26s.pt # base weights (auto-downloaded by ultralytics on first run)
+model: yolo26s.pt # base weights, downloaded by Ultralytics on first run
+# sha256 published with the ultralytics/assets v8.4.0 release; `train` refuses other bytes.
+model_sha256: 646f8bc3fe0a656803d95c294f7852321748cb29d13466a1af8862e2db384a1b
 epochs: 100
 imgsz: 1280 # training resolution; matches the 720p (1280 long-side) feeds
 # Fast-iteration tip: set imgsz: 960 while experimenting (roughly 2x faster on

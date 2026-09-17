@@ -21,6 +21,13 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer } from '../src/server.js';
 
+// Installs a real app with git and bun, so it only runs when asked:
+// `GOSAI_E2E_INSTALL=1 bun packages/server/test/phase7-e2e.ts`.
+if (process.env.GOSAI_E2E_INSTALL !== '1') {
+  console.log('[phase7] skipped; set GOSAI_E2E_INSTALL=1 to run the install test');
+  process.exit(0);
+}
+
 const PORT = 17_795;
 const TOKEN = 'e2e-dashboard-token';
 const AUTH = { authorization: `Bearer ${TOKEN}` };
