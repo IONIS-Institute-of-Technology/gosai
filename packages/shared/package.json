@@ -67,7 +67,8 @@
   "scripts": {
     "typecheck": "tsc && tsc -p tsconfig.test.json",
     "test": "bun test",
-    "generate:schema": "bun scripts/generate-schema.ts"
+    "generate:schema": "bun scripts/generate-schema.ts",
+    "generate:protocol-types": "bun scripts/generate-protocol-types.ts"
   },
   "dependencies": {
     "zod": "^4.6.5"

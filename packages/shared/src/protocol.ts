@@ -4,13 +4,17 @@
  * Every message is a JSON envelope. Clients send commands, each with an `id`;
  * the server answers with a `response` envelope carrying that id, and pushes
  * events the client subscribed to. The shapes come from the zod schemas in
- * `protocol-schemas.ts`, imported here as types only so browser bundles don't
- * include zod.
+ * `protocol-schemas.ts`, expanded into plain types in `protocol-types.ts`, so
+ * neither browser bundles nor published declarations need zod.
  */
 
-import type { z } from 'zod';
-import type { commandSchemas, eventSchemas } from './protocol-schemas.js';
 import type { AppEventName, DriverEventName, FixedServerEventName } from './events.js';
+import type {
+  CommandRequests,
+  CommandResponses,
+  FixedEventPayloadMap,
+  ParsedCommandRequests,
+} from './protocol-types.js';
 import type { DriverEventPayload, DriverRuntimeInfo } from './types.js';
 
 export const PROTOCOL_VERSION = 1;
@@ -41,21 +45,17 @@ export interface ErrorPayload {
   readonly details?: unknown;
 }
 
-type CommandSchemas = typeof commandSchemas;
-
-export type CommandName = keyof CommandSchemas;
+export type CommandName = keyof CommandRequests;
 
 /** What a client sends. Fields with defaults may be left out. */
-export type CommandRequest<C extends CommandName> = z.input<CommandSchemas[C]['request']>;
+export type CommandRequest<C extends CommandName> = CommandRequests[C];
 
 /** What the server hands the command handler, after validation. */
-export type ParsedCommandRequest<C extends CommandName> = z.output<CommandSchemas[C]['request']>;
+export type ParsedCommandRequest<C extends CommandName> = ParsedCommandRequests[C];
 
-export type CommandResponse<C extends CommandName> = z.output<CommandSchemas[C]['response']>;
+export type CommandResponse<C extends CommandName> = CommandResponses[C];
 
-type EventSchemas = typeof eventSchemas;
-
-export type FixedEventPayloads = { [E in FixedServerEventName]: z.output<EventSchemas[E]> };
+export type FixedEventPayloads = { [E in FixedServerEventName]: FixedEventPayloadMap[E] };
 
 /** Payload type of any event name, including `driver:event:<binding>` and app events. */
 export type EventPayload<E extends string> = E extends FixedServerEventName
