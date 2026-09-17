@@ -2,8 +2,9 @@
 
 Built-in GOSAI drivers live here. Each is a `BaseDriver` / `BaseProcessor`
 subclass auto-discovered by the Python bridge (see
-`tests/test_drivers_discovery.py`). This note covers the two drivers added for
-the **second-self** app; the rest are documented by their module docstrings.
+`tests/test_drivers_discovery.py`). This note covers the drivers added for the
+**second-self** app and the `ball` driver's runtime backends; the rest are
+documented by their module docstrings.
 
 ## `pose` hand-key convention (important)
 
@@ -80,3 +81,35 @@ camera. Live landmarks are mapped into that space **aspect-preserving**
 (uniform scale, letterboxed/centered): per-axis stretching would squash body
 proportions on any non-4:3 camera (a portrait-rotated camera compresses y by
 ~2.7x relative to x) and recognition degrades to noise.
+
+## `ball` runtime backends
+
+Training always runs in PyTorch (CUDA on NVIDIA, MPS/Metal on Apple) — TensorRT
+and CoreML are **not** training backends, they are inference/export targets, so
+there is only ever one trained model.
+
+For inference, the driver ships a **single ONNX model** and runs it under the
+fastest available ONNX Runtime _execution provider_. This keeps all the
+pre/post-processing code shared and lets one artifact run everywhere:
+
+| Host                | Auto backend                     | Notes                                 |
+| ------------------- | -------------------------------- | ------------------------------------- |
+| NVIDIA              | TensorRT EP → CUDA EP            | TensorRT compiles+caches on first run |
+| Apple Silicon (mac) | CoreML EP (Neural Engine/GPU)    | falls back to CPU for unsupported ops |
+| other               | CPU (only if explicitly allowed) | `GOSAI_ALLOW_CPU_FALLBACK=1`          |
+
+Override with `GOSAI_ACCELERATOR=auto|tensorrt|cuda|coreml|dml|cpu`. TensorRT
+caches engines under `GOSAI_TRT_CACHE_DIR` (default `~/.cache/gosai/trt`).
+
+This EP approach captures most of the TensorRT/CoreML speedup with zero extra
+runtime code or dependencies. If you want to benchmark the **native** engines
+(marginally faster, but device/version-specific and heavier), export them too —
+they are written to `training/models/<m>/exports/` and are not auto-installed:
+
+```bash
+cd training
+# Native CoreML package (Apple):
+uv run gosai-train --model ball export --formats onnx,coreml
+# Native TensorRT engine (NVIDIA; Ultralytics installs tensorrt on demand):
+uv run gosai-train --model ball export --formats onnx,engine
+```

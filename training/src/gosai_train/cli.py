@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 
-from .context import REPO_ROOT, default_model, discover_models, load_context
+from .context import REPO_ROOT, ModelContext, default_model, discover_models, load_context
 from .registry import get_pipeline
 from .util import console
 
@@ -27,7 +28,7 @@ def _add(subparsers, name: str, help_text: str) -> argparse.ArgumentParser:
 def _add_formats(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--formats", type=_formats, default="onnx",
-        help="Comma-separated export formats: onnx,coreml,engine (default: onnx).",
+        help="Comma-separated export formats: onnx,coreml,engine (default: %(default)s).",
     )
 
 
@@ -46,11 +47,11 @@ def _build_parser() -> argparse.ArgumentParser:
     _add(sub, "prepare", "Merge sources into a single-class dataset.")
 
     p_frames = _add(sub, "frames", "Extract frames from data/custom/videos.")
-    p_frames.add_argument("--step", type=_positive_int, default=15, help="Keep 1 of every N frames.")
+    p_frames.add_argument("--step", type=_positive_int, default=15, help="Keep 1 of every N frames (default: %(default)s).")
 
     p_auto = _add(sub, "autolabel", "Auto-draft labels for data/custom/images.")
     p_auto.add_argument("--weights", default=None, help="Model weights (default: latest best.pt, else a base COCO model).")
-    p_auto.add_argument("--conf", type=float, default=0.25, help="Detection confidence threshold.")
+    p_auto.add_argument("--conf", type=float, default=0.25, help="Detection confidence threshold (default: %(default)s).")
     p_auto.add_argument(
         "--preview", action=argparse.BooleanOptionalAction, default=True,
         help="Write annotated preview JPEGs to data/custom/previews for review.",
@@ -60,13 +61,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_eval = _add(sub, "eval", "Evaluate weights on the test split, golden set, and FP rate.")
     p_eval.add_argument("--weights", default=None, help="Weights to evaluate (default: latest best.pt).")
-    p_eval.add_argument("--conf", type=float, default=0.25, help="Confidence for the false-positive check.")
+    p_eval.add_argument("--conf", type=float, default=0.25, help="Confidence for the false-positive check (default: %(default)s).")
 
     p_mine = _add(sub, "mine", "Mine hard negatives: collect frames where the model fires, for review.")
     p_mine.add_argument("--source", default=None, help="Videos/images to scan (default: data/custom/videos).")
     p_mine.add_argument("--weights", default=None, help="Model weights (default: latest best.pt).")
-    p_mine.add_argument("--conf", type=float, default=0.3, help="Detection confidence threshold.")
-    p_mine.add_argument("--step", type=_positive_int, default=10, help="Scan 1 of every N video frames.")
+    p_mine.add_argument("--conf", type=float, default=0.3, help="Detection confidence threshold (default: %(default)s).")
+    p_mine.add_argument("--step", type=_positive_int, default=10, help="Scan 1 of every N video frames (default: %(default)s).")
 
     p_export = _add(sub, "export", "Export the trained model (ONNX by default).")
     _add_formats(p_export)
@@ -77,7 +78,24 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_all = _add(sub, "all", "download, negatives, prepare, train, export, install.")
     _add_formats(p_all)
+
+    _add(sub, "clean", "Delete generated data, previews, runs and exports for the model.")
     return parser
+
+
+def _clean(ctx: ModelContext) -> None:
+    generated = (
+        ctx.raw_dir, ctx.merged_dir, ctx.neg_pool_dir, ctx.mining_dir, ctx.custom_previews,
+        ctx.golden_dir / "data.yaml", ctx.golden_dir / "labels.cache", ctx.runs_dir, ctx.exports_dir,
+    )
+    for path in generated:
+        if path.is_dir():
+            shutil.rmtree(path)
+        elif path.exists():
+            path.unlink()
+        else:
+            continue
+        console.print(f"[yellow]removed[/] {path.relative_to(REPO_ROOT)}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -101,6 +119,10 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"pass --model <name>. Available: {available}")
 
     ctx = load_context(name)
+    if args.command == "clean":
+        _clean(ctx)
+        return 0
+
     pipeline = get_pipeline(ctx.type)
     command = pipeline.COMMANDS.get(args.command)
     if command is None:

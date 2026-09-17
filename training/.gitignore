@@ -4,13 +4,14 @@
 # Secrets
 .env
 
-# Generated datasets and artifacts (large, reproducible) -- per model
+# Generated datasets and artifacts (large, reproducible), per model
 models/*/data/raw/
 models/*/data/merged/
 models/*/data/negatives_pool/
 models/*/data/mining/
 models/*/data/custom/previews/
 models/*/data/golden/data.yaml
+models/*/data/golden/labels.cache
 models/*/runs/
 models/*/exports/
 
