@@ -85,3 +85,13 @@ def test_setters(driver: tuple[BallDriver, RecordingContext]) -> None:
     assert instance.execute("set_cuda_device", 1) == {"cuda_device_id": 1}
     with pytest.raises(ValueError, match="length"):
         instance.execute("set_homography", [1, 2, 3])
+
+
+def test_drops_balls_that_map_to_infinity(driver: tuple[BallDriver, RecordingContext]) -> None:
+    instance, context = driver
+    # w = 1 - x / 120 is zero at the detected ball's centre, x = 120.
+    instance.execute("set_homography", [1, 0, 0, 0, 1, 0, -1 / 120, 0, 1])
+
+    instance.on_data("camera", "frame", _frame())
+
+    assert context.emitted("balls")[-1]["balls"] == []

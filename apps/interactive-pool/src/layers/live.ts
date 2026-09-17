@@ -1,120 +1,162 @@
 /**
  * Live ball-position relay.
  *
- * Headless layer (no visual rendering) that forwards normalised ball
- * positions to an external WebSocket every time the ball feed updates. The
- * relay URL lives in app storage under the key `live_server_url`; if blank
- * or unset the layer stays dormant.
+ * Draws nothing. Streams normalised ball positions to the WebSocket in the
+ * `live.url` setting each time the ball driver reports new ones, and stays
+ * idle while the setting is empty.
  *
- * Lifecycle:
- *   - On `start()`, reads the URL from storage and opens the socket.
- *   - On socket close / error, schedules a reconnect with exponential
- *     back-off (capped at 30s). Never throws on its own.
- *   - On `stop()`, closes the socket and cancels any pending reconnect.
+ * - Follows the setting while running: a new URL closes the old socket and
+ *   connects to the new one.
+ * - Reconnects after a close or error with exponential back-off, capped at 30 s.
+ *   Each failed attempt logs a warning, so the back-off also limits the logs.
+ * - `stop()` closes the socket and cancels a pending reconnect.
  */
 
 import type { ExperienceRuntimeContext } from '@gosai/sdk';
-import { REF_HEIGHT, REF_WIDTH, type FrameContext, type Layer } from '../shared/types.js';
-import type { PoolFeed } from '../shared/feed.js';
+import { relayUrlProblem, type PoolSettings } from '../settings.js';
+import { REF_HEIGHT, REF_WIDTH, type PoolFrame, type PoolLayer } from '../shared/types.js';
 
-const STORAGE_KEY = 'live_server_url';
-const MIN_BACKOFF_MS = 1_000;
-const MAX_BACKOFF_MS = 30_000;
+export const MIN_BACKOFF_MS = 1_000;
+export const MAX_BACKOFF_MS = 30_000;
 
-export function createLiveLayer(feed: PoolFeed, rt: ExperienceRuntimeContext): Layer {
-  let url: string | null = null;
-  let socket: WebSocket | null = null;
+/** `WebSocket.OPEN`. */
+const OPEN = 1;
+
+/** The parts of a WebSocket the relay uses. */
+export interface RelaySocket {
+  readonly readyState: number;
+  send(data: string): void;
+  close(): void;
+  addEventListener(type: 'open' | 'close', listener: () => void): void;
+}
+
+/** How the relay opens sockets and waits. Tests replace them. */
+export interface LiveEnvironment {
+  readonly openSocket: (url: string) => RelaySocket;
+  readonly setTimer: (callback: () => void, ms: number) => unknown;
+  readonly clearTimer: (timer: unknown) => void;
+}
+
+const BROWSER: LiveEnvironment = {
+  openSocket: (url) => new WebSocket(url),
+  setTimer: (callback, ms) => setTimeout(callback, ms),
+  clearTimer: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+};
+
+export function createLiveLayer(
+  rt: ExperienceRuntimeContext,
+  settings: () => PoolSettings,
+  env: LiveEnvironment = BROWSER,
+): PoolLayer {
+  /** The URL the relay follows, once it passed `relayUrlProblem`. */
+  let target = '';
+  /** The last `live.url` value seen, valid or not. */
+  let seenUrl: string | null = null;
+  let socket: RelaySocket | null = null;
   let backoff = MIN_BACKOFF_MS;
-  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let reconnectTimer: unknown = null;
   let lastSentAt = 0;
-  let stopped = false;
+  let running = false;
 
-  function scheduleReconnect(): void {
-    if (stopped || url === null || url === '') return;
-    if (reconnectTimer !== null) return;
+  function disconnect(): void {
+    if (reconnectTimer !== null) env.clearTimer(reconnectTimer);
+    reconnectTimer = null;
+    const current = socket;
+    socket = null;
+    current?.close();
+  }
+
+  /** Schedules the next attempt and returns its delay, or `null` when none is due. */
+  function scheduleReconnect(): number | null {
+    if (!running || target === '' || reconnectTimer !== null) return null;
     const delay = backoff;
     backoff = Math.min(MAX_BACKOFF_MS, backoff * 2);
-    reconnectTimer = setTimeout(() => {
+    reconnectTimer = env.setTimer(() => {
       reconnectTimer = null;
       connect();
     }, delay);
+    return delay;
+  }
+
+  function retry(message: string, data: Record<string, unknown> = {}): void {
+    const delay = scheduleReconnect();
+    if (delay !== null) rt.log.warn(message, { url: target, retryInMs: delay, ...data });
   }
 
   function connect(): void {
-    if (stopped || url === null || url === '') return;
+    if (!running || target === '') return;
+    let opened: RelaySocket;
     try {
-      socket = new WebSocket(url);
+      opened = env.openSocket(target);
     } catch (err) {
-      rt.log.warn('live: failed to open WebSocket', {
-        err: String((err as Error)?.message ?? err),
-      });
-      socket = null;
-      scheduleReconnect();
+      retry('live: could not open the relay socket', { err: String(err) });
       return;
     }
-
-    socket.addEventListener('open', () => {
+    socket = opened;
+    let wasOpen = false;
+    opened.addEventListener('open', () => {
+      wasOpen = true;
       backoff = MIN_BACKOFF_MS;
-      rt.log.info('live: connected', { url });
+      rt.log.info('live: connected', { url: target });
     });
-    socket.addEventListener('error', () => {
-      rt.log.warn('live: socket error');
-    });
-    socket.addEventListener('close', () => {
+    opened.addEventListener('close', () => {
+      // A socket replaced by a new URL or closed by stop() doesn't reconnect.
+      if (socket !== opened) return;
       socket = null;
-      if (!stopped) scheduleReconnect();
+      if (wasOpen) {
+        rt.log.info('live: relay disconnected, reconnecting', { url: target });
+        scheduleReconnect();
+      } else {
+        retry('live: could not connect to the relay');
+      }
     });
   }
 
+  /** Reconnects when the `live.url` setting changed. */
+  function follow(): void {
+    const url = settings().live.url;
+    if (url === seenUrl) return;
+    seenUrl = url;
+    disconnect();
+    backoff = MIN_BACKOFF_MS;
+    target = '';
+    if (url === '') {
+      rt.log.info('live: relay off (set live.url in the app settings to stream ball positions)');
+      return;
+    }
+    const problem = relayUrlProblem(url, rt.app.manifest.network?.connect ?? []);
+    if (problem) {
+      rt.log.warn(`live: ${problem}`);
+      return;
+    }
+    target = url;
+    connect();
+  }
+
   return {
-    async start(): Promise<void> {
-      stopped = false;
-      try {
-        const stored = await rt.storage.get<string>(STORAGE_KEY, '');
-        url = typeof stored === 'string' && stored.length > 0 ? stored : null;
-      } catch {
-        url = null;
-      }
-      if (url === null) {
-        rt.log.info('live: relay disabled (set live_server_url in storage to enable)');
-        return;
-      }
-      connect();
+    start(): void {
+      running = true;
+      seenUrl = null;
+      follow();
     },
 
-    render(_frame: FrameContext): void {
-      if (socket === null || socket.readyState !== WebSocket.OPEN) return;
-      // Only send when the feed has fresh data since the last broadcast.
-      if (feed.balls.lastUpdate === lastSentAt) return;
-      lastSentAt = feed.balls.lastUpdate;
-      const payload = {
-        ts: Date.now(),
-        balls: feed.balls.balls.map((b) => ({
-          x: b.x / REF_WIDTH,
-          y: b.y / REF_HEIGHT,
-        })),
-      };
-      try {
-        socket.send(JSON.stringify(payload));
-      } catch {
-        // best-effort; the close handler will reconnect.
-      }
+    render({ tracking }: PoolFrame): void {
+      follow();
+      if (socket?.readyState !== OPEN) return;
+      // Only send when the ball driver reported since the last message.
+      if (tracking.ballsUpdatedAt === lastSentAt) return;
+      lastSentAt = tracking.ballsUpdatedAt;
+      socket.send(
+        JSON.stringify({
+          ts: Date.now(),
+          balls: tracking.balls.map((b) => ({ x: b.x / REF_WIDTH, y: b.y / REF_HEIGHT })),
+        }),
+      );
     },
 
     stop(): void {
-      stopped = true;
-      if (reconnectTimer !== null) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-      if (socket !== null) {
-        try {
-          socket.close();
-        } catch {
-          // best-effort.
-        }
-        socket = null;
-      }
+      running = false;
+      disconnect();
     },
   };
 }

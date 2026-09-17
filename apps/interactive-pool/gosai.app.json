@@ -50,5 +50,49 @@
       "exclusive": false
     }
   ],
-  "startup": ["main"]
+  "startup": ["main"],
+  "settings": {
+    "groups": [
+      {
+        "label": "Setup text",
+        "description": "Text projected on the table while setting it up.",
+        "fields": [
+          {
+            "key": "debug.title",
+            "label": "Title",
+            "type": "boolean",
+            "description": "\"INTERACTIVE POOL PROJECT\" along the bottom edge.",
+            "default": true
+          },
+          {
+            "key": "debug.renderFps",
+            "label": "Render frame rate",
+            "type": "boolean",
+            "description": "How many frames per second the projection draws, in the top-left corner.",
+            "default": false
+          },
+          {
+            "key": "debug.ballFps",
+            "label": "Ball detection rate",
+            "type": "boolean",
+            "description": "How many camera frames per second the ball driver processes, along the bottom edge.",
+            "default": false
+          }
+        ]
+      },
+      {
+        "label": "Live relay",
+        "description": "Streams ball positions, normalised to 0..1, to an external WebSocket server.",
+        "fields": [
+          {
+            "key": "live.url",
+            "label": "Relay URL",
+            "type": "string",
+            "description": "WebSocket URL such as wss://example.com/realtimepool/ws. Leave empty to turn the relay off. A ws:// URL, e.g. a relay on the local network, also needs its origin under network.connect in gosai.app.json; see the app README.",
+            "default": ""
+          }
+        ]
+      }
+    ]
+  }
 }

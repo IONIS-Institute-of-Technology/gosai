@@ -2,246 +2,273 @@
  * Univers visualization.
  *
  * - Background: 2000 dim-blue dots scattered across the table.
- * - Galaxy: 4000 stars distributed on an Archimedean spiral, slowly rotating.
- * - Per ball (max 6): a solar system with a glowing sun and 8 orbiting
- *   planets, some of which carry rings.
+ * - Galaxy: 4000 stars on an Archimedean spiral, slowly rotating.
+ * - Per ball (max 6): a solar system with a sun and 8 orbiting planets,
+ *   some of which carry rings.
  *
- * Solar systems are kept in sync with ball indices so planet orbits persist
- * between frames as long as the same ball stays detected.
+ * Positions that don't change are computed once at start, and same-coloured
+ * shapes are drawn in a few paths, so a frame costs a few dozen fills instead
+ * of thousands. Solar systems follow ball indices, so planet
+ * orbits persist between frames as long as the same ball stays detected.
  */
 
-import { REF_HEIGHT, REF_WIDTH, type FrameContext, type Layer } from '../shared/types.js';
-import { fillCircle } from '../shared/canvas-utils.js';
+import { fillCircle } from '../shared/draw.js';
 import { rand } from '../shared/math.js';
-import type { PoolFeed } from '../shared/feed.js';
+import { frameSteps } from '../shared/motion.js';
+import {
+  REF_HEIGHT,
+  REF_WIDTH,
+  type Ball,
+  type PoolFrame,
+  type PoolLayer,
+} from '../shared/types.js';
 
 const BACKGROUND_DOTS = 2000;
 const GALAXY_STARS = 4000;
 const MAX_SOLAR_SYSTEMS = 6;
-const PLANET_COUNT = 8;
+/** Galaxy rotation, in radians per legacy frame. */
+const GALAXY_VELOCITY = 0.0015;
 
-const SOLAR_TAB_COLORS: ReadonlyArray<readonly [number, number, number]> = [
-  [128, 128, 128],
-  [250, 240, 180],
-  [0, 127, 255],
-  [178, 46, 32],
-  [255, 175, 0],
-  [255, 255, 0],
-  [147, 184, 190],
-  [75, 112, 221],
+const DOT_COLOR = 'rgba(30,144,255,0.63)';
+/** See {@link drawGalaxy} for why this isn't the legacy 0.49. */
+const STAR_COLOR = 'rgba(221,160,221,0.51)';
+const STAR_BATCHES = 8;
+const ORBIT_COLOR = 'rgba(255,255,255,0.39)';
+const SUN_COLOR = 'rgb(255,140,0)';
+const SUN_DIAMETER = 100;
+const SYSTEM_TILT = -Math.PI / 12;
+
+/** One colour per planet, innermost first. */
+const PLANET_COLORS: readonly string[] = [
+  'rgb(128,128,128)',
+  'rgb(250,240,180)',
+  'rgb(0,127,255)',
+  'rgb(178,46,32)',
+  'rgb(255,175,0)',
+  'rgb(255,255,0)',
+  'rgb(147,184,190)',
+  'rgb(75,112,221)',
 ];
 
-interface Star {
-  radiusW: number;
-  radiusH: number;
-  theta: number;
-  velocity: number;
-  /** Spiral seed angle: legacy uses `(PI/nbStars)*i` as the per-star frame
-   *  rotation, which we apply once to position each star on the spiral. */
-  spiral: number;
+/**
+ * Stars as parallel arrays. Star `i` sits on an ellipse with semi-axes
+ * `a[i]`, `b[i]`, turned by its spiral angle, at orbit angle `phase[i]` plus
+ * the galaxy's rotation.
+ */
+export interface Galaxy {
+  readonly a: Float64Array;
+  readonly b: Float64Array;
+  readonly cos: Float64Array;
+  readonly sin: Float64Array;
+  readonly phase: Float64Array;
 }
 
-interface Dot {
-  x: number;
-  y: number;
-}
-
-interface Planet {
-  /** Orbit ellipse radius (x). */
-  radiusW: number;
-  /** Orbit ellipse radius (y). */
-  radiusH: number;
-  /** Planet radius. */
-  r: number;
-  /** Angular speed in radians/frame. */
-  velocity: number;
+export interface Planet {
+  /** Orbit ellipse semi-axes. */
+  readonly radiusW: number;
+  readonly radiusH: number;
+  /** Planet diameter. */
+  readonly r: number;
+  /** Angular speed in radians per legacy frame. */
+  readonly velocity: number;
   /** Current orbit angle. */
   theta: number;
-  color: readonly [number, number, number];
-  /** Whether this planet renders a ring (legacy: planets 2, 4, 6 when
-   *  `anneau` random flag is on). */
-  hasRing: boolean;
+  readonly color: string;
+  readonly hasRing: boolean;
 }
 
-interface SolarSystem {
+export interface SolarSystem {
   sunX: number;
   sunY: number;
-  /** Tilt of the whole solar system about the sun. */
-  tilt: number;
-  /** Sun radius. */
-  sunR: number;
-  /** Sun colour. */
-  sunColor: readonly [number, number, number];
-  planets: Planet[];
+  readonly planets: readonly Planet[];
 }
 
-export function createUniversLayer(feed: PoolFeed): Layer {
-  let dots: Dot[] = [];
-  let stars: Star[] = [];
-  const systems: (SolarSystem | null)[] = Array.from({ length: MAX_SOLAR_SYSTEMS }, () => null);
-  const prevPositions: Array<{ x: number; y: number } | null> = Array.from(
-    { length: MAX_SOLAR_SYSTEMS },
-    () => null,
-  );
-
-  function init(): void {
-    dots = [];
-    for (let i = 0; i < BACKGROUND_DOTS; i++) {
-      dots.push({ x: rand(0, REF_WIDTH), y: rand(0, REF_HEIGHT) });
-    }
-    stars = [];
-    for (let i = 0; i < GALAXY_STARS; i++) {
-      const radiusW = 5 + i * 0.2;
-      const radiusH = radiusW / 2;
-      stars.push({
-        radiusW,
-        radiusH,
-        theta: rand(0, 2 * Math.PI),
-        velocity: 0.0015,
-        spiral: (Math.PI / GALAXY_STARS) * i,
-      });
-    }
-    for (let i = 0; i < systems.length; i++) {
-      systems[i] = null;
-      prevPositions[i] = null;
-    }
-  }
-
-  function makeSolarSystem(x: number, y: number): SolarSystem {
-    const ringFlag = Math.random() < 0.5;
-    const planets: Planet[] = [];
-    for (let i = 1; i <= PLANET_COUNT; i++) {
-      const colorIdx = i - 1;
-      const c = SOLAR_TAB_COLORS[colorIdx] ?? SOLAR_TAB_COLORS[0]!;
-      planets.push({
-        radiusW: 100 + (i - 1) * 50,
-        radiusH: 25 + (i - 1) * 12,
-        r: rand(10, 40),
-        velocity: 0.01 - (i - 1) * 0.001,
-        theta: rand(0, 2 * Math.PI),
-        color: c,
-        hasRing: ringFlag && (i === 2 || i === 4 || i === 6),
-      });
-    }
-    return {
-      sunX: x,
-      sunY: y,
-      tilt: -Math.PI / 12,
-      sunR: 100,
-      sunColor: [255, 140, 0],
-      planets,
-    };
-  }
+export function createUniversLayer(): PoolLayer {
+  let dots: Float64Array = new Float64Array(0);
+  let galaxy = createGalaxy(0);
+  let galaxyAngle = 0;
+  const systems: (SolarSystem | null)[] = [];
 
   return {
     start(): void {
-      init();
+      dots = scatterPoints(BACKGROUND_DOTS, REF_WIDTH, REF_HEIGHT);
+      galaxy = createGalaxy(GALAXY_STARS);
+      galaxyAngle = 0;
+      systems.length = 0;
     },
 
-    render(frame: FrameContext): void {
-      const { ctx } = frame;
+    render({ ctx, deltaMs, tracking }: PoolFrame): void {
+      const steps = frameSteps(deltaMs);
+      galaxyAngle += GALAXY_VELOCITY * steps;
 
-      // Background.
       ctx.fillStyle = '#000000';
       ctx.fillRect(0, 0, REF_WIDTH, REF_HEIGHT);
 
-      // Background dots.
-      ctx.fillStyle = 'rgba(30,144,255,0.63)';
-      for (const dot of dots) {
-        ctx.beginPath();
-        ctx.arc(dot.x, dot.y, 1, 0, Math.PI * 2);
-        ctx.fill();
-      }
+      ctx.fillStyle = DOT_COLOR;
+      ctx.beginPath();
+      for (let i = 0; i < dots.length; i += 2) addDot(ctx, dots[i] ?? 0, dots[i + 1] ?? 0, 1);
+      ctx.fill();
 
-      // Galaxy: each star occupies its own spiral seat and slowly orbits.
-      ctx.save();
-      ctx.translate(REF_WIDTH / 2, REF_HEIGHT / 2);
-      for (const star of stars) {
-        star.theta += star.velocity;
-        ctx.save();
-        ctx.rotate(star.spiral);
-        const x = (star.radiusW / 2) * Math.cos(star.theta);
-        const y = (star.radiusH / 2) * Math.sin(star.theta);
-        ctx.fillStyle = 'rgba(221,160,221,0.49)';
-        ctx.beginPath();
-        ctx.arc(x, y, 2, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
-      }
-      ctx.restore();
+      drawGalaxy(ctx, galaxy, galaxyAngle);
 
-      // Sync solar systems with current ball indices.
-      const balls = feed.balls.balls;
-      for (let i = 0; i < MAX_SOLAR_SYSTEMS; i++) {
-        const ball = balls[i];
-        if (!ball) {
-          systems[i] = null;
-          prevPositions[i] = null;
-          continue;
-        }
-        const prev = prevPositions[i];
-        if (!prev) {
-          systems[i] = makeSolarSystem(ball.x, ball.y);
-        } else if (Math.hypot(prev.x - ball.x, prev.y - ball.y) > 1) {
-          const sys = systems[i];
-          if (sys) {
-            sys.sunX = ball.x;
-            sys.sunY = ball.y;
-          }
-        }
-        prevPositions[i] = { x: ball.x, y: ball.y };
-      }
-
-      for (const sys of systems) {
-        if (sys) drawSolarSystem(ctx, sys);
+      syncSolarSystems(systems, tracking.balls);
+      for (const system of systems) {
+        if (!system) continue;
+        for (const planet of system.planets) planet.theta += planet.velocity * steps;
+        drawSolarSystem(ctx, system);
       }
     },
 
     stop(): void {
-      dots = [];
-      stars = [];
-      for (let i = 0; i < systems.length; i++) {
-        systems[i] = null;
-        prevPositions[i] = null;
-      }
+      dots = new Float64Array(0);
+      galaxy = createGalaxy(0);
+      systems.length = 0;
     },
   };
 }
 
-function drawSolarSystem(ctx: CanvasRenderingContext2D, sys: SolarSystem): void {
-  ctx.save();
-  ctx.translate(sys.sunX, sys.sunY);
-  ctx.rotate(sys.tilt);
+/** `count` random points in a `width` x `height` rectangle, as x, y pairs. */
+export function scatterPoints(count: number, width: number, height: number): Float64Array {
+  const points = new Float64Array(count * 2);
+  for (let i = 0; i < count; i++) {
+    points[i * 2] = rand(0, width);
+    points[i * 2 + 1] = rand(0, height);
+  }
+  return points;
+}
 
-  // Sun.
-  fillCircle(ctx, 0, 0, sys.sunR, `rgb(${sys.sunColor[0]},${sys.sunColor[1]},${sys.sunColor[2]})`);
+/**
+ * The legacy spiral: star `i` has an orbit of `5 + 0.2 i` by half that,
+ * halved again when drawn, turned by `i * PI / count`.
+ */
+export function createGalaxy(count: number): Galaxy {
+  const galaxy: Galaxy = {
+    a: new Float64Array(count),
+    b: new Float64Array(count),
+    cos: new Float64Array(count),
+    sin: new Float64Array(count),
+    phase: new Float64Array(count),
+  };
+  for (let i = 0; i < count; i++) {
+    const radiusW = 5 + i * 0.2;
+    const spiral = (Math.PI / count) * i;
+    galaxy.a[i] = radiusW / 2;
+    galaxy.b[i] = radiusW / 4;
+    galaxy.cos[i] = Math.cos(spiral);
+    galaxy.sin[i] = Math.sin(spiral);
+    galaxy.phase[i] = rand(0, 2 * Math.PI);
+  }
+  return galaxy;
+}
 
-  for (const planet of sys.planets) {
-    planet.theta += planet.velocity;
-    const px = planet.radiusW * Math.cos(planet.theta);
-    const py = planet.radiusH * Math.sin(planet.theta);
+/** Offset of star `i` from the galaxy centre once the galaxy turned by `angle`. */
+export function starPosition(galaxy: Galaxy, i: number, angle: number): { x: number; y: number } {
+  const theta = (galaxy.phase[i] ?? 0) + angle;
+  const ex = (galaxy.a[i] ?? 0) * Math.cos(theta);
+  const ey = (galaxy.b[i] ?? 0) * Math.sin(theta);
+  const cos = galaxy.cos[i] ?? 1;
+  const sin = galaxy.sin[i] ?? 0;
+  return { x: ex * cos - ey * sin, y: ex * sin + ey * cos };
+}
 
-    // Orbit trace.
-    ctx.strokeStyle = 'rgba(255,255,255,0.39)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.ellipse(0, 0, planet.radiusW / 2, planet.radiusH / 2, 0, 0, Math.PI * 2);
-    ctx.stroke();
-
-    // Ring (if present).
-    if (planet.hasRing) {
-      ctx.strokeStyle = '#ffffff';
-      ctx.beginPath();
-      ctx.ellipse(px, py, (2.5 * planet.r) / 2, planet.r / 2, 0, 0, Math.PI * 2);
-      ctx.stroke();
+/**
+ * Keeps one solar system per ball index: a new ball gets a new system, a
+ * known one moves its sun to the ball, and a missing one loses its system.
+ */
+export function syncSolarSystems(systems: (SolarSystem | null)[], balls: readonly Ball[]): void {
+  for (let i = 0; i < MAX_SOLAR_SYSTEMS; i++) {
+    const ball = balls[i];
+    const system = systems[i];
+    if (!ball) {
+      systems[i] = null;
+    } else if (system) {
+      system.sunX = ball.x;
+      system.sunY = ball.y;
+    } else {
+      systems[i] = createSolarSystem(ball.x, ball.y);
     }
+  }
+}
 
-    // Planet body.
-    ctx.fillStyle = `rgb(${planet.color[0]},${planet.color[1]},${planet.color[2]})`;
+export function createSolarSystem(x: number, y: number): SolarSystem {
+  const ringed = Math.random() < 0.5;
+  const planets = PLANET_COLORS.map((color, i): Planet => ({
+    radiusW: 100 + i * 50,
+    radiusH: 25 + i * 12,
+    r: rand(10, 40),
+    velocity: 0.01 - i * 0.001,
+    theta: rand(0, 2 * Math.PI),
+    color,
+    // Legacy: planets 2, 4 and 6 carry rings when the system is ringed.
+    hasRing: ringed && i % 2 === 1 && i < 6,
+  }));
+  return { sunX: x, sunY: y, planets };
+}
+
+/**
+ * Draws the stars in {@link STAR_BATCHES} fills. Overlapping circles in one
+ * path cover a pixel once, while the legacy code filled each star on its own
+ * and overlaps added up. Interleaved batches restore most of that glow in the
+ * dense core, and {@link STAR_COLOR} is a little more opaque than the legacy
+ * 0.49 to make up the rest: measured against the legacy drawing, a frame and
+ * its core come out within 1% of the old brightness.
+ */
+export function drawGalaxy(ctx: CanvasRenderingContext2D, galaxy: Galaxy, angle: number): void {
+  const cx = REF_WIDTH / 2;
+  const cy = REF_HEIGHT / 2;
+  ctx.fillStyle = STAR_COLOR;
+  for (let batch = 0; batch < STAR_BATCHES; batch++) {
     ctx.beginPath();
-    ctx.arc(px, py, planet.r / 2, 0, Math.PI * 2);
+    for (let i = batch; i < galaxy.a.length; i += STAR_BATCHES) {
+      const { x, y } = starPosition(galaxy, i, angle);
+      addDot(ctx, cx + x, cy + y, 2);
+    }
     ctx.fill();
+  }
+}
+
+/** Where a planet sits relative to its sun, before the system's tilt. */
+export function planetOffset(planet: Planet): { x: number; y: number } {
+  return { x: planet.radiusW * Math.cos(planet.theta), y: planet.radiusH * Math.sin(planet.theta) };
+}
+
+export function drawSolarSystem(ctx: CanvasRenderingContext2D, system: SolarSystem): void {
+  ctx.save();
+  ctx.translate(system.sunX, system.sunY);
+  ctx.rotate(SYSTEM_TILT);
+
+  fillCircle(ctx, 0, 0, SUN_DIAMETER, SUN_COLOR);
+
+  // Orbits and rings, each as one path.
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = ORBIT_COLOR;
+  ctx.beginPath();
+  for (const planet of system.planets) {
+    ctx.moveTo(planet.radiusW, 0);
+    ctx.ellipse(0, 0, planet.radiusW, planet.radiusH, 0, 0, Math.PI * 2);
+  }
+  ctx.stroke();
+
+  ctx.strokeStyle = '#ffffff';
+  ctx.beginPath();
+  for (const planet of system.planets) {
+    if (!planet.hasRing) continue;
+    const { x, y } = planetOffset(planet);
+    ctx.moveTo(x + (2.5 * planet.r) / 2, y);
+    ctx.ellipse(x, y, (2.5 * planet.r) / 2, planet.r / 2, 0, 0, Math.PI * 2);
+  }
+  ctx.stroke();
+
+  for (const planet of system.planets) {
+    const { x, y } = planetOffset(planet);
+    fillCircle(ctx, x, y, planet.r, planet.color);
   }
 
   ctx.restore();
+}
+
+/** Adds a circle to the current path without joining it to the previous one. */
+function addDot(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number): void {
+  ctx.moveTo(x + radius, y);
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
 }

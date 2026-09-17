@@ -35,6 +35,7 @@ import type {
   ExperienceDefinition,
   ExperienceRuntimeContext,
   ServerConnection,
+  SettingsClient,
 } from './types.js';
 
 export interface RuntimeOptions {
@@ -179,6 +180,9 @@ export async function startRuntime<TState>(
   const events = new TrackedEventsClient(new AppEventsClientImpl(options.appSlug, server));
   const storage = new StorageClientImpl(options.appSlug, server);
   const appConfig = new TrackedAppConfigClient(new AppConfigClientImpl(options.appSlug, server));
+  const settings = new TrackedSettingsClient(
+    createSettingsClient(env.settings ?? serverSettingsBackend(options.appSlug, server)),
+  );
   const router = new ExperienceRouterImpl(options.appSlug, server);
   router.setCurrent(options.experienceSlug);
   const audio = new RuntimeAudio(env.createAudioContext, controller.signal);
@@ -197,7 +201,7 @@ export async function startRuntime<TState>(
     app,
     drivers,
     storage,
-    settings: createSettingsClient(env.settings ?? serverSettingsBackend(options.appSlug, server)),
+    settings,
     assets: createAssetsClient(options.serverBaseUrl, options.appSlug),
     log,
     router,
@@ -229,6 +233,7 @@ export async function startRuntime<TState>(
       drivers.release();
       events.release();
       appConfig.release();
+      settings.release();
       try {
         if (initialized) await definition.stop?.(ctx, state as TState);
       } catch (err) {
@@ -375,6 +380,39 @@ class TrackedAppConfigClient implements AppConfigClient {
   }
 
   onChange(listener: (settings: AppDeviceSettings) => void): () => void {
+    if (this.released) return () => undefined;
+    const off = this.inner.onChange(listener);
+    const unsubscribe = (): void => {
+      if (this.open.delete(unsubscribe)) off();
+    };
+    this.open.add(unsubscribe);
+    return unsubscribe;
+  }
+
+  release(): void {
+    this.released = true;
+    for (const unsubscribe of this.open) unsubscribe();
+  }
+}
+
+/** Listens for settings changes only while the experience runs. */
+class TrackedSettingsClient implements SettingsClient {
+  private readonly open = new Set<() => void>();
+  private released = false;
+
+  constructor(private readonly inner: SettingsClient) {}
+
+  get<T extends object = Record<string, unknown>>(): Promise<T> {
+    return this.inner.get<T>();
+  }
+
+  set(values: Readonly<Record<string, unknown>>): Promise<void> {
+    return this.inner.set(values);
+  }
+
+  onChange<T extends object = Record<string, unknown>>(
+    listener: (settings: T) => void,
+  ): () => void {
     if (this.released) return () => undefined;
     const off = this.inner.onChange(listener);
     const unsubscribe = (): void => {
