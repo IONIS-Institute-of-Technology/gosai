@@ -28,6 +28,6 @@ def run(ctx: ModelContext, args: Namespace) -> None:
     shutil.copy2(source, target)
     write_metadata(sidecar(target), metadata)
 
-    rel = target.relative_to(REPO_ROOT)
+    rel = target.relative_to(REPO_ROOT) if target.is_relative_to(REPO_ROOT) else target
     console.print(f"[green]installed[/] {source} -> {target} ({target.stat().st_size / 1e6:.1f} MB)")
     console.print(f"Commit {rel} and {rel}.json to ship the model.")

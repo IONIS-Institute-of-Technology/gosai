@@ -604,6 +604,7 @@ negatives = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "numpy" },
     { name = "pytest" },
     { name = "pyyaml" },
     { name = "rich" },
@@ -632,6 +633,7 @@ provides-extras = ["coreml", "negatives"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "numpy", specifier = ">=2.0" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13.0" },
