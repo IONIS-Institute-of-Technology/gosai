@@ -9,8 +9,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 import subprocess
 from pathlib import Path
+from typing import Any
 
 from ...context import REPO_ROOT
 
@@ -22,6 +25,20 @@ SCHEMA_VERSION = 1
 def sidecar(model_path: Path) -> Path:
     """``ball.onnx`` -> ``ball.onnx.json``."""
     return model_path.with_name(model_path.name + ".json")
+
+
+def write_metadata(path: Path, metadata: dict[str, Any]) -> None:
+    """Write model metadata as two-space JSON with scalar lists on one line.
+
+    That is how Prettier formats it, so the committed file passes `format:check`.
+    """
+    text = json.dumps(metadata, indent=2)
+    text = re.sub(
+        r"\[\n\s+([^\[\]{}]*?)\n\s+\]",
+        lambda m: "[" + re.sub(r",\n\s+", ", ", m.group(1)) + "]",
+        text,
+    )
+    path.write_text(text + "\n")
 
 
 def sha256_file(path: Path) -> str:

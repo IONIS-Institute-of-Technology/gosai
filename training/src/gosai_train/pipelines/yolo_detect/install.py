@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ...context import REPO_ROOT, ModelContext
 from ...util import console
-from .provenance import sha256_file, sidecar
+from .provenance import sha256_file, sidecar, write_metadata
 
 
 def run(ctx: ModelContext, args: Namespace) -> None:
@@ -26,7 +26,7 @@ def run(ctx: ModelContext, args: Namespace) -> None:
     target = ctx.install_path
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, target)
-    sidecar(target).write_text(json.dumps(metadata, indent=2) + "\n")
+    write_metadata(sidecar(target), metadata)
 
     rel = target.relative_to(REPO_ROOT)
     console.print(f"[green]installed[/] {source} -> {target} ({target.stat().st_size / 1e6:.1f} MB)")

@@ -18,7 +18,7 @@ from typing import Any
 from ...context import ModelContext
 from ...devices import resolve_device
 from ...util import console, iter_images, load_yaml, paths_source
-from .provenance import RUN_FILE, SCHEMA_VERSION, sha256_file, sidecar
+from .provenance import RUN_FILE, SCHEMA_VERSION, sha256_file, sidecar, write_metadata
 from .sources import read_label_rows
 from .weights import infer_size, print_weights, resolve_weights
 
@@ -204,5 +204,5 @@ def run(ctx: ModelContext, args: Namespace) -> None:
         "metrics": _onnx_metrics(ctx, ctx.export_path, size),
         "exported_at": datetime.now(UTC).isoformat(timespec="seconds"),
     }
-    sidecar(ctx.export_path).write_text(json.dumps(metadata, indent=2) + "\n")
+    write_metadata(sidecar(ctx.export_path), metadata)
     console.print("[green]done[/] export. Next: `gosai-train install`")
