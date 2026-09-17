@@ -6,9 +6,9 @@
  * Bindings & instances
  * ---------------------
  * A *binding* is an app slug (or `system` for dashboard diagnostics). Each
- * driver has a sharing policy: exclusive drivers (camera, microphone, anything
- * that depends on them) get one instance per binding; shared drivers (speaker,
- * device-less utilities) get a single instance shared across bindings, keyed by
+ * driver has a sharing policy: exclusive drivers (camera, microphone, speaker,
+ * anything that depends on them) get one instance per binding; shared drivers
+ * (device-less utilities) get a single instance shared across bindings, keyed by
  * device when device-bound. The instance namespace is the binding for exclusive
  * drivers, or `shared` / `shared:dev<n>` for shared ones.
  *

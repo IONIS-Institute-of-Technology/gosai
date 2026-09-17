@@ -1,8 +1,16 @@
 """Speaker driver.
 
-Plays audio through `sounddevice`. Each instance has its own playback buffer:
-`play` appends samples, the output callback copies what it needs and fills
-the rest of the block with silence.
+Plays audio through `sounddevice`. Each instance has its own output stream
+and playback buffer: `play` appends samples, the output callback copies what
+it needs and fills the rest of the block with silence.
+
+The driver is exclusive, so every app gets its own instance. A shared
+instance would let one app's `clear` or `set_samplerate` cut another app's
+audio, and the bridge can't tell apps apart inside one instance. Mixing
+several streams is the OS's job: PipeWire, PulseAudio, CoreAudio and WASAPI
+shared mode all do it, and plain ALSA's `default` device goes through dmix.
+Only when an app picks a raw ALSA `hw` device can a second app fail to open
+it, and then its start fails with that error instead of silently sharing.
 """
 
 from __future__ import annotations
@@ -112,8 +120,6 @@ class SpeakerDriver(BaseDriver):
     }
     config_type = SpeakerConfig
     loop_interval_s = None
-    # Several apps may play on the same output; the OS mixes.
-    shared = True
 
     def __init__(self, context: DriverContext) -> None:
         super().__init__(context)

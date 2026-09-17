@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+from conftest import BridgeFactory
 from fakes import FakeSoundDevice, RecordingContext, check_events, check_result, wait_until
 from gosai_py import devices
 from gosai_py.drivers.frequency_analysis import FrequencyAnalysisDriver
@@ -124,16 +125,32 @@ def test_speaker_plays_queued_samples_across_blocks(sd: FakeSoundDevice) -> None
         assert driver._bridge_stop(5.0)
 
 
-def test_speaker_instances_have_their_own_queues(sd: FakeSoundDevice) -> None:
-    first, _ = _speaker(sd)
-    second, _ = _speaker(sd)
-    try:
-        first.execute("play", [0.5] * 2048)
-        assert second.execute("play", None)["queued_samples"] == 0
-        second.execute("clear", None)
-        assert first.execute("play", None)["queued_samples"] == 2048
-    finally:
-        assert first._bridge_stop(5.0) and second._bridge_stop(5.0)
+def test_two_apps_get_independent_speakers(sd: FakeSoundDevice, make_bridge: BridgeFactory) -> None:
+    assert SpeakerDriver.shared is False
+    bridge, collector = make_bridge([SpeakerDriver])
+
+    def request(req_id: str, instance: str, **fields: Any) -> dict[str, Any]:
+        bridge.handle({"id": req_id, "instance": instance, "driver": "speaker", **fields})
+        reply = collector.result(req_id)
+        assert reply["ok"], reply
+        return reply["data"]
+
+    request("a1", "app-a", type="start-driver")
+    request("b1", "app-b", type="start-driver")
+    stream_a, stream_b = sd.streams
+    request("a2", "app-a", type="execute", action="play", data=[0.5] * 2048)
+    request("b2", "app-b", type="execute", action="clear")
+    request("b3", "app-b", type="execute", action="set_samplerate", data=22_050)
+
+    out = np.zeros((1024, 1), dtype=np.float32)
+    stream_a.callback(out, 1024, None, SimpleNamespace(output_underflow=False))
+    assert (out == 0.5).all()
+    assert stream_a.started and not stream_a.closed
+    assert stream_a.kwargs["samplerate"] == 44_100
+    assert stream_b.closed and sd.streams[-1].kwargs["samplerate"] == 22_050
+    assert request("a3", "app-a", type="execute", action="play")["queued_samples"] == 1024
+    request("a4", "app-a", type="stop-driver")
+    request("b4", "app-b", type="stop-driver")
 
 
 def test_speaker_start_fails_when_the_stream_does_not_open(sd: FakeSoundDevice) -> None:

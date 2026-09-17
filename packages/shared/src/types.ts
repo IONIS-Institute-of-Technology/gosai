@@ -80,7 +80,7 @@ export interface DriverInfo {
   /**
    * Sharing policy. `false` (default) means the driver is exclusive: each app
    * binding gets its own device-bound instance. `true` means the driver can be
-   * shared across apps (e.g. speaker output, device-less utilities).
+   * shared across apps (e.g. device-less utilities).
    */
   readonly shared: boolean;
   /** Runtime/backend information for the primary active instance, when known. */
