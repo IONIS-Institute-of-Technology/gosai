@@ -12,6 +12,8 @@ import { join, resolve } from 'node:path';
 import { createServer } from '../src/server.js';
 
 const PORT = 17_777;
+const TOKEN = 'e2e-dashboard-token';
+const AUTH = { authorization: `Bearer ${TOKEN}` };
 const TIMEOUT_MS = 10_000;
 
 const tmp = mkdtempSync(join(tmpdir(), 'gosai-smoke-'));
@@ -37,6 +39,7 @@ const server = await createServer({
   paths,
   pythonDir,
   enablePython: true,
+  dashboardToken: TOKEN,
 });
 
 try {
@@ -114,14 +117,14 @@ try {
 }
 
 async function fetchJson(path: string): Promise<unknown> {
-  const res = await fetch(`http://127.0.0.1:${PORT}${path}`);
+  const res = await fetch(`http://127.0.0.1:${PORT}${path}`, { headers: AUTH });
   if (!res.ok) throw new Error(`${path} -> ${res.status}`);
   return res.json();
 }
 
 async function openWs(): Promise<WebSocket> {
   return new Promise<WebSocket>((resolveWs, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`);
+    const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws?token=${TOKEN}`);
     const t = setTimeout(() => reject(new Error('ws open timeout')), 3_000);
     ws.addEventListener(
       'open',

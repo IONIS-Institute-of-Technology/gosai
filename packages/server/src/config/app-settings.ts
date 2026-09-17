@@ -19,6 +19,7 @@ import type {
   SpeakerSettings,
 } from '@gosai/shared';
 import { ServerEvents } from '@gosai/shared/events';
+import { assertSlug } from '@gosai/shared/slug';
 import type { EventBus } from '../ipc/index.js';
 import type { ChildLogger } from '../logger/index.js';
 
@@ -65,7 +66,7 @@ export class AppSettingsStore {
   }
 
   private settingsPath(appSlug: string): string {
-    return join(this.appsDir, appSlug, '_config', SETTINGS_FILE);
+    return join(this.appsDir, assertSlug(appSlug, 'app slug'), '_config', SETTINGS_FILE);
   }
 
   private load(appSlug: string): AppDeviceSettings {

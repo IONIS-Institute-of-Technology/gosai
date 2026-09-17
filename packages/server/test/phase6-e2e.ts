@@ -16,6 +16,8 @@ import { join, resolve } from 'node:path';
 import { createServer } from '../src/server.js';
 
 const PORT = 17_786;
+const TOKEN = 'e2e-dashboard-token';
+const AUTH = { authorization: `Bearer ${TOKEN}` };
 const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..');
 
 const tmp = mkdtempSync(join(tmpdir(), 'gosai-phase6-'));
@@ -129,10 +131,11 @@ const server = await createServer({
   pythonDir: join(REPO_ROOT, 'python'),
   builtinAppsDir: join(REPO_ROOT, 'apps'),
   enablePython: true,
+  dashboardToken: TOKEN,
 });
 
 try {
-  const res = await fetch(`http://127.0.0.1:${PORT}/v1/drivers`);
+  const res = await fetch(`http://127.0.0.1:${PORT}/v1/drivers`, { headers: AUTH });
   if (!res.ok) throw new Error(`/v1/drivers -> ${res.status}`);
   const data = (await res.json()) as { drivers: DriverEntry[] };
   const byName = new Map(data.drivers.map((d) => [d.name, d]));
