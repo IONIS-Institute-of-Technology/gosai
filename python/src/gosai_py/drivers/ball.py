@@ -22,7 +22,9 @@ The model exports the YOLO26 end-to-end (NMS-free) head: the ONNX output is
 needed at runtime.
 
 The model ships with the package at ``ball_models/ball.onnx``. Produce/update it
-with the training pipeline in the repo's ``training/`` folder.
+with the training pipeline in the repo's ``training/`` folder, which also writes
+``ball.onnx.json``; when present, the driver checks the model's sha256 against
+it. The input size comes from the ONNX model.
 
 Events:
 - ``balls``: list of ``{x, y, r}`` positions in display pixels.
@@ -39,8 +41,9 @@ Actions:
 Environment (optional):
 - ``GOSAI_BALL_CONFIDENCE`` — detection confidence threshold 0..1 (default 0.70);
   the ``set_confidence`` action still overrides it at runtime.
-- ``GOSAI_ACCELERATOR`` — ``auto``, ``tensorrt``, ``cuda``, ``coreml`` (macOS),
-  ``dml``, ``cpu``. ``auto`` prefers TensorRT then CUDA on NVIDIA, CoreML on macOS.
+- ``GOSAI_ACCELERATOR`` — ``auto``, ``cuda``, ``tensorrt``, ``coreml`` (macOS),
+  ``dml``, ``cpu``. ``auto`` uses CUDA on NVIDIA and CoreML on macOS. TensorRT is
+  opt-in.
 - ``GOSAI_CUDA_DEVICE_ID`` — CUDA device index when using NVIDIA (default 0)
 - ``GOSAI_TRT_CACHE_DIR`` — where TensorRT caches compiled engines
   (default ``~/.cache/gosai/trt``); the first TensorRT run compiles and is slow.
@@ -57,14 +60,10 @@ from typing import Any, ClassVar, NamedTuple
 
 from gosai_py.driver import DriverContext
 from gosai_py.processor import BaseProcessor
-from gosai_py.runtime import create_onnx_session, cuda_device_id
+from gosai_py.runtime import create_onnx_session
+from gosai_py.runtime.models import Model, resolve_model
 
-MODELS_DIR = Path(__file__).resolve().parent / "ball_models"
-MODEL_FILENAME = "ball.onnx"
-MODEL_PATH = MODELS_DIR / MODEL_FILENAME
-# (height, width) fallback; the real size is read from the ONNX model at load.
-# The ball model is exported at 720p 16:9 to match real-world camera feeds.
-MODEL_INPUT_SIZE = (736, 1280)
+MODEL = Model.bundled(Path(__file__).resolve().parent / "ball_models" / "ball.onnx")
 
 
 DEFAULT_CONFIDENCE = 0.70
@@ -107,6 +106,15 @@ def _letterbox(img: Any, size: tuple[int, int]) -> tuple[Any, float, tuple[int, 
     img = cv2.copyMakeBorder(img, top, bottom, left, right,
                              cv2.BORDER_CONSTANT, value=(114, 114, 114))
     return img, scale, (top, left)
+
+
+def _input_spec(session: Any) -> tuple[str, tuple[int, int]]:
+    """Name and (height, width) of the model's NCHW image input."""
+    inp = session.get_inputs()[0]
+    shape = inp.shape
+    if len(shape) != 4 or not all(isinstance(dim, int) for dim in shape[2:]):
+        raise RuntimeError(f"ball: expected a fixed NCHW input, got {inp.name} {shape}")
+    return inp.name, (int(shape[2]), int(shape[3]))
 
 
 def _preprocess(frame: Any, size: tuple[int, int]) -> tuple[Any, float, tuple[int, int]]:
@@ -347,7 +355,7 @@ class BallDriver(BaseProcessor):
         super().__init__(context)
         self._session: Any = None
         self._input_name: str = ""
-        self._input_size: tuple[int, int] = MODEL_INPUT_SIZE
+        self._input_size: tuple[int, int] = (0, 0)
         self._homography: Any = None
         self._output_size = self.DEFAULT_OUTPUT_SIZE
         self._confidence = _default_confidence()
@@ -359,31 +367,23 @@ class BallDriver(BaseProcessor):
                                      match_radius=110.0, min_match_radius=45.0)
         self._frame_idx = 0
         self._skip = 0  # 0 = process every frame; raise on slow hardware
-        self._cuda_device_id = cuda_device_id()
+        # None uses GOSAI_CUDA_DEVICE_ID, read when the session is created.
+        self._cuda_device_id: int | None = None
 
     def pre_run(self) -> None:
         super().pre_run()
         self._load_session()
 
     def _load_session(self) -> None:
-        if not MODEL_PATH.exists():
-            raise RuntimeError(
-                f"ball: model not found at {MODEL_PATH}. Train and install it with the "
-                "pipeline in the repo's `training/` folder (see training/README.md)."
-            )
-
-        self._session, info = create_onnx_session(
-            MODEL_PATH,
-            model_name=MODEL_PATH.name,
-            cuda_id=self._cuda_device_id,
+        model_path = resolve_model(MODEL, self.log)
+        session, info = create_onnx_session(
+            model_path,
+            cuda_device_id=self._cuda_device_id,
             log_fn=self.log,
         )
+        self._input_name, self._input_size = _input_spec(session)
+        self._session = session
         self.set_runtime_info(dict(info))
-        inp = self._session.get_inputs()[0]
-        self._input_name = inp.name
-        height = inp.shape[2] if isinstance(inp.shape[2], int) else MODEL_INPUT_SIZE[0]
-        width = inp.shape[3] if isinstance(inp.shape[3], int) else MODEL_INPUT_SIZE[1]
-        self._input_size = (height, width)
         self.start_latest_worker()
 
     def cleanup(self) -> None:

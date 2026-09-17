@@ -6,8 +6,7 @@ Public surface:
 - `gosai_py.driver.BaseDriver`: extend to implement a driver.
 - `gosai_py.processor.BaseProcessor`: extend to implement an app's Python
   processor (consumes driver events, publishes derived events).
-- `gosai_py.serialization`: helpers for serializing numpy frames and using
-  MessagePack.
+- `gosai_py.serialization`: helpers for encoding numpy frames.
 """
 
 from gosai_py.driver import BaseDriver, DriverContext
