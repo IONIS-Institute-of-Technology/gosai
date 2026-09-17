@@ -21,9 +21,12 @@ class FrequencyAnalysisDriver(BaseDriver):
     name: ClassVar[str] = "frequency_analysis"
     description: ClassVar[str] = "FFT-based frequency estimation on a microphone stream."
     events: ClassVar[tuple[str, ...]] = ("frequency",)
+    stream_events: ClassVar[tuple[str, ...]] = ("frequency",)
     actions: ClassVar[tuple[str, ...]] = ("set_max_frequency", "set_window_size")
     dependencies: ClassVar[tuple[str, ...]] = ("microphone",)
     subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("microphone", "audio_stream"),)
+    # The FFT window is built from consecutive blocks, so none may be skipped.
+    subscription_queue_size: ClassVar[int | None] = 64
     loop_interval_s: ClassVar[float | None] = None
 
     MAX_FREQUENCY_HZ: ClassVar[float] = 2_100.0

@@ -11,8 +11,17 @@ import numpy as np
 import pytest
 
 from conftest import BridgeFactory, Collector
-from gosai_py.bridge import Bridge, _Metrics, _Writer, public_payload, write_all
+from gosai_py.bridge import (
+    CLOSE_BUDGET_S,
+    Bridge,
+    _Metrics,
+    _TerminateError,
+    _Writer,
+    public_payload,
+    write_all,
+)
 from gosai_py.driver import BaseDriver, DriverContext
+from gosai_py.workers import BoundedQueueWorker
 
 
 class Source(BaseDriver):
@@ -386,3 +395,176 @@ def test_idle_loop_iterations_are_not_recorded() -> None:
     finally:
         assert driver._bridge_stop(5.0)
     assert context.metrics == []
+
+
+class Interpolator(BaseDriver):
+    name = "interpolator"
+    events = ("interpolated_data", "frame")
+    stream_events = ("frame",)
+    loop_interval_s = None
+
+
+def test_only_declared_stream_events_are_coalesced() -> None:
+    first_write = threading.Event()
+    release = threading.Event()
+    collector = Collector()
+
+    def slow_sink(chunk: memoryview) -> int:
+        first_write.set()
+        release.wait(5.0)
+        return collector(chunk)
+
+    bridge = Bridge(slow_sink, drivers=[Interpolator])
+    bridge.start()
+    try:
+        _send(bridge, "1", type="start-driver", instance="app", driver="interpolator")
+        assert first_write.wait(5.0)
+        release.set()
+        collector.result("1")
+        _send(bridge, "2", type="subscribe", instance="app", driver="interpolator", event="*")
+        collector.result("2")
+        driver = bridge._instances[("app", "interpolator")].driver
+
+        release.clear()
+        first_write.clear()
+        driver.emit("frame", -1)
+        assert first_write.wait(5.0)
+        # The writer is now blocked: two interleaved jobs on one ordinary event,
+        # and a burst of stream frames.
+        for step in range(60):
+            driver.emit("interpolated_data", {"name": "a", "step": step})
+            driver.emit("interpolated_data", {"name": "b", "step": step})
+            driver.emit("frame", step)
+        release.set()
+    finally:
+        release.set()
+        bridge.close(5.0)
+
+    events = collector.of_type("event")
+    jobs = [e["data"] for e in events if e["event"] == "interpolated_data"]
+    assert [j["step"] for j in jobs if j["name"] == "a"] == list(range(60))
+    assert [j["step"] for j in jobs if j["name"] == "b"] == list(range(60))
+    assert [e["data"] for e in events if e["event"] == "frame"] == [-1, 59]
+
+
+def test_sigterm_during_a_request_still_shuts_down() -> None:
+    assert not issubclass(_TerminateError, Exception)
+    collector = Collector()
+    bridge = Bridge(collector, drivers=[Source])
+
+    def interrupted(request: dict[str, Any]) -> None:
+        raise _TerminateError
+
+    bridge.handle = interrupted  # type: ignore[method-assign]
+    assert bridge.run(iter([b'{"type": "ping", "id": "1"}', b'{"type": "ping", "id": "2"}'])) == 0
+    assert bridge._closed
+
+
+def test_close_fits_its_budget_when_a_driver_hangs(make_bridge: BridgeFactory) -> None:
+    assert CLOSE_BUDGET_S < 10.0  # Node sends SIGKILL after 10 s.
+    bridge, collector = make_bridge([Source, Stubborn], stop_timeout_s=30.0)
+    assert _start(bridge, collector, "1", "stubborn")["ok"]
+    assert _start(bridge, collector, "2", "source")["ok"]
+    _send(bridge, "3", type="execute", instance="app", driver="source", action="wait")
+
+    started = time.monotonic()
+    bridge.close(timeout=1.5)
+    assert time.monotonic() - started < 2.5
+    # The healthy driver still stopped cleanly and was reported.
+    assert collector.states("app", "source")[-1] == "available"
+    Stubborn.gate.set()
+    Source.gate.set()
+
+
+def test_requests_queued_at_shutdown_do_not_start_drivers(make_bridge: BridgeFactory) -> None:
+    bridge, collector = make_bridge([Source, SlowStart])
+    _send(bridge, "1", type="start-driver", instance="app", driver="slow_start")
+    collector.wait_for(lambda m: m.get("type") == "driver-state" and m.get("state") == "starting")
+    _send(bridge, "2", type="start-driver", instance="app", driver="source")
+    SlowStart.gate.set()
+    bridge.close(timeout=5.0)
+    assert not collector.result("2")["ok"]
+    assert "shutting down" in collector.result("2")["error"]
+    assert bridge._instances == {}
+
+
+class AudioConsumer(BaseDriver):
+    name = "audio_consumer"
+    dependencies = ("source",)
+    subscribed = (("source", "value"),)
+    subscription_queue_size = 3
+    loop_interval_s = None
+    gate: ClassVar[threading.Event] = threading.Event()
+    received: ClassVar[list[Any]] = []
+
+    def on_data(self, driver: str, event: str, data: Any) -> None:
+        type(self).gate.wait(5.0)
+        type(self).received.append(data)
+
+
+def test_queued_subscriptions_keep_order_and_drop_the_oldest_when_full(
+    make_bridge: BridgeFactory,
+) -> None:
+    AudioConsumer.gate = threading.Event()
+    AudioConsumer.received = []
+    bridge, collector = make_bridge([Source, AudioConsumer])
+    try:
+        assert _start(bridge, collector, "1", "source")["ok"]
+        assert _start(bridge, collector, "2", "audio_consumer")["ok"]
+        source = bridge._instances[("app", "source")].driver
+
+        source.emit("value", 0)
+        deadline = time.monotonic() + 5.0
+        while bridge._instances[("app", "audio_consumer")].driver._subscriptions[
+            ("source", "value")
+        ]._queue and time.monotonic() < deadline:
+            time.sleep(0.01)
+        for value in range(1, 6):
+            source.emit("value", value)
+        AudioConsumer.gate.set()
+
+        deadline = time.monotonic() + 5.0
+        while len(AudioConsumer.received) < 4 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert AudioConsumer.received == [0, 3, 4, 5]
+        warning = collector.wait_for(lambda m: m.get("type") == "log" and "queue is full" in m["message"])
+        assert warning["instance"] == "app"
+        metric = collector.wait_for(
+            lambda m: m.get("type") == "performance" and m["metric"] == "subscription_dropped", 3.0
+        )
+        assert metric["count"] == 2
+    finally:
+        AudioConsumer.gate.set()
+
+
+def test_bounded_queue_worker_delivers_every_value_in_order() -> None:
+    received: list[int] = []
+    done = threading.Event()
+
+    def consume(value: int) -> None:
+        received.append(value)
+        if value == 99:
+            done.set()
+
+    worker = BoundedQueueWorker(consume, name="bridge:test-queue", maxsize=100)
+    try:
+        for value in range(100):
+            worker.offer(value)
+        assert done.wait(5.0)
+    finally:
+        worker.close()
+        assert worker.join(5.0)
+    assert received == list(range(100))
+
+
+def test_audio_and_sequence_consumers_queue_their_inputs() -> None:
+    from gosai_py.drivers.ball import BallDriver
+    from gosai_py.drivers.frequency_analysis import FrequencyAnalysisDriver
+    from gosai_py.drivers.hand_pose import HandPoseDriver
+    from gosai_py.drivers.slr import SLRDriver
+    from gosai_py.drivers.speech_activity_detection import SpeechActivityDriver
+
+    for cls in (FrequencyAnalysisDriver, SpeechActivityDriver, SLRDriver):
+        assert cls.subscription_queue_size, cls.name
+    for cls in (BallDriver, HandPoseDriver):
+        assert cls.subscription_queue_size is None, cls.name

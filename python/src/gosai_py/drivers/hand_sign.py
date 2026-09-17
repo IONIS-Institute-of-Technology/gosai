@@ -34,6 +34,7 @@ class HandSignDriver(BaseDriver):
     name: ClassVar[str] = "hand_sign"
     description: ClassVar[str] = "Hand gesture classification (geometric)."
     events: ClassVar[tuple[str, ...]] = ("sign",)
+    stream_events: ClassVar[tuple[str, ...]] = ("sign",)
     actions: ClassVar[tuple[str, ...]] = ()
     dependencies: ClassVar[tuple[str, ...]] = ("hand_pose",)
     subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("hand_pose", "raw_data"),)

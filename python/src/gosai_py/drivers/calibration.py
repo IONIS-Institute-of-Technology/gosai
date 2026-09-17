@@ -53,6 +53,7 @@ class CalibrationDriver(BaseDriver):
     name: ClassVar[str] = "calibration"
     description: ClassVar[str] = "Camera-projector calibration via ArUco markers."
     events: ClassVar[tuple[str, ...]] = ("detection", "homography", "status")
+    stream_events: ClassVar[tuple[str, ...]] = ("detection",)
     actions: ClassVar[tuple[str, ...]] = (
         "set_marker_layout",
         "set_camera_event",

@@ -64,6 +64,7 @@ class CameraDriver(BaseDriver):
     name: ClassVar[str] = "camera"
     description: ClassVar[str] = "Webcam capture (OpenCV) with optional RealSense depth."
     events: ClassVar[tuple[str, ...]] = ("frame", "color", "depth", "frame_size", "fps")
+    stream_events: ClassVar[tuple[str, ...]] = ("frame", "color", "depth")
     actions: ClassVar[tuple[str, ...]] = (
         "set_device",
         "set_mode",

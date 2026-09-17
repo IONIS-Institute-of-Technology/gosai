@@ -25,7 +25,7 @@ import traceback
 from collections.abc import Callable, Mapping
 from typing import Any, ClassVar
 
-from gosai_py.workers import LatestValueWorker
+from gosai_py.workers import BoundedQueueWorker, LatestValueWorker
 
 
 class DriverContext:
@@ -75,8 +75,16 @@ class BaseDriver:
     - `actions`: tuple of action names the driver accepts via `execute`.
     - `dependencies`: tuple of driver names this driver depends on. The server
       starts them first, in the same instance namespace.
+    - `stream_events`: high-rate events (frames, per-frame results) where only
+      the newest value matters. When Node reads slower than the driver emits,
+      the bridge sends only the latest value of these. Every other event is
+      delivered in order.
     - `subscribed`: `(driver, event)` pairs delivered to `on_data` once
       `pre_run` succeeds.
+    - `subscription_queue_size`: how `subscribed` events are delivered. None
+      (default) keeps only the latest value, right for camera frames. A number
+      queues that many values in order, for consumers that need every input,
+      such as audio blocks or frame sequences.
     - `loop_interval_s`: how often `loop()` is called (0 == as fast as possible,
       `None` == no loop, callback-only).
     """
@@ -86,7 +94,9 @@ class BaseDriver:
     events: ClassVar[tuple[str, ...]] = ()
     actions: ClassVar[tuple[str, ...]] = ()
     dependencies: ClassVar[tuple[str, ...]] = ()
+    stream_events: ClassVar[tuple[str, ...]] = ()
     subscribed: ClassVar[tuple[tuple[str, str], ...]] = ()
+    subscription_queue_size: ClassVar[int | None] = None
     loop_interval_s: ClassVar[float | None] = 0.01
     # Sharing policy. False (default) => exclusive: each app binding gets its own
     # device-bound instance. True => the driver may be shared across apps (e.g.
@@ -170,8 +180,14 @@ class BaseDriver:
     def stop_requested(self) -> bool:
         return self._stop.is_set()
 
-    def subscribe(self, driver: str, event: str) -> None:
-        """Deliver `driver.event` to `on_data` through a latest-value worker."""
+    def subscribe(self, driver: str, event: str, *, queue_size: int | None = None) -> None:
+        """Deliver `driver.event` to `on_data` on a dedicated worker thread.
+
+        With `queue_size=None` the worker keeps only the latest value. With a
+        number it delivers every value in order and, when that many are
+        pending, drops the oldest and reports it through a warning and the
+        `subscription_dropped` metric.
+        """
         key = (driver, event)
         with self._subscriptions_lock:
             if key in self._subscriptions:
@@ -181,17 +197,48 @@ class BaseDriver:
                 if not self._stop.is_set():
                     self.on_data(driver, event, data)
 
-            worker = LatestValueWorker(
-                deliver,
-                name=f"driver:{self.name}:{driver}.{event}",
-                on_error=lambda exc: self.log(
+            def on_error(exc: BaseException) -> None:
+                self.log(
                     "error",
                     f"on_data({driver}.{event}) failed: {exc!r}\n"
                     + "".join(traceback.format_exception(exc)),
-                ),
-            )
+                )
+
+            name = f"driver:{self.name}:{driver}.{event}"
+            worker: LatestValueWorker
+            if queue_size is None:
+                worker = LatestValueWorker(deliver, name=name, on_error=on_error)
+            else:
+                worker = BoundedQueueWorker(
+                    deliver,
+                    name=name,
+                    maxsize=queue_size,
+                    on_error=on_error,
+                    on_drop=self._drop_reporter(driver, event, queue_size),
+                )
             self._subscriptions[key] = worker
         self._context.subscribe(driver, event, worker.offer)
+
+    def _drop_reporter(self, driver: str, event: str, queue_size: int) -> Callable[[], None]:
+        last_warning = 0.0
+        dropped_since_warning = 0
+        lock = threading.Lock()
+
+        def report() -> None:
+            nonlocal last_warning, dropped_since_warning
+            self.record("subscription_dropped", 1.0)
+            with lock:
+                dropped_since_warning += 1
+                now = time.monotonic()
+                if now - last_warning < 5.0:
+                    return
+                count, dropped_since_warning, last_warning = dropped_since_warning, 0, now
+            self.log(
+                "warn",
+                f"{driver}.{event} queue is full ({queue_size}); dropped {count} oldest value(s)",
+            )
+
+        return report
 
     def unsubscribe(self, driver: str, event: str) -> None:
         """Stop delivering `driver.event`. The worker exits after its current call."""
@@ -262,7 +309,7 @@ class BaseDriver:
         try:
             self.pre_run()
             for driver, event in self.subscribed:
-                self.subscribe(driver, event)
+                self.subscribe(driver, event, queue_size=self.subscription_queue_size)
         except Exception as exc:
             self.log("error", f"pre_run failed: {exc!r}\n{traceback.format_exc()}")
             failure.append(exc)

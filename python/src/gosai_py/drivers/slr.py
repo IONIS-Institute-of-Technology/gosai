@@ -117,6 +117,8 @@ class SLRDriver(BaseDriver):
     actions: ClassVar[tuple[str, ...]] = ("set_actions",)
     dependencies: ClassVar[tuple[str, ...]] = ("pose",)
     subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("pose", "raw_data"),)
+    # Each prediction covers a 30-frame sequence, so frames are queued, not skipped.
+    subscription_queue_size: ClassVar[int | None] = 60
     loop_interval_s: ClassVar[float | None] = None
 
     def __init__(self, context: DriverContext) -> None:

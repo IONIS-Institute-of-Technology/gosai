@@ -3,6 +3,8 @@
 - `LatestValueWorker` hands values to a callback on its own thread and keeps
   only the newest pending value, so a slow consumer lowers its own rate instead
   of blocking the producer or falling behind.
+- `BoundedQueueWorker` hands every value to a callback in order, dropping the
+  oldest pending value when its queue is full.
 - `SerialQueue` runs submitted tasks one at a time on a worker thread that
   exits when the queue stays idle.
 """
@@ -78,6 +80,63 @@ class LatestValueWorker:
                     self._on_error(exc)
 
 
+class BoundedQueueWorker(LatestValueWorker):
+    """Deliver every offered value in order, up to `maxsize` pending values.
+
+    When the queue is full the oldest pending value is dropped and `on_drop`
+    is called, so a consumer that falls behind loses the stalest input.
+    """
+
+    def __init__(
+        self,
+        callback: Callable[[Any], None],
+        *,
+        name: str,
+        maxsize: int,
+        on_error: Callable[[BaseException], None] | None = None,
+        on_drop: Callable[[], None] | None = None,
+    ) -> None:
+        if maxsize < 1:
+            raise ValueError("maxsize must be at least 1")
+        self._queue: deque[Any] = deque()
+        self._maxsize = maxsize
+        self._on_drop = on_drop
+        super().__init__(callback, name=name, on_error=on_error)
+
+    def offer(self, value: Any) -> None:
+        dropped = False
+        with self._cond:
+            if self._closed:
+                return
+            if len(self._queue) >= self._maxsize:
+                self._queue.popleft()
+                dropped = True
+            self._queue.append(value)
+            self._cond.notify()
+        if dropped and self._on_drop is not None:
+            self._on_drop()
+
+    def close(self) -> None:
+        with self._cond:
+            self._closed = True
+            self._queue.clear()
+            self._cond.notify_all()
+
+    def _run(self) -> None:
+        while True:
+            with self._cond:
+                while not self._queue and not self._closed:
+                    self._cond.wait()
+                if self._closed:
+                    return
+                value = self._queue.popleft()
+            try:
+                self._callback(value)
+            except Exception as exc:
+                if self._on_error is not None:
+                    self._on_error(exc)
+
+
 class SerialQueue:
     """Run tasks in submission order on one worker thread.
 
@@ -111,8 +170,12 @@ class SerialQueue:
         """
         with self._cond:
             self._closed = True
-            thread = self._thread
             self._cond.notify_all()
+        return self.join(timeout)
+
+    def join(self, timeout: float | None = None) -> bool:
+        with self._cond:
+            thread = self._thread
         if thread is None or thread is threading.current_thread():
             return True
         thread.join(timeout)

@@ -38,6 +38,7 @@ class PoseDriver(BaseDriver):
     name: ClassVar[str] = "pose"
     description: ClassVar[str] = "Body, face and hand landmarks (MediaPipe Holistic Landmarker)."
     events: ClassVar[tuple[str, ...]] = ("raw_data",)
+    stream_events: ClassVar[tuple[str, ...]] = ("raw_data",)
     actions: ClassVar[tuple[str, ...]] = ("set_flip", "set_window")
     dependencies: ClassVar[tuple[str, ...]] = ("camera",)
     subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("camera", "frame"),)

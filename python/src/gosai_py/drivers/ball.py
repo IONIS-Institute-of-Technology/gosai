@@ -335,6 +335,7 @@ class BallDriver(BaseDriver):
     name: ClassVar[str] = "ball"
     description: ClassVar[str] = "YOLO-based ball detector (ONNX Runtime)."
     events: ClassVar[tuple[str, ...]] = ("balls", "fps")
+    stream_events: ClassVar[tuple[str, ...]] = ("balls", "fps")
     actions: ClassVar[tuple[str, ...]] = (
         "set_homography",
         "set_output_size",

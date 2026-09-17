@@ -52,6 +52,7 @@ class HandPoseDriver(BaseDriver):
     name: ClassVar[str] = "hand_pose"
     description: ClassVar[str] = "Hand landmark detection (MediaPipe Hands)."
     events: ClassVar[tuple[str, ...]] = ("raw_data",)
+    stream_events: ClassVar[tuple[str, ...]] = ("raw_data",)
     actions: ClassVar[tuple[str, ...]] = (
         "set_flip",
         "set_window",

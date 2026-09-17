@@ -246,6 +246,7 @@ class PoseToMirrorDriver(BaseDriver):
     name: ClassVar[str] = "pose_to_mirror"
     description: ClassVar[str] = "Reflect MediaPipe landmarks onto an augmented mirror (webcam-only)."
     events: ClassVar[tuple[str, ...]] = ("mirrored_data", "projected_data")
+    stream_events: ClassVar[tuple[str, ...]] = ("mirrored_data", "projected_data")
     actions: ClassVar[tuple[str, ...]] = (
         "set_mirror_config",
         "capture_calibration_sample",

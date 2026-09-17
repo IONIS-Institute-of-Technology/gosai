@@ -70,6 +70,8 @@ class SpeechActivityDriver(BaseDriver):
     actions: ClassVar[tuple[str, ...]] = ("predict",)
     dependencies: ClassVar[tuple[str, ...]] = ("microphone",)
     subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("microphone", "audio_stream"),)
+    # Silero keeps state across chunks and needs contiguous audio.
+    subscription_queue_size: ClassVar[int | None] = 64
     loop_interval_s: ClassVar[float | None] = None
 
     SAMPLE_RATE: ClassVar[int] = 16_000

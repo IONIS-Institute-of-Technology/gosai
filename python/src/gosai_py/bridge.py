@@ -25,8 +25,9 @@ Threading
 - `start-driver`, `stop-driver` and `execute` run on a serial queue per
   instance, so a slow model load or action never blocks the main loop or other
   instances. `list-drivers` and device listing run on their own queues.
-- One writer thread owns stdout. Replies, logs and state changes are written in
-  order and never dropped; for stream events only the latest value per
+- One writer thread owns stdout. Replies, logs, state changes and ordinary
+  events are written in order and never dropped. For the events a driver
+  declares in `stream_events`, only the latest value per
   `(instance, driver, event)` is kept while the writer is busy.
 """
 
@@ -62,6 +63,14 @@ PROTOCOL_VERSION = 2
 DEFAULT_INSTANCE = "system"
 DEFAULT_STOP_TIMEOUT_S = 5.0
 METRICS_INTERVAL_S = 1.0
+# Total time `close()` may take. Node waits 10 s for the process to exit after
+# `shutdown` before it sends SIGKILL (DEFAULT_EXIT_TIMEOUT_MS in
+# packages/server/src/drivers/bridge.ts), so this stays below that.
+CLOSE_BUDGET_S = 8.0
+# Longest wait for requests already running, at most a quarter of the budget.
+CLOSE_REQUESTS_BUDGET_S = 2.0
+# Part of the budget kept for flushing output after drivers stop.
+CLOSE_FLUSH_RESERVE_S = 0.5
 
 
 def now_ms() -> float:
@@ -322,7 +331,7 @@ class _Instance:
     state: str
 
 
-class _TerminateError(Exception):
+class _TerminateError(BaseException):
     """Raised from the SIGTERM handler to leave the stdin loop."""
 
 
@@ -412,17 +421,19 @@ class Bridge:
 
     def _emit_event(self, instance: str, driver: str, event: str, data: Any) -> None:
         if self._has_external(instance, driver, event):
-            self._writer.post_latest(
-                (instance, driver, event),
-                {
-                    "type": "event",
-                    "instance": instance,
-                    "driver": driver,
-                    "event": event,
-                    "data": public_payload(data),
-                    "ts": now_ms(),
-                },
-            )
+            message: JsonDict = {
+                "type": "event",
+                "instance": instance,
+                "driver": driver,
+                "event": event,
+                "data": public_payload(data),
+                "ts": now_ms(),
+            }
+            cls = self._driver_classes.get(driver)
+            if cls is not None and event in cls.stream_events:
+                self._writer.post_latest((instance, driver, event), message)
+            else:
+                self._post(message)
         with self._lock:
             callbacks = list(self._internal_subscribers.get((instance, driver, event), ()))
         for callback in callbacks:
@@ -502,6 +513,8 @@ class Bridge:
     def _create_instance(self, instance: str, name: str) -> BaseDriver | None:
         """Register a new `starting` instance, or return None if it already runs."""
         with self._lock:
+            if self._closed:
+                raise RuntimeError("bridge is shutting down")
             existing = self._instances.get((instance, name))
             if existing is not None:
                 if existing.state == "running":
@@ -523,7 +536,8 @@ class Bridge:
             self._instances[(instance, name)] = _Instance(obj, "starting")
             return obj
 
-    def _stop_driver(self, instance: str, name: str) -> JsonDict:
+    def _stop_driver(self, instance: str, name: str, timeout: float | None = None) -> JsonDict:
+        timeout = self._stop_timeout_s if timeout is None else min(timeout, self._stop_timeout_s)
         key = (instance, name)
         with self._lock:
             record = self._instances.get(key)
@@ -531,13 +545,11 @@ class Bridge:
                 return {"driver": name, "state": "available"}
             record.state = "stopping"
         self._emit_driver_state(instance, name, "stopping")
-        if not record.driver._bridge_stop(self._stop_timeout_s):
+        if not record.driver._bridge_stop(timeout):
             with self._lock:
                 record.state = "errored"
             self._emit_driver_state(instance, name, "errored")
-            raise TimeoutError(
-                f"driver {name!r} in {instance!r} did not stop within {self._stop_timeout_s:g}s"
-            )
+            raise TimeoutError(f"driver {name!r} in {instance!r} did not stop within {timeout:g}s")
         with self._lock:
             self._instances.pop(key, None)
             self._runtime_info.pop(key, None)
@@ -545,8 +557,12 @@ class Bridge:
         self._emit_driver_state(instance, name, "available")
         return {"driver": name, "state": "available"}
 
-    def _stop_all(self) -> None:
-        """Stop every instance, dependents before their dependencies."""
+    def _stop_all(self, deadline: float) -> None:
+        """Stop every instance before `deadline`, dependents before their dependencies.
+
+        Instances with no running dependents stop in parallel. One that does
+        not stop in time is abandoned so its dependencies can still stop.
+        """
         while True:
             with self._lock:
                 keys = list(self._instances)
@@ -558,13 +574,25 @@ class Bridge:
             if not keys:
                 return
             leaves = [key for key in keys if key not in needed] or keys
-            for instance, name in leaves:
+
+            def stop(instance: str, name: str) -> None:
                 try:
-                    self._stop_driver(instance, name)
+                    self._stop_driver(instance, name, max(deadline - time.monotonic(), 0.0))
                 except Exception as exc:
                     self._emit_log("warn", "bridge", f"failed to stop {name} in {instance}: {exc!r}")
                     with self._lock:
                         self._instances.pop((instance, name), None)
+
+            threads = [
+                threading.Thread(target=stop, args=key, name=f"bridge:stop:{key[0]}:{key[1]}", daemon=True)
+                for key in leaves
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(max(deadline - time.monotonic(), 0.0) + 0.1)
+            if any(thread.is_alive() for thread in threads):
+                return
 
     def _list_drivers(self) -> JsonDict:
         self._discovered.wait()
@@ -785,21 +813,27 @@ class Bridge:
     # Main loop
     # ------------------------------------------------------------------
 
-    def close(self, timeout: float = 30.0) -> None:
-        """Finish queued requests, stop every driver, and flush output."""
-        deadline = time.monotonic() + timeout
+    def close(self, timeout: float = CLOSE_BUDGET_S) -> None:
+        """Stop every driver and flush output within `timeout` seconds.
+
+        Requests already running get a short grace period; queued requests
+        that have not started are refused.
+        """
+        start = time.monotonic()
+        deadline = start + timeout
         with self._lock:
             if self._closed:
                 return
             self._closed = True
             queues = list(self._queues.values())
         for queue in queues:
-            if not queue.close(max(deadline - time.monotonic(), 0.0)):
+            queue.close(0.0)
+        requests_deadline = start + min(CLOSE_REQUESTS_BUDGET_S, timeout / 4)
+        for queue in queues:
+            if not queue.join(max(requests_deadline - time.monotonic(), 0.0)):
                 self._emit_log("warn", "bridge", "a request was still running at shutdown")
-        self._stop_all()
-        if self._discovery_thread is not None:
-            self._discovery_thread.join(max(deadline - time.monotonic(), 0.0))
-        self._writer.close(max(deadline - time.monotonic(), 0.0))
+        self._stop_all(deadline - CLOSE_FLUSH_RESERVE_S)
+        self._writer.close(max(deadline - time.monotonic(), CLOSE_FLUSH_RESERVE_S))
 
     def run(self, stdin: Iterable[bytes] | None = None) -> int:
         self.start()
