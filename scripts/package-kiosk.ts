@@ -11,7 +11,7 @@
  *   --experience <slug>   Experience to boot (default: the app's default)
  *   --display <index>     Display index to open on (default: primary)
  *   --python-extras <l>   Comma-separated Python extras to install on first
- *                         run (e.g. speech,realsense). The CV stack is part
+ *                         run (e.g. speech). The CV stack is part
  *                         of the base dependencies and always included.
  *   --windowed            Open in a window instead of fullscreen kiosk
  *   --skip-build          Reuse the workspace and app builds

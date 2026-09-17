@@ -22,7 +22,7 @@ import {
 } from './python-runtime.js';
 
 export interface PythonBootstrapOptions {
-  /** Optional dependency extras to install (e.g. ["speech", "realsense"]). `gpu` is added automatically. */
+  /** Optional dependency extras to install (e.g. ["speech"]). `gpu` is added automatically. */
   readonly extras?: readonly string[];
   /** Progress messages for the splash window. */
   readonly onStatus?: (message: string) => void;
