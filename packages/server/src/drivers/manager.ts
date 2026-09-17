@@ -1,7 +1,7 @@
 /**
- * Driver manager. Talks to the Python bridge to start/stop drivers and route
- * driver events onto the in-process EventBus. Tracks per-instance driver state
- * and dependency relationships.
+ * Driver manager. Decides which driver instances should run, keeps the Python
+ * bridge in line with that decision, and routes driver events onto the
+ * in-process EventBus.
  *
  * Bindings & instances
  * ---------------------
@@ -9,13 +9,21 @@
  * driver has a sharing policy: exclusive drivers (camera, microphone, anything
  * that depends on them) get one instance per binding; shared drivers (speaker,
  * device-less utilities) get a single instance shared across bindings, keyed by
- * device when device-bound.
+ * device when device-bound. The instance namespace is the binding for exclusive
+ * drivers, or `shared` / `shared:dev<n>` for shared ones.
  *
- * The catalogue (driver *types*) stays keyed by name. Running state and
- * subscribers gain an instance dimension: the instance namespace is the binding
- * for exclusive drivers, or `shared` / `shared:dev<n>` for shared ones. Driver
- * events fan out to `driver:event:<binding>` for every binding subscribed to the
- * emitting instance, so each app only receives its own stream.
+ * Leases
+ * ------
+ * Every `subscribe` call adds a lease for one client, binding, driver and event,
+ * remembering the instance it resolved to. A client that subscribes twice holds
+ * two leases. Leases are the desired state; the bridge only reports what
+ * actually runs. The reconciler compares the two and sends start, stop,
+ * subscribe and unsubscribe requests until they match. Dependencies start
+ * first and stop last, in the dependent's instance namespace. When the bridge
+ * restarts, the reconciler applies every lease again.
+ *
+ * Driver events fan out to `driver:event:<binding>` for every binding holding a
+ * lease on that event, so each app only receives its own stream.
  */
 
 import type {
@@ -27,9 +35,16 @@ import type {
   DriverState,
 } from '@gosai/shared';
 import { ServerEvents } from '@gosai/shared/events';
+import type { BridgeInstanceList } from '@gosai/shared/protocol';
 import type { EventBus } from '../ipc/index.js';
 import type { ChildLogger, Logger } from '../logger/index.js';
-import { PythonBridge } from './bridge.js';
+import {
+  PythonBridge,
+  type BridgeHandlers,
+  type DriverBridge,
+  type DriverBridgeFactory,
+} from './bridge.js';
+import { BridgeSupervisor, type SupervisorTiming } from './supervisor.js';
 
 export interface DriverManifestEntry {
   readonly name: string;
@@ -53,212 +68,242 @@ export interface DriverManagerOptions {
     binding: string,
     driver: string,
   ) => Record<string, unknown> | undefined;
+  /** Builds the bridge. Defaults to the Python bridge in `pythonDir`. */
+  readonly createBridge?: DriverBridgeFactory;
+  readonly supervisorTiming?: Partial<SupervisorTiming>;
 }
 
 /** Default binding used when a request does not carry one (diagnostics). */
 export const SYSTEM_BINDING = 'system';
 
-interface InstanceRuntime {
+// Starting may download or load a model; actions may run inference.
+const START_TIMEOUT_MS = 5 * 60_000;
+const EXECUTE_TIMEOUT_MS = 2 * 60_000;
+// The bridge answers list-drivers once it has imported every driver module.
+const CATALOGUE_TIMEOUT_MS = 2 * 60_000;
+
+interface Lease {
+  readonly id: number;
+  readonly client: string;
+  readonly binding: string;
+  readonly instance: string;
+  readonly driver: string;
+  readonly event: string;
+}
+
+interface InstanceRecord {
   readonly instance: string;
   readonly driver: string;
   state: DriverState;
   runtime?: DriverRuntimeInfo;
 }
 
-interface SubscriberRecord {
-  readonly events: Set<string>;
+interface DesiredInstance {
+  readonly instance: string;
+  readonly driver: string;
+  /** Binding whose config starts the instance. */
   readonly binding: string;
+  /** Drivers in the same namespace that need this one. */
+  readonly requiredBy: Set<string>;
 }
 
-const INSTANCE_KEY_SEP = '::';
+interface Subscription {
+  readonly instance: string;
+  readonly driver: string;
+  readonly event: string;
+}
+
+const KEY_SEP = '::';
+
+function instanceKey(instance: string, driver: string): string {
+  return `${instance}${KEY_SEP}${driver}`;
+}
+
+function subscriptionKey(sub: Subscription): string {
+  return `${instanceKey(sub.instance, sub.driver)}${KEY_SEP}${sub.event}`;
+}
 
 export class DriverManager {
   private readonly log: ChildLogger;
-  private readonly bridge: PythonBridge;
+  private readonly bridge: DriverBridge;
+  private readonly supervisor: BridgeSupervisor;
   /** Driver *types* keyed by name. */
   private readonly catalogue = new Map<string, DriverManifestEntry>();
-  /** Running instances keyed by `${instance}::${driver}`. */
-  private readonly instances = new Map<string, InstanceRuntime>();
-  /** Subscribers keyed by instance key, then subscriber id. */
-  private readonly subscribers = new Map<string, Map<string, SubscriberRecord>>();
   /** Memoised effective sharing policy per driver name. */
   private readonly sharedCache = new Map<string, boolean>();
-  private starting: Promise<void> | null = null;
+  private readonly leases = new Map<number, Lease>();
+  private readonly leasesByInstance = new Map<string, Set<Lease>>();
+  private nextLeaseId = 1;
+  /** Instances the bridge reports, keyed by instance key. */
+  private readonly actual = new Map<string, InstanceRecord>();
+  /** Event subscriptions the bridge has acknowledged, keyed by subscription key. */
+  private readonly bridgeSubscriptions = new Map<string, Subscription>();
+  /** Last start failure per instance key. Only a new lease retries it. */
+  private readonly startErrors = new Map<string, Error>();
+  private bridgeReady = false;
+  private reconciling: Promise<void> | null = null;
+  private reconcileRequested = false;
 
   constructor(private readonly options: DriverManagerOptions) {
     this.log = options.logger.child('drivers');
-    this.bridge = new PythonBridge({
-      pythonDir: options.pythonDir,
-      logger: this.log,
+    const handlers: BridgeHandlers = {
       onEvent: (instance, driver, event, data, ts) =>
         this.handleDriverEvent(instance, driver, event, data, ts),
-      onLog: (level, source, message) =>
-        options.logger.log(`python:${source}`, normalizeLevel(level), message),
+      onLog: (level, source, message, instance) =>
+        options.logger.log(
+          `python:${source}`,
+          normalizeLevel(level),
+          message,
+          instance !== undefined ? { instance } : undefined,
+        ),
       onDriverState: (instance, driver, state, runtime) =>
         this.handleDriverState(instance, driver, state, runtime),
-      onPerformance: (source, metric, value, ts) =>
+      onPerformance: (sample) =>
         options.bus.emit(
-          'server:performance',
-          { source, type: 'driver', metric, value, timestamp: ts },
+          ServerEvents.PerformanceSample,
+          {
+            source: sample.source,
+            instance: sample.instance,
+            type: 'driver',
+            metric: sample.metric,
+            value: sample.value,
+            timestamp: sample.ts,
+          },
           'drivers',
         ),
-      onExit: (code, signal) => {
-        this.log.warn('python bridge exited', { code, signal });
-        this.instances.clear();
-        this.subscribers.clear();
-        this.broadcastList();
-      },
+      onExit: (code, signal) => this.supervisor.handleExit(code, signal),
+    };
+    const createBridge =
+      options.createBridge ??
+      ((bridgeHandlers: BridgeHandlers) =>
+        new PythonBridge({
+          pythonDir: options.pythonDir,
+          logger: this.log,
+          handlers: bridgeHandlers,
+        }));
+    this.bridge = createBridge(handlers);
+    this.supervisor = new BridgeSupervisor({
+      bridge: this.bridge,
+      log: this.log,
+      onReady: () => this.handleBridgeReady(),
+      onDown: () => this.handleBridgeDown(),
+      ...(options.supervisorTiming ? { timing: options.supervisorTiming } : {}),
     });
   }
 
+  /** Start the bridge. If the first attempt fails, it keeps retrying in the background. */
   async start(): Promise<void> {
-    if (this.bridge.isRunning()) return;
-    if (this.starting) {
-      await this.starting;
-      return;
-    }
-    this.starting = (async (): Promise<void> => {
-      this.log.info('starting python bridge');
-      await this.bridge.start();
-      await this.refreshManifest();
-    })();
-    try {
-      await this.starting;
-    } finally {
-      this.starting = null;
-    }
+    this.log.info('starting python bridge');
+    await this.supervisor.start();
   }
 
   async stop(): Promise<void> {
-    if (!this.bridge.isRunning()) return;
-    await this.bridge.stop();
+    await this.supervisor.stop();
+    this.handleBridgeDown();
   }
 
   async refreshManifest(): Promise<void> {
-    const result = await this.bridge.request<{ drivers: readonly DriverManifestEntry[] }>({
-      type: 'list-drivers',
-    });
+    const result = await this.bridge.request<{ drivers: readonly DriverManifestEntry[] }>(
+      { type: 'list-drivers' },
+      { timeoutMs: CATALOGUE_TIMEOUT_MS },
+    );
     this.catalogue.clear();
     this.sharedCache.clear();
-    for (const entry of result?.drivers ?? []) {
+    for (const entry of result.drivers) {
       this.catalogue.set(entry.name, entry);
     }
     this.broadcastList();
   }
 
   listDrivers(): DriverInfo[] {
-    return Array.from(this.catalogue.values()).map((entry) => this.toDriverInfo(entry));
+    const desired = this.desiredInstances();
+    return Array.from(this.catalogue.values()).map((entry) => this.toDriverInfo(entry, desired));
   }
 
   getDriver(name: string): DriverInfo | undefined {
     const entry = this.catalogue.get(name);
     if (!entry) return undefined;
-    return this.toDriverInfo(entry);
+    return this.toDriverInfo(entry, this.desiredInstances());
   }
 
-  /** Whether a driver instance for `binding` is currently running. */
+  /** Whether the driver instance `binding` uses is currently running. */
   isInstanceRunning(binding: string, driver: string): boolean {
-    const instance = this.instanceFor(binding, driver);
-    return this.instances.get(this.instanceKey(instance, driver))?.state === 'running';
+    const key = instanceKey(this.resolveInstance(binding, driver), driver);
+    return this.actual.get(key)?.state === 'running';
   }
 
-  async startDriver(binding: string, name: string, requester: string): Promise<void> {
-    const instance = this.instanceFor(binding, name);
-    await this.startInstance(instance, name, requester, binding);
+  /** Bindings whose instance of `driver` is currently running. */
+  runningBindings(driver: string): string[] {
+    const bindings = new Set<string>();
+    for (const lease of this.leases.values()) {
+      if (this.isInstanceRunning(lease.binding, driver)) bindings.add(lease.binding);
+    }
+    return Array.from(bindings);
   }
 
-  async stopDriver(binding: string, name: string, requester: string): Promise<void> {
-    const instance = this.instanceFor(binding, name);
-    await this.stopInstance(instance, name, requester, binding);
-  }
-
-  async subscribe(
-    binding: string,
-    driver: string,
-    event: string,
-    subscriber: string,
-  ): Promise<void> {
+  /**
+   * Take a lease on `driver.event` for `client` and wait until the driver runs.
+   * Rejects, and drops the lease, when the driver or a dependency fails to start.
+   */
+  async subscribe(binding: string, driver: string, event: string, client: string): Promise<void> {
     this.requireDriver(driver);
+    if (!this.bridgeReady) throw new Error('Python bridge is not running');
     const instance = this.instanceFor(binding, driver);
-    const key = this.instanceKey(instance, driver);
-    const state = this.instances.get(key)?.state;
-    if (state !== 'running' && state !== 'starting') {
-      await this.startInstance(instance, driver, subscriber, binding);
+    const lease = this.addLease({ client, binding, instance, driver, event });
+    // A new lease is an explicit request, so earlier start failures get another try.
+    for (const name of this.closure(driver)) this.startErrors.delete(instanceKey(instance, name));
+    await this.scheduleReconcile();
+    const failure = this.leaseFailure(lease);
+    if (failure) {
+      this.removeLease(lease);
+      await this.scheduleReconcile();
+      throw failure;
     }
-    this.recordSubscriber(key, subscriber, event, binding);
-    try {
-      await this.bridge.request({ type: 'subscribe', instance, driver, event });
-    } catch (err) {
-      this.unrecordSubscriber(key, subscriber, event);
-      throw err;
-    }
-    this.broadcastList();
   }
 
-  async unsubscribe(
-    binding: string,
-    driver: string,
-    event: string,
-    subscriber: string,
-  ): Promise<void> {
-    if (!this.catalogue.has(driver)) return;
-    const instance = this.instanceFor(binding, driver);
-    await this.unsubscribeFromInstance(instance, driver, event, subscriber, binding);
-  }
-
-  /** Drop every subscription owned by `subscriber` so idle drivers can stop.
-   * Errors on individual events are logged; the rest still run. */
-  async unsubscribeAll(subscriber: string): Promise<void> {
-    const targets: Array<{ instance: string; driver: string; binding: string; events: string[] }> =
-      [];
-    for (const [key, bySubscriber] of this.subscribers.entries()) {
-      const record = bySubscriber.get(subscriber);
-      if (!record) continue;
-      const { instance, driver } = this.splitInstanceKey(key);
-      targets.push({
-        instance,
-        driver,
-        binding: record.binding,
-        events: Array.from(record.events),
-      });
-    }
-    if (targets.length === 0) return;
-    this.log.info('cleaning up driver subscriptions for disconnected client', {
-      subscriber,
-      drivers: targets.map((t) => t.driver),
-    });
-    for (const target of targets) {
-      for (const event of target.events) {
-        try {
-          await this.unsubscribeFromInstance(
-            target.instance,
-            target.driver,
-            event,
-            subscriber,
-            target.binding,
-          );
-        } catch (err) {
-          this.log.warn('unsubscribeAll failed for one event', {
-            driver: target.driver,
-            event,
-            subscriber,
-            err: String(err),
-          });
-        }
+  /** Release one lease matching the arguments. */
+  async unsubscribe(binding: string, driver: string, event: string, client: string): Promise<void> {
+    let match: Lease | undefined;
+    for (const lease of this.leases.values()) {
+      if (
+        lease.client === client &&
+        lease.binding === binding &&
+        lease.driver === driver &&
+        lease.event === event
+      ) {
+        match = lease;
       }
     }
+    if (!match) return;
+    this.removeLease(match);
+    await this.scheduleReconcile();
+  }
+
+  /** Release every lease `client` holds so idle drivers can stop. */
+  async unsubscribeAll(client: string): Promise<void> {
+    const owned = Array.from(this.leases.values()).filter((lease) => lease.client === client);
+    if (owned.length === 0) return;
+    this.log.info('cleaning up driver subscriptions for disconnected client', {
+      subscriber: client,
+      drivers: owned.map((lease) => lease.driver),
+    });
+    for (const lease of owned) this.removeLease(lease);
+    await this.scheduleReconcile();
   }
 
   async getData(binding: string, driver: string, event: string): Promise<unknown> {
     this.requireDriver(driver);
-    const instance = this.instanceFor(binding, driver);
+    const instance = this.resolveInstance(binding, driver);
     return this.bridge.request({ type: 'get-data', instance, driver, event });
   }
 
   async execute(binding: string, driver: string, action: string, data: unknown): Promise<unknown> {
     this.requireDriver(driver);
-    const instance = this.instanceFor(binding, driver);
-    return this.bridge.request({ type: 'execute', instance, driver, action, data });
+    const instance = this.resolveInstance(binding, driver);
+    return this.bridge.request(
+      { type: 'execute', instance, driver, action, data },
+      { timeoutMs: EXECUTE_TIMEOUT_MS },
+    );
   }
 
   /** Enumerate connected cameras (instance-agnostic). */
@@ -281,140 +326,268 @@ export class DriverManager {
 
   async listDevices(): Promise<DeviceCatalog> {
     const [cameras, audio] = await Promise.all([
-      this.listCameras().catch(() => []),
-      this.listAudioDevices().catch(() => ({ microphones: [], speakers: [] })),
+      this.listCameras().catch((err: unknown) => {
+        this.log.warn('camera enumeration failed', { err: String(err) });
+        return [];
+      }),
+      this.listAudioDevices().catch((err: unknown) => {
+        this.log.warn('audio device enumeration failed', { err: String(err) });
+        return { microphones: [], speakers: [] };
+      }),
     ]);
     return { cameras, microphones: audio.microphones, speakers: audio.speakers };
   }
 
-  // ------------------------------------------------------------------
-  // Instance lifecycle
-  // ------------------------------------------------------------------
-
-  private async startInstance(
-    instance: string,
-    driver: string,
-    requester: string,
-    binding: string,
-  ): Promise<void> {
-    const entry = this.requireDriver(driver);
-    // Dependencies live in the same instance namespace so an exclusive driver
-    // and its exclusive deps stay isolated together.
-    for (const dep of entry.dependencies) {
-      await this.startInstance(instance, dep, `${driver}:dep`, binding);
+  private addLease(fields: Omit<Lease, 'id'>): Lease {
+    const lease: Lease = { id: this.nextLeaseId++, ...fields };
+    this.leases.set(lease.id, lease);
+    const key = instanceKey(lease.instance, lease.driver);
+    let byInstance = this.leasesByInstance.get(key);
+    if (!byInstance) {
+      byInstance = new Set();
+      this.leasesByInstance.set(key, byInstance);
     }
-    const key = this.instanceKey(instance, driver);
-    this.setInstanceState(instance, driver, 'starting');
-    this.broadcastList();
-    try {
-      const driverConfig = this.options.getDriverConfig?.(binding, driver);
-      await this.bridge.request({
-        type: 'start-driver',
-        instance,
-        driver,
-        ...(driverConfig ? { config: driverConfig } : {}),
+    byInstance.add(lease);
+    return lease;
+  }
+
+  private removeLease(lease: Lease): void {
+    if (!this.leases.delete(lease.id)) return;
+    const key = instanceKey(lease.instance, lease.driver);
+    const byInstance = this.leasesByInstance.get(key);
+    byInstance?.delete(lease);
+    if (byInstance?.size === 0) this.leasesByInstance.delete(key);
+  }
+
+  private leaseFailure(lease: Lease): Error | null {
+    if (!this.leases.has(lease.id)) return null;
+    if (!this.bridgeReady) return new Error('Python bridge is not running');
+    for (const name of this.closure(lease.driver)) {
+      const key = instanceKey(lease.instance, name);
+      const error = this.startErrors.get(key);
+      if (error) return error;
+      const state = this.actual.get(key)?.state ?? 'not running';
+      if (state !== 'running') return new Error(`driver ${name} in ${lease.instance} is ${state}`);
+    }
+    if (!this.bridgeSubscriptions.has(subscriptionKey(lease))) {
+      return new Error(`subscribing to ${lease.driver}.${lease.event} failed`);
+    }
+    return null;
+  }
+
+  private async handleBridgeReady(): Promise<void> {
+    await this.refreshManifest();
+    const listed = await this.bridge.request<BridgeInstanceList>({ type: 'list-instances' });
+    this.actual.clear();
+    this.bridgeSubscriptions.clear();
+    for (const item of listed.instances) {
+      this.actual.set(instanceKey(item.instance, item.driver), {
+        instance: item.instance,
+        driver: item.driver,
+        state: normalizeDriverState(item.state),
       });
-      this.recordSubscriber(key, requester, '*', binding);
-      this.broadcastDriver(driver);
-      this.broadcastList();
-    } catch (err) {
-      this.setInstanceState(instance, driver, 'errored');
-      this.broadcastDriver(driver);
-      this.broadcastList();
-      throw err;
+      for (const event of item.subscriptions) {
+        const sub = { instance: item.instance, driver: item.driver, event };
+        this.bridgeSubscriptions.set(subscriptionKey(sub), sub);
+      }
+    }
+    this.bridgeReady = true;
+    if (this.leases.size > 0) {
+      this.log.info('re-applying driver leases', { leases: this.leases.size });
+    }
+    await this.scheduleReconcile();
+  }
+
+  private handleBridgeDown(): void {
+    this.bridgeReady = false;
+    this.actual.clear();
+    this.bridgeSubscriptions.clear();
+    this.startErrors.clear();
+    this.broadcastList();
+  }
+
+  // Reconciliation
+
+  private scheduleReconcile(): Promise<void> {
+    this.reconcileRequested = true;
+    this.reconciling ??= this.runReconcile();
+    return this.reconciling;
+  }
+
+  private async runReconcile(): Promise<void> {
+    try {
+      while (this.reconcileRequested) {
+        this.reconcileRequested = false;
+        try {
+          await this.reconcileOnce();
+        } catch (err) {
+          this.log.error('driver reconciliation failed', { err: String(err) });
+        }
+      }
+    } finally {
+      this.reconciling = null;
     }
   }
 
-  private async stopInstance(
-    instance: string,
-    driver: string,
-    requester: string,
-    binding: string,
-  ): Promise<void> {
-    const entry = this.requireDriver(driver);
-    const key = this.instanceKey(instance, driver);
-    this.unrecordSubscriber(key, requester);
-    if (this.hasAnySubscribers(key)) {
-      this.broadcastList();
-      return;
+  private async reconcileOnce(): Promise<void> {
+    if (!this.bridgeReady || !this.bridge.isRunning()) return;
+    const desired = this.desiredInstances();
+    const desiredSubscriptions = new Map<string, Subscription>();
+    for (const lease of this.leases.values()) {
+      desiredSubscriptions.set(subscriptionKey(lease), lease);
     }
-    const runtime = this.instances.get(key);
-    if (!runtime) {
-      await this.releaseDependencies(instance, driver, binding, entry);
-      return;
+
+    const unwanted = Array.from(this.actual.entries())
+      .filter(([key]) => !desired.has(key))
+      .map(([, record]) => record);
+    for (const record of this.dependentsFirst(unwanted)) {
+      await this.stopInstance(record);
     }
-    if (runtime.state !== 'running' && runtime.state !== 'starting') {
-      this.setInstanceState(instance, driver, 'available');
-      this.broadcastList();
-      await this.releaseDependencies(instance, driver, binding, entry);
-      return;
+    for (const key of this.startErrors.keys()) {
+      if (!desired.has(key)) this.startErrors.delete(key);
     }
-    this.setInstanceState(instance, driver, 'stopping');
+
+    for (const [key, sub] of this.bridgeSubscriptions) {
+      if (desiredSubscriptions.has(key)) continue;
+      try {
+        await this.bridge.request({ type: 'unsubscribe', ...pickSubscription(sub) });
+        this.bridgeSubscriptions.delete(key);
+      } catch (err) {
+        this.log.warn('driver unsubscribe failed', { ...pickSubscription(sub), err: String(err) });
+      }
+    }
+
+    // `desired` lists dependencies before their dependents.
+    for (const [key, want] of desired) {
+      if (this.startErrors.has(key) || this.actual.has(key)) continue;
+      const entry = this.catalogue.get(want.driver);
+      if (!entry) continue;
+      const blocked = entry.dependencies.some(
+        (dep) => this.actual.get(instanceKey(want.instance, dep))?.state !== 'running',
+      );
+      if (!blocked) await this.startInstance(want);
+    }
+
+    for (const [key, sub] of desiredSubscriptions) {
+      if (this.bridgeSubscriptions.has(key)) continue;
+      if (this.actual.get(instanceKey(sub.instance, sub.driver))?.state !== 'running') continue;
+      try {
+        await this.bridge.request({ type: 'subscribe', ...pickSubscription(sub) });
+        this.bridgeSubscriptions.set(key, pickSubscription(sub));
+      } catch (err) {
+        this.log.warn('driver subscribe failed', { ...pickSubscription(sub), err: String(err) });
+      }
+    }
+
     this.broadcastList();
+  }
+
+  private async startInstance(want: DesiredInstance): Promise<void> {
+    const { instance, driver } = want;
+    const key = instanceKey(instance, driver);
+    this.setActualState(instance, driver, 'starting');
+    this.broadcastDriver(driver);
+    try {
+      const config = this.options.getDriverConfig?.(want.binding, driver);
+      await this.bridge.request(
+        { type: 'start-driver', instance, driver, ...(config ? { config } : {}) },
+        { timeoutMs: START_TIMEOUT_MS },
+      );
+      this.setActualState(instance, driver, 'running');
+      this.log.info('driver started', { driver, instance });
+    } catch (err) {
+      if (!this.bridge.isRunning()) return;
+      this.dropActual(key);
+      const message = err instanceof Error ? err.message : String(err);
+      this.startErrors.set(key, new Error(`driver ${driver} failed to start: ${message}`));
+      this.log.warn('driver failed to start', { driver, instance, err: message });
+    }
+    this.broadcastDriver(driver);
+  }
+
+  private async stopInstance(record: InstanceRecord): Promise<void> {
+    const { instance, driver } = record;
+    this.setActualState(instance, driver, 'stopping');
+    this.broadcastDriver(driver);
     try {
       await this.bridge.request({ type: 'stop-driver', instance, driver });
+      this.dropActual(instanceKey(instance, driver));
+      this.log.info('driver stopped', { driver, instance });
     } catch (err) {
-      if (this.bridge.isRunning()) {
-        this.log.error('failed to stop driver', { driver, instance, err: String(err) });
-        throw err;
-      }
-      this.log.warn('driver stop skipped; bridge already exited', { driver, instance });
+      if (!this.bridge.isRunning()) return;
+      const current = this.actual.get(instanceKey(instance, driver));
+      if (current?.state === 'stopping') current.state = 'errored';
+      this.log.warn('driver did not stop', { driver, instance, err: String(err) });
     }
-    this.setInstanceState(instance, driver, 'available');
     this.broadcastDriver(driver);
-    this.broadcastList();
-    this.log.info('driver stopped', { driver, instance });
-    await this.releaseDependencies(instance, driver, binding, entry);
   }
 
-  private async releaseDependencies(
-    instance: string,
-    driver: string,
-    binding: string,
-    entry: DriverManifestEntry,
-  ): Promise<void> {
-    for (const dep of entry.dependencies) {
-      try {
-        await this.stopInstance(instance, dep, `${driver}:dep`, binding);
-      } catch (err) {
-        this.log.warn('failed to release dependency', {
-          driver,
-          dependency: dep,
-          instance,
-          err: String(err),
-        });
+  /** Order records so a driver comes before the drivers it depends on. */
+  private dependentsFirst(records: readonly InstanceRecord[]): InstanceRecord[] {
+    const remaining = new Map(records.map((r) => [instanceKey(r.instance, r.driver), r]));
+    const ordered: InstanceRecord[] = [];
+    while (remaining.size > 0) {
+      const needed = new Set<string>();
+      for (const record of remaining.values()) {
+        for (const dep of this.catalogue.get(record.driver)?.dependencies ?? []) {
+          needed.add(instanceKey(record.instance, dep));
+        }
+      }
+      const leaves = Array.from(remaining.entries()).filter(([key]) => !needed.has(key));
+      // A dependency cycle has no leaves; stop the rest in any order.
+      const batch = leaves.length > 0 ? leaves : Array.from(remaining.entries());
+      for (const [key, record] of batch) {
+        ordered.push(record);
+        remaining.delete(key);
       }
     }
+    return ordered;
   }
 
-  private async unsubscribeFromInstance(
-    instance: string,
-    driver: string,
-    event: string,
-    subscriber: string,
-    binding: string,
-  ): Promise<void> {
-    const key = this.instanceKey(instance, driver);
-    this.unrecordSubscriber(key, subscriber, event);
-    try {
-      await this.bridge.request({ type: 'unsubscribe', instance, driver, event });
-    } catch {
-      // best-effort
-    }
-    if (!this.hasAnySubscribers(key)) {
-      try {
-        await this.stopInstance(instance, driver, subscriber, binding);
-      } catch {
-        // already handled
+  /** Every instance the leases need, dependencies before dependents. */
+  private desiredInstances(): Map<string, DesiredInstance> {
+    const desired = new Map<string, DesiredInstance>();
+    const visit = (
+      instance: string,
+      driver: string,
+      binding: string,
+      requiredBy: string | null,
+      path: Set<string>,
+    ): void => {
+      const entry = this.catalogue.get(driver);
+      const key = instanceKey(instance, driver);
+      if (!entry || path.has(key)) return;
+      path.add(key);
+      for (const dep of entry.dependencies) visit(instance, dep, binding, driver, path);
+      path.delete(key);
+      let item = desired.get(key);
+      if (!item) {
+        item = { instance, driver, binding, requiredBy: new Set() };
+        desired.set(key, item);
       }
-    } else {
-      this.broadcastList();
+      if (requiredBy !== null) item.requiredBy.add(requiredBy);
+    };
+    for (const lease of this.leases.values()) {
+      visit(lease.instance, lease.driver, lease.binding, null, new Set());
     }
+    return desired;
   }
 
-  // ------------------------------------------------------------------
-  // Event routing
-  // ------------------------------------------------------------------
+  /** `driver` and its transitive dependencies, dependencies first. */
+  private closure(driver: string): string[] {
+    const names: string[] = [];
+    const visiting = new Set<string>();
+    const visit = (name: string): void => {
+      if (names.includes(name) || visiting.has(name)) return;
+      visiting.add(name);
+      for (const dep of this.catalogue.get(name)?.dependencies ?? []) visit(dep);
+      names.push(name);
+    };
+    visit(driver);
+    return names;
+  }
+
+  // Event and state routing
 
   private handleDriverEvent(
     instance: string,
@@ -423,8 +596,12 @@ export class DriverManager {
     data: unknown,
     ts: number,
   ): void {
-    const key = this.instanceKey(instance, driver);
-    const bindings = this.bindingsSubscribedTo(key);
+    const leases = this.leasesByInstance.get(instanceKey(instance, driver));
+    if (!leases) return;
+    const bindings = new Set<string>();
+    for (const lease of leases) {
+      if (lease.event === event || lease.event === '*') bindings.add(lease.binding);
+    }
     for (const binding of bindings) {
       this.options.bus.emit(
         `${ServerEvents.DriverEvent}:${binding}`,
@@ -441,20 +618,70 @@ export class DriverManager {
     runtime?: DriverRuntimeInfo,
   ): void {
     if (!this.catalogue.has(driver)) return;
-    this.setInstanceState(instance, driver, normalizeDriverState(state), runtime);
+    const key = instanceKey(instance, driver);
+    const normalized = normalizeDriverState(state);
+    if (normalized === 'available' || normalized === 'stopped') {
+      this.dropActual(key);
+    } else {
+      this.setActualState(instance, driver, normalized, runtime);
+    }
     this.broadcastDriver(driver);
     this.broadcastList();
+    // Something started that nobody wants any more, e.g. after a start timed out.
+    if (normalized === 'running' && !this.desiredInstances().has(key)) {
+      void this.scheduleReconcile();
+    }
   }
 
-  // ------------------------------------------------------------------
-  // Sharing policy & instance keys
-  // ------------------------------------------------------------------
+  private setActualState(
+    instance: string,
+    driver: string,
+    state: DriverState,
+    runtime?: DriverRuntimeInfo,
+  ): void {
+    const key = instanceKey(instance, driver);
+    const existing = this.actual.get(key);
+    if (existing) {
+      existing.state = state;
+      if (runtime !== undefined) existing.runtime = runtime;
+      return;
+    }
+    this.actual.set(key, {
+      instance,
+      driver,
+      state,
+      ...(runtime !== undefined ? { runtime } : {}),
+    });
+  }
 
-  /** Resolve the instance namespace a driver runs in for a given binding. */
+  private dropActual(key: string): void {
+    this.actual.delete(key);
+    for (const [subKey, sub] of this.bridgeSubscriptions) {
+      if (instanceKey(sub.instance, sub.driver) === key) this.bridgeSubscriptions.delete(subKey);
+    }
+  }
+
+  // Sharing policy and instance resolution
+
+  /** Resolve the instance namespace a new lease for `binding` uses. */
   private instanceFor(binding: string, driver: string): string {
     if (!this.isEffectivelyShared(driver)) return binding;
     const device = this.options.getDriverConfig?.(binding, driver)?.device;
     return typeof device === 'number' ? `shared:dev${device}` : 'shared';
+  }
+
+  /**
+   * The instance `binding` currently uses for `driver`: the one its newest
+   * lease on the driver (or on a dependent) resolved to, so a device change
+   * does not redirect requests away from a running instance.
+   */
+  private resolveInstance(binding: string, driver: string): string {
+    const leases = Array.from(this.leases.values()).reverse();
+    for (const lease of leases) {
+      if (lease.binding !== binding) continue;
+      if (this.closure(lease.driver).includes(driver)) return lease.instance;
+    }
+    return this.instanceFor(binding, driver);
   }
 
   /** A driver is effectively shared only if it and all its deps are shared. */
@@ -477,56 +704,30 @@ export class DriverManager {
     return true;
   }
 
-  private instanceKey(instance: string, driver: string): string {
-    return `${instance}${INSTANCE_KEY_SEP}${driver}`;
-  }
+  // Broadcasts and projections
 
-  private splitInstanceKey(key: string): { instance: string; driver: string } {
-    const idx = key.lastIndexOf(INSTANCE_KEY_SEP);
-    return {
-      instance: key.slice(0, idx),
-      driver: key.slice(idx + INSTANCE_KEY_SEP.length),
-    };
-  }
-
-  private setInstanceState(
-    instance: string,
-    driver: string,
-    state: DriverState,
-    runtime?: DriverRuntimeInfo,
-  ): void {
-    const key = this.instanceKey(instance, driver);
-    if (state === 'available' || state === 'stopped') {
-      this.instances.delete(key);
-      this.subscribers.delete(key);
-      return;
+  private toDriverInfo(
+    entry: DriverManifestEntry,
+    desired: ReadonlyMap<string, DesiredInstance>,
+  ): DriverInfo {
+    const records = new Map<string, InstanceRecord>();
+    for (const [key, record] of this.actual) {
+      if (record.driver === entry.name) records.set(key, record);
     }
-    const existing = this.instances.get(key);
-    if (existing) {
-      existing.state = state;
-      if (runtime !== undefined) existing.runtime = runtime;
-    } else {
-      this.instances.set(key, {
-        instance,
-        driver,
-        state,
-        ...(runtime !== undefined ? { runtime } : {}),
-      });
+    for (const [key, want] of desired) {
+      if (want.driver === entry.name && !records.has(key) && this.startErrors.has(key)) {
+        records.set(key, { instance: want.instance, driver: want.driver, state: 'errored' });
+      }
     }
-  }
-
-  // ------------------------------------------------------------------
-  // Broadcasts & projections
-  // ------------------------------------------------------------------
-
-  private toDriverInfo(entry: DriverManifestEntry): DriverInfo {
-    const runtimes = this.instancesOf(entry.name);
-    const instanceInfos: DriverInstanceInfo[] = runtimes.map((rt) => ({
-      instance: rt.instance,
-      state: rt.state,
-      subscribers: this.flattenSubscribers(this.instanceKey(rt.instance, rt.driver)),
-      ...(rt.runtime ? { runtime: rt.runtime } : {}),
-    }));
+    const instanceInfos: DriverInstanceInfo[] = Array.from(records.entries()).map(
+      ([key, record]) => ({
+        instance: record.instance,
+        state: record.state,
+        subscribers: this.subscribersOf(key, desired.get(key)),
+        ...(record.runtime ? { runtime: record.runtime } : {}),
+      }),
+    );
+    const runtimes = Array.from(records.values());
     const subscribers = Array.from(new Set(instanceInfos.flatMap((i) => i.subscribers)));
     const primaryRuntime = runtimes.find((rt) => rt.runtime)?.runtime;
     return {
@@ -543,12 +744,11 @@ export class DriverManager {
     };
   }
 
-  private instancesOf(driver: string): InstanceRuntime[] {
-    const out: InstanceRuntime[] = [];
-    for (const runtime of this.instances.values()) {
-      if (runtime.driver === driver) out.push(runtime);
-    }
-    return out;
+  private subscribersOf(key: string, desired: DesiredInstance | undefined): string[] {
+    const clients = new Set<string>();
+    for (const lease of this.leasesByInstance.get(key) ?? []) clients.add(lease.client);
+    for (const dependent of desired?.requiredBy ?? []) clients.add(`${dependent}:dep`);
+    return Array.from(clients);
   }
 
   private broadcastDriver(driver: string): void {
@@ -571,63 +771,10 @@ export class DriverManager {
     }
     return entry;
   }
+}
 
-  // ------------------------------------------------------------------
-  // Subscriber bookkeeping
-  // ------------------------------------------------------------------
-
-  private recordSubscriber(key: string, subscriber: string, event: string, binding: string): void {
-    let bySubscriber = this.subscribers.get(key);
-    if (!bySubscriber) {
-      bySubscriber = new Map();
-      this.subscribers.set(key, bySubscriber);
-    }
-    const existing = bySubscriber.get(subscriber);
-    if (existing) {
-      existing.events.add(event);
-    } else {
-      bySubscriber.set(subscriber, { events: new Set([event]), binding });
-    }
-  }
-
-  private unrecordSubscriber(key: string, subscriber: string, event?: string): void {
-    const bySubscriber = this.subscribers.get(key);
-    if (!bySubscriber) return;
-    const record = bySubscriber.get(subscriber);
-    if (!record) return;
-    if (event === undefined) {
-      bySubscriber.delete(subscriber);
-    } else {
-      record.events.delete(event);
-      if (record.events.size === 0) bySubscriber.delete(subscriber);
-    }
-    if (bySubscriber.size === 0) this.subscribers.delete(key);
-  }
-
-  private hasAnySubscribers(key: string): boolean {
-    const bySubscriber = this.subscribers.get(key);
-    if (!bySubscriber) return false;
-    for (const record of bySubscriber.values()) {
-      if (record.events.size > 0) return true;
-    }
-    return false;
-  }
-
-  private flattenSubscribers(key: string): string[] {
-    const bySubscriber = this.subscribers.get(key);
-    if (!bySubscriber) return [];
-    return Array.from(bySubscriber.keys());
-  }
-
-  private bindingsSubscribedTo(key: string): Set<string> {
-    const bindings = new Set<string>();
-    const bySubscriber = this.subscribers.get(key);
-    if (!bySubscriber) return bindings;
-    for (const record of bySubscriber.values()) {
-      bindings.add(record.binding);
-    }
-    return bindings;
-  }
+function pickSubscription(sub: Subscription): Subscription {
+  return { instance: sub.instance, driver: sub.driver, event: sub.event };
 }
 
 interface RawDevice {
@@ -645,7 +792,7 @@ function toDeviceOption(raw: RawDevice): DeviceOption {
   };
 }
 
-function aggregateState(runtimes: readonly InstanceRuntime[]): DriverState {
+function aggregateState(runtimes: readonly InstanceRecord[]): DriverState {
   if (runtimes.length === 0) return 'available';
   const states = new Set(runtimes.map((r) => r.state));
   if (states.has('running')) return 'running';
@@ -662,6 +809,7 @@ function normalizeDriverState(raw: string): DriverState {
     case 'starting':
     case 'running':
     case 'paused':
+    case 'stopping':
     case 'stopped':
     case 'errored':
       return raw;
