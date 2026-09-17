@@ -12,7 +12,8 @@
  * `uv sync` then materialises the venv, downloading a managed CPython 3.12
  * if the machine has none - so the CV drivers (camera, pose, hand_pose,
  * ball, ...) work out of the box on a clean machine. Linux x64 machines with
- * an NVIDIA GPU also get the `gpu` extra (CUDA onnxruntime). The hash covers
+ * an NVIDIA driver 580 or newer also get the `gpu` extra (CUDA onnxruntime).
+ * A marker file records that every step finished. The hash covers
  * pyproject.toml, uv.lock, and the extras, so kiosks with the same
  * requirements share one runtime and upgrades rebuild cleanly. Needs network
  * on the very first launch only.
@@ -28,11 +29,15 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { app } from 'electron';
 import { currentPythonHost, pythonExtras, uvSyncArgs } from './python-extras.js';
+
+/** Written into the runtime's python directory once every install step succeeded. */
+const COMPLETE_MARKER = '.gosai-runtime-complete';
 
 export interface PythonBootstrapOptions {
   /** Optional dependency extras to install (e.g. ["speech", "realsense"]). `gpu` is added automatically. */
@@ -57,12 +62,13 @@ export async function ensurePythonRuntime(
     return null;
   }
 
-  const extras = pythonExtras(options.extras ?? [], currentPythonHost());
+  const { extras, gpuReason } = pythonExtras(options.extras ?? [], currentPythonHost());
+  if (gpuReason) console.log(`[gosai-python] ${gpuReason}`);
   const hash = runtimeHash(resourcesPython, extras);
   const runtimeDir = join(homedir(), '.gosai-runtime', `python-${hash}`);
   const pythonDir = join(runtimeDir, 'python');
 
-  if (hasBridge(pythonDir)) return pythonDir;
+  if (hasBridge(pythonDir) && existsSync(join(pythonDir, COMPLETE_MARKER))) return pythonDir;
 
   const onStatus = options.onStatus ?? (() => undefined);
   onStatus('Preparing the Python runtime (first launch)…');
@@ -89,6 +95,7 @@ export async function ensurePythonRuntime(
   if (!hasBridge(pythonDir)) {
     throw new Error('uv sync completed but the gosai-bridge entry point is missing');
   }
+  writeFileSync(join(pythonDir, COMPLETE_MARKER), '');
   onStatus('Python runtime ready.');
   console.log('[gosai-python] runtime ready');
   return pythonDir;
