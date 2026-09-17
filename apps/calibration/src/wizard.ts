@@ -25,12 +25,20 @@ export interface WizardState {
   readonly corners: readonly CalibrationPoint[];
   /** The computed calibration, shown in the preview and saved at the end. */
   readonly calibration: CameraProjectorSurfaceCalibration | null;
-  /** Why the last compute failed. */
+  /** Why the last compute or save failed. */
   readonly error: string | null;
+  /** The profile is being saved. Nothing else happens until that settles. */
+  readonly saving: boolean;
 }
 
 export function initialWizard(corners: readonly CalibrationPoint[] = []): WizardState {
-  return { step: 'markers', corners: corners.slice(0, 4), calibration: null, error: null };
+  return {
+    step: 'markers',
+    corners: corners.slice(0, 4),
+    calibration: null,
+    error: null,
+    saving: false,
+  };
 }
 
 export function canAdvance(state: WizardState): boolean {
@@ -41,14 +49,14 @@ export function canAdvance(state: WizardState): boolean {
     case 'surface-corners':
       return state.corners.length === 4;
     case 'preview':
-      return state.calibration !== null;
+      return state.calibration !== null && !state.saving;
     default:
       return false;
   }
 }
 
 export function canGoBack(state: WizardState): boolean {
-  return state.step === 'surface-corners' || state.step === 'preview';
+  return !state.saving && (state.step === 'surface-corners' || state.step === 'preview');
 }
 
 export function advance(state: WizardState): WizardState {
@@ -59,13 +67,25 @@ export function advance(state: WizardState): WizardState {
     case 'surface-corners':
       return { ...state, step: 'compute', error: null };
     case 'preview':
-      return { ...state, step: 'done' };
+      // Done starts the save; `saveSucceeded` or `saveFailed` settle it.
+      return { ...state, saving: true, error: null };
     default:
       return state;
   }
 }
 
+export function saveSucceeded(state: WizardState): WizardState {
+  if (!state.saving) return state;
+  return { ...state, step: 'done', saving: false };
+}
+
+export function saveFailed(state: WizardState, error: string): WizardState {
+  if (!state.saving) return state;
+  return { ...state, saving: false, error };
+}
+
 export function goBack(state: WizardState): WizardState {
+  if (state.saving) return state;
   switch (state.step) {
     case 'surface-corners':
       return { ...state, step: 'markers', error: null };
@@ -89,8 +109,10 @@ export function computeFailed(state: WizardState, error: string): WizardState {
   return { ...state, step: 'surface-corners', calibration: null, error };
 }
 
+/** Cancels, except once the flow is over or while the profile saves. */
 export function cancel(state: WizardState): WizardState {
-  return state.step === 'done' ? state : { ...state, step: 'cancelled' };
+  if (state.saving || state.step === 'done' || state.step === 'cancelled') return state;
+  return { ...state, step: 'cancelled' };
 }
 
 /** Adds a corner, up to four. */

@@ -14,6 +14,8 @@ import {
   mapQuad,
   moveCorner,
   resetCorners,
+  saveFailed,
+  saveSucceeded,
   toCalibration,
   type ComputeResult,
   type WizardState,
@@ -61,9 +63,35 @@ describe('wizard transitions', () => {
     expect(state.step).toBe('compute');
     state = computeSucceeded(state, CALIBRATION);
     expect(state).toMatchObject({ step: 'preview', calibration: CALIBRATION, error: null });
+    // Done starts saving; the step changes once the save settles.
     state = advance(state);
-    expect(state.step).toBe('done');
-    expect(cancel(state).step).toBe('done');
+    expect(state).toMatchObject({ step: 'preview', saving: true });
+    state = saveSucceeded(state);
+    expect(state).toMatchObject({ step: 'done', saving: false });
+    expect(cancel(state)).toBe(state);
+  });
+
+  test('back, cancel and done do nothing while the profile saves', () => {
+    const saving = advance(computeSucceeded(atCompute(), CALIBRATION));
+    expect(saving.saving).toBe(true);
+    expect(canGoBack(saving)).toBe(false);
+    expect(canAdvance(saving)).toBe(false);
+    expect(goBack(saving)).toBe(saving);
+    expect(cancel(saving)).toBe(saving);
+    expect(advance(saving)).toBe(saving);
+
+    // A failed save stays on the preview, with the error, and can be retried or left.
+    const failed = saveFailed(saving, 'saving failed: offline');
+    expect(failed).toMatchObject({
+      step: 'preview',
+      saving: false,
+      error: 'saving failed: offline',
+    });
+    expect(goBack(failed).step).toBe('surface-corners');
+    expect(cancel(failed).step).toBe('cancelled');
+    expect(advance(failed)).toMatchObject({ saving: true, error: null });
+    // Settling a save that isn't running changes nothing.
+    expect(saveSucceeded(failed)).toBe(failed);
   });
 
   test('a compute failure returns to the corners with the error, keeping them', () => {

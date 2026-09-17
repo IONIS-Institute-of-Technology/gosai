@@ -43,6 +43,8 @@ import {
   initialWizard,
   moveCorner,
   resetCorners,
+  saveFailed,
+  saveSucceeded,
   toCalibration,
   type ComputeResult,
   type WizardState,
@@ -110,7 +112,6 @@ class ControlWindow {
   private detectedMarkers = 0;
   private transform: MarkerTransform = DEFAULT_MARKER_TRANSFORM;
   private dragging = -1;
-  private saving = false;
 
   constructor(
     private readonly rt: ExperienceRuntimeContext,
@@ -173,11 +174,10 @@ class ControlWindow {
   }
 
   private next(): void {
-    if (this.wizard.step === 'preview') {
-      void this.save();
-      return;
-    }
-    this.update(advance(this.wizard));
+    const next = advance(this.wizard);
+    if (next === this.wizard) return;
+    this.update(next);
+    if (next.saving) void this.save();
   }
 
   private back(): void {
@@ -185,8 +185,10 @@ class ControlWindow {
   }
 
   private cancel(): void {
-    if (this.wizard.step === 'done' || this.wizard.step === 'cancelled') return;
-    this.update(cancel(this.wizard));
+    // No cancel once the flow is over, or while the profile saves.
+    const next = cancel(this.wizard);
+    if (next === this.wizard) return;
+    this.update(next);
     void this.finish({ ok: false, cancelled: true, error: 'Calibration cancelled' });
   }
 
@@ -219,9 +221,7 @@ class ControlWindow {
 
   private async save(): Promise<void> {
     const calibration = this.wizard.calibration;
-    if (this.saving || this.wizard.step !== 'preview' || !calibration) return;
-    this.saving = true;
-    this.render();
+    if (!calibration) return;
     try {
       await saveCameraProjectorSurfaceCalibration(this.rt, calibration, {
         appSlug: this.target.appSlug,
@@ -229,12 +229,10 @@ class ControlWindow {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.rt.log.error('saving the calibration failed', { err: message });
-      this.saving = false;
-      this.wizard = { ...this.wizard, error: `saving failed: ${message}` };
-      this.render();
+      this.update(saveFailed(this.wizard, `saving failed: ${message}`));
       return;
     }
-    this.update(advance(this.wizard));
+    this.update(saveSucceeded(this.wizard));
     await this.finish({ ok: true });
   }
 
@@ -423,8 +421,8 @@ class ControlWindow {
     view.stepTitle.textContent = copy.title;
     view.stepHelp.textContent = copy.help;
     view.reset.style.display = wizard.step === 'surface-corners' ? 'inline-block' : 'none';
-    view.back.disabled = this.saving || !canGoBack(wizard);
-    view.next.disabled = this.saving || !canAdvance(wizard);
+    view.back.disabled = !canGoBack(wizard);
+    view.next.disabled = !canAdvance(wizard);
     view.next.textContent = wizard.step === 'preview' ? 'Done (Space)' : 'Next (Space)';
     this.updateStatus();
     this.drawOverlay();
@@ -441,7 +439,7 @@ class ControlWindow {
       markers: `markers detected: ${this.detectedMarkers}/${MARKER_COUNT} · ↔ ${transform.offsetX} ↕ ${transform.offsetY} · zoom ${Math.round(transform.scale * 100)}%`,
       'surface-corners': `corners: ${wizard.corners.length}/4`,
       compute: 'computing…',
-      preview: this.saving ? 'saving…' : 'press Done to save',
+      preview: wizard.saving ? 'saving…' : 'press Done to save',
       done: 'saved · closing',
       cancelled: 'cancelled',
     };
