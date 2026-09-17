@@ -12,5 +12,10 @@ First public release.
   warp, homography and calibration helpers, and the errors requests reject with.
 - `@gosai/sdk/host`: `runExperience`, `ServerClient` and the protocol constants,
   for code that hosts experiences.
+- `rt.drivers` types the events, params and results of the built-in drivers,
+  and `gosai-sdk gen-driver-types` generates the same types for an app's own
+  drivers.
+- Manifests declare the SDK versions they work with in `sdk`, and the runtime
+  refuses a server that speaks another protocol version.
 - Bundled type declarations with no runtime dependencies.
 - `@gosai/sdk/gosai.app.schema.json`: the manifest JSON Schema.
