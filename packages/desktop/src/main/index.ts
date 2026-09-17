@@ -47,8 +47,11 @@ const mode: BootMode = kioskConfig || (configError && looksLikeKiosk()) ? 'kiosk
 if (kioskConfig) applyKioskPaths(kioskConfig);
 
 // The lock is per Electron profile, and each kiosk has its own, so several
-// kiosks still run side by side. Takes the lock after applyKioskPaths.
-if (app.requestSingleInstanceLock()) {
+// kiosks still run side by side. Takes the lock after applyKioskPaths. A
+// launch with bad kiosk settings skips it: it would take the default
+// profile's lock and exit 0 behind a running desktop instead of reporting
+// the error and exiting 1.
+if (configError || app.requestSingleInstanceLock()) {
   main();
 } else {
   console.log('[gosai] another GOSAI instance already runs with this data directory; exiting');
