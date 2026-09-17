@@ -6,9 +6,9 @@
  * Bindings & instances
  * ---------------------
  * A *binding* is an app slug (or `system` for dashboard diagnostics). Each
- * driver has a sharing policy: exclusive drivers (camera, microphone, anything
- * that depends on them) get one instance per binding; shared drivers (speaker,
- * device-less utilities) get a single instance shared across bindings, keyed by
+ * driver has a sharing policy: exclusive drivers (camera, microphone, speaker,
+ * anything that depends on them) get one instance per binding; shared drivers
+ * (device-less utilities) get a single instance shared across bindings, keyed by
  * device when device-bound. The instance namespace is the binding for exclusive
  * drivers, or `shared` / `shared:dev<n>` for shared ones.
  *
@@ -29,12 +29,15 @@
  * lease on that event, so each app only receives its own stream.
  */
 
+import { createHash } from 'node:crypto';
 import type {
   DeviceCatalog,
   DeviceOption,
   DriverInfo,
   DriverInstanceInfo,
   DriverRuntimeInfo,
+  DriverSchema,
+  DriverSchemasResult,
   DriverState,
 } from '@gosai/shared';
 import { ServerEvents } from '@gosai/shared/events';
@@ -56,6 +59,7 @@ export interface DriverManifestEntry {
   readonly dependencies: readonly string[];
   readonly description?: string;
   readonly shared?: boolean;
+  readonly schema?: DriverSchema | null;
 }
 
 export interface DriverManagerOptions {
@@ -151,6 +155,8 @@ export class DriverManager {
   private readonly supervisor: BridgeSupervisor;
   /** Driver *types* keyed by name. */
   private readonly catalogue = new Map<string, DriverManifestEntry>();
+  /** Short hash of each driver's schema, so clients know when to fetch it again. */
+  private readonly schemaVersions = new Map<string, string>();
   /** Memoised effective sharing policy per driver name. */
   private readonly sharedCache = new Map<string, boolean>();
   private readonly leases = new Map<number, Lease>();
@@ -241,9 +247,14 @@ export class DriverManager {
       { timeoutMs: CATALOGUE_TIMEOUT_MS },
     );
     this.catalogue.clear();
+    this.schemaVersions.clear();
     this.sharedCache.clear();
     for (const entry of result.drivers) {
       this.catalogue.set(entry.name, entry);
+      if (entry.schema) {
+        const hash = createHash('sha256').update(JSON.stringify(entry.schema));
+        this.schemaVersions.set(entry.name, hash.digest('hex').slice(0, 16));
+      }
     }
     this.broadcastList();
   }
@@ -251,6 +262,23 @@ export class DriverManager {
   listDrivers(): DriverInfo[] {
     const desired = this.desiredInstances();
     return Array.from(this.catalogue.values()).map((entry) => this.toDriverInfo(entry, desired));
+  }
+
+  /** Schemas of every driver, or only `driver`'s. Drivers without a schema get null. */
+  getSchemas(driver?: string): DriverSchemasResult {
+    const names =
+      driver === undefined ? [...this.catalogue.keys()] : [this.requireDriver(driver).name];
+    return {
+      schemas: Object.fromEntries(
+        names.map((name) => [
+          name,
+          {
+            schemaVersion: this.schemaVersions.get(name) ?? null,
+            schema: this.catalogue.get(name)?.schema ?? null,
+          },
+        ]),
+      ),
+    };
   }
 
   getDriver(name: string): DriverInfo | undefined {
@@ -884,6 +912,9 @@ export class DriverManager {
       shared: this.isEffectivelyShared(entry.name),
       ...(primaryRuntime ? { runtime: primaryRuntime } : {}),
       ...(instanceInfos.length > 0 ? { instances: instanceInfos } : {}),
+      ...(this.schemaVersions.has(entry.name)
+        ? { schemaVersion: this.schemaVersions.get(entry.name) }
+        : {}),
     };
   }
 

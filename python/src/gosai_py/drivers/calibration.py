@@ -1,92 +1,182 @@
 """Calibration driver.
 
-Detects ArUco markers in the camera frame and computes the homography between
-the projection-space (the display where markers are drawn) and the
-camera-space.
+Detects ArUco markers (4x4_50) in camera frames and computes homographies
+between the camera and the projector display. The math is
+`gosai_py.geometry.homography.compute_homographies`.
 
-The driver produces **two** related homographies on `compute`:
+- camera -> display uses all 4 corners of every detected marker, which keeps
+  accuracy near the edges where keystone distortion is worst.
+- camera -> surface is computed when `compute` gets a `focus_quad` (the 4
+  physical surface corners in normalised camera coordinates) and a frame
+  size. It maps the surface onto `surface_size`, the reference resolution
+  apps render in, so tracking drivers (`ball`, `hand_pose`) emit coordinates
+  in that space whatever the camera angle.
 
-- ``camera -> display``: classic camera-to-projector mapping. Uses **all 4
-  corners** of every detected ArUco marker (not just centroids), giving
-  4x more correspondences and dramatically improved accuracy near the edges
-  where keystone distortion is worst.
-- ``camera -> surface``: optional camera-to-surface mapping, computed when
-  ``compute`` is called with a ``focus_quad`` (the 4 physical table corners
-  in normalised camera coords) and a ``surface_size`` (the canonical reference
-  resolution apps render in, defaults to 1920x1080). This is what tracking
-  drivers (``ball``, ``hand_pose``) should consume so the coordinates they
-  emit live directly in the apps' reference space, regardless of how the
-  camera is angled.
-
-Events:
-- `detection`: { detected, ids, corners } - latest marker observation.
-- `homography`: { matrix: number[9] | null, surface_matrix: number[9] | null }
-  - the most recent matrices (3x3 row-major flattened) or null.
-- `status`: { stage, message } - human-readable progress.
-
-Actions:
-- `set_marker_layout`: list of `{ id, x, y, size }` in display pixels.
-- `set_camera_event`: change which `(driver, event)` carries the camera frame
-  (defaults to ("camera", "frame")).
-- `compute`: aggregate the most recent detections and compute homography.
-  Accepts an optional dict ``{ focus_quad, surface_size, frame_size }`` to
-  also compute the camera->surface homography.
-- `clear`: reset accumulated detections.
-- `render_marker`: { id, size } -> { ok, png_base64 } -- generate an ArUco
-  marker PNG for the projector to display.
-- `get_latest_frame`: return the latest cached frame.
-- `reproject_point`: { x, y, space?: 'display'|'surface' } -> warped point.
-- `reproject_points`: { points: [{x,y}], space?: 'display'|'surface' }.
+Typical flow: `render_marker` for each marker, `set_marker_layout` with where
+they are drawn, then `compute` once enough markers are detected.
 """
 
 from __future__ import annotations
 
 import base64
+import threading
 import time
-from typing import Any, ClassVar
+from collections.abc import Mapping
+from typing import Annotated, Any, ClassVar, Literal
 
-from gosai_py.driver import BaseDriver, DriverContext
+import cv2
+import msgspec
+import numpy as np
+from msgspec import Meta
+
+from gosai_py.driver import BaseDriver, DriverContext, Event, action
+from gosai_py.geometry import homography
+from gosai_py.geometry.homography import MarkerPlacement
+from gosai_py.payloads import Ok, Point, PositiveInt, Size
 from gosai_py.serialization import frame_to_jpeg_base64
+
+ARUCO_DICTIONARY = cv2.aruco.DICT_4X4_50
+
+# A point as {x, y} or [x, y].
+PointLike = Point | Annotated[list[float], Meta(min_length=2, max_length=2)]
+Space = Literal["display", "surface"]
+
+
+class DetectionPayload(msgspec.Struct, kw_only=True):
+    detected: int
+    ids: list[int]
+    # 4 corners per marker (TL, TR, BR, BL) in camera pixels.
+    corners: list[list[list[float]]]
+    ts: float
+
+
+class HomographyPayload(msgspec.Struct, kw_only=True):
+    """3x3 matrices flattened row by row."""
+
+    matrix: list[float]
+    inverse: list[float]
+    surface_matrix: list[float] | None
+    surface_inverse: list[float] | None
+    ts: float
+
+
+class StatusPayload(msgspec.Struct, kw_only=True):
+    stage: str
+    message: str
+
+
+class LayoutResult(msgspec.Struct, kw_only=True):
+    count: int
+
+
+class CameraEventParams(msgspec.Struct, kw_only=True):
+    driver: str | None = None
+    event: str | None = None
+
+
+class CameraEventResult(msgspec.Struct, kw_only=True):
+    driver: str
+    event: str
+
+
+class ComputeParams(msgspec.Struct, kw_only=True):
+    # Surface corners TL, TR, BR, BL in normalised camera coordinates.
+    focus_quad: Annotated[list[PointLike], Meta(min_length=4, max_length=4)] | None = None
+    surface_size: Size | None = None
+    # Camera frame size; defaults to the last frame seen.
+    frame_size: Size | None = None
+
+
+class ComputeResult(msgspec.Struct, kw_only=True):
+    ok: bool = True
+    matrix: list[float]
+    inverse: list[float]
+    surface_matrix: list[float] | None
+    surface_inverse: list[float] | None
+    surface_quad_display: list[Point] | None
+    surface_size: Size
+    frame_size: Size | None
+    samples: int
+    markers: int
+    inliers: int
+    reprojection_error_mean: float
+    reprojection_error_max: float
+
+
+class RenderMarkerParams(msgspec.Struct, kw_only=True):
+    id: int = 0
+    size: PositiveInt = 200
+
+
+class MarkerImage(msgspec.Struct, kw_only=True):
+    ok: bool = True
+    id: int
+    size: int
+    png_base64: str
+
+
+class LatestFrame(msgspec.Struct, kw_only=True):
+    ok: bool = True
+    jpeg_base64: str
+    width: int | None = None
+    height: int | None = None
+    ts: float | None = None
+
+
+class ReprojectPointParams(msgspec.Struct, kw_only=True):
+    x: float
+    y: float
+    space: Space = "display"
+
+
+class ReprojectedPoint(msgspec.Struct, kw_only=True):
+    ok: bool = True
+    x: float
+    y: float
+
+
+class ReprojectPointsParams(msgspec.Struct, kw_only=True):
+    points: Annotated[list[PointLike], Meta(min_length=1)]
+    space: Space = "display"
+
+
+class ReprojectedPoints(msgspec.Struct, kw_only=True):
+    ok: bool = True
+    points: list[Point]
+
+
+def _xy(point: PointLike) -> tuple[float, float]:
+    return (point.x, point.y) if isinstance(point, Point) else (point[0], point[1])
 
 
 class CalibrationDriver(BaseDriver):
-    name: ClassVar[str] = "calibration"
-    description: ClassVar[str] = "Camera-projector calibration via ArUco markers."
-    events: ClassVar[tuple[str, ...]] = ("detection", "homography", "status")
-    stream_events: ClassVar[tuple[str, ...]] = ("detection",)
-    actions: ClassVar[tuple[str, ...]] = (
-        "set_marker_layout",
-        "set_camera_event",
-        "compute",
-        "clear",
-        "render_marker",
-        "get_latest_frame",
-        "reproject_point",
-        "reproject_points",
-    )
-    dependencies: ClassVar[tuple[str, ...]] = ("camera",)
-    subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("camera", "frame"),)
-    loop_interval_s: ClassVar[float | None] = None  # callback driven
+    name = "calibration"
+    description = "Camera-projector calibration via ArUco markers."
+    events: ClassVar[Mapping[str, Event]] = {
+        "detection": Event(DetectionPayload, "Markers found in the latest frame."),
+        "homography": Event(HomographyPayload, "Matrices from the last successful compute."),
+        "status": Event(StatusPayload, "Human-readable progress."),
+    }
+    stream_events = ("detection",)
+    dependencies = ("camera",)
+    subscribed = (("camera", "frame"),)
+    loop_interval_s = None
 
     def __init__(self, context: DriverContext) -> None:
         super().__init__(context)
-        self._camera_driver = "camera"
-        self._camera_event = "frame"
-        self._marker_layout: list[dict[str, float]] = []
-        # 4 corners per detected marker, in TL,TR,BR,BL order matching the
-        # marker's own coordinate system (same convention as cv2.aruco).
-        self._last_detections: dict[int, list[tuple[float, float]]] = {}
-        self._latest_frame_b64: str | None = None
+        self._detector = cv2.aruco.ArucoDetector(
+            cv2.aruco.getPredefinedDictionary(ARUCO_DICTIONARY), cv2.aruco.DetectorParameters()
+        )
+        self._lock = threading.Lock()
+        self._camera = ("camera", "frame")
+        self._layout: list[MarkerPlacement] = []
+        # Latest 4 corners per marker id, (4, 2) camera pixels.
+        self._detections: dict[int, np.ndarray] = {}
         self._latest_frame: Any = None
-        self._latest_frame_meta: dict[str, Any] | None = None
-        # Last computed matrices, kept so reproject_point can run without
-        # re-deriving them. ``None`` until compute succeeds.
-        self._homography: Any = None  # ndarray (3, 3) camera->display
-        self._homography_surface: Any = None  # ndarray (3, 3) camera->surface
-
-    # ------------------------------------------------------------------
-    # Frame handling
-    # ------------------------------------------------------------------
+        self._latest_jpeg: str | None = None
+        self._latest_meta: dict[str, Any] = {}
+        self._display: homography.Matrix | None = None
+        self._surface: homography.Matrix | None = None
 
     def on_data(self, driver: str, event: str, data: Any) -> None:
         if not isinstance(data, dict):
@@ -95,303 +185,88 @@ class CalibrationDriver(BaseDriver):
         encoded = data.get("jpeg_base64")
         if frame is None and not isinstance(encoded, str):
             return
-        # Cache the latest frame so `get_latest_frame` can return it without
-        # re-asking the camera driver synchronously. Raw frames avoid Python-side
-        # JPEG encode/decode during detection.
-        self._latest_frame = frame.copy() if frame is not None and hasattr(frame, "copy") else frame
-        self._latest_frame_b64 = encoded if isinstance(encoded, str) else None
-        self._latest_frame_meta = {
-            "width": data.get("width"),
-            "height": data.get("height"),
-            "ts": data.get("ts"),
-        }
-        try:
-            if frame is not None:
-                self._detect(frame)
-            elif isinstance(encoded, str):
-                self._detect_encoded(encoded)
-        except Exception as exc:
-            self.log("error", f"detection failed: {exc!r}")
-
-    def _detect_encoded(self, jpeg_base64: str) -> None:
-        try:
-            import cv2  # type: ignore[import-not-found]
-            import numpy as np  # type: ignore[import-not-found]
-        except ImportError as exc:
-            self.log("error", f"opencv/numpy required: {exc}")
-            return
-
-        img_bytes = base64.b64decode(jpeg_base64)
-        arr = np.frombuffer(img_bytes, dtype=np.uint8)
-        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        with self._lock:
+            self._latest_frame = frame
+            self._latest_jpeg = encoded if isinstance(encoded, str) else None
+            self._latest_meta = {k: data.get(k) for k in ("width", "height", "ts")}
+        if frame is None and isinstance(encoded, str):
+            # An event such as camera.color only carries the JPEG.
+            frame = cv2.imdecode(np.frombuffer(base64.b64decode(encoded), np.uint8), cv2.IMREAD_COLOR)
         if frame is not None:
             self._detect(frame)
 
     def _detect(self, frame: Any) -> None:
-        try:
-            import cv2  # type: ignore[import-not-found]
-        except ImportError as exc:
-            self.log("error", f"opencv required: {exc}")
-            return
-
-        aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
-        params = cv2.aruco.DetectorParameters()
-        detector = cv2.aruco.ArucoDetector(aruco_dict, params)
-        corners, ids, _ = detector.detectMarkers(frame)
-
-        if ids is None or len(ids) == 0:
-            self.emit("detection", {"detected": 0, "ids": [], "corners": []})
-            return
-
-        ids_flat: list[int] = [int(i) for i in ids.flatten().tolist()]
-        corners_list: list[list[list[float]]] = []
-        for idx, c in enumerate(corners):
-            arr_c = c.reshape(-1, 2).tolist()
-            pts = [(float(p[0]), float(p[1])) for p in arr_c]
-            corners_list.append([[p[0], p[1]] for p in pts])
-            # Store all 4 corners (TL, TR, BR, BL) keyed by marker id so the
-            # homography compute step can build 4x as many correspondences
-            # as the legacy centroid-only version.
-            self._last_detections[int(ids_flat[idx])] = pts
-
+        corners, ids, _ = self._detector.detectMarkers(frame)
+        found = [] if ids is None else [int(i) for i in ids.reshape(-1)]
+        marker_corners = [np.asarray(c, dtype=np.float64).reshape(4, 2) for c in corners[: len(found)]]
+        with self._lock:
+            self._detections.update(zip(found, marker_corners, strict=True))
         self.emit(
             "detection",
-            {"detected": len(ids_flat), "ids": ids_flat, "corners": corners_list, "ts": time.time()},
+            {
+                "detected": len(found),
+                "ids": found,
+                "corners": [c.tolist() for c in marker_corners],
+                "ts": time.time(),
+            },
         )
 
-    # ------------------------------------------------------------------
-    # Actions
-    # ------------------------------------------------------------------
+    @action("Set where the markers are drawn on the display. Clears detections.")
+    def set_marker_layout(self, layout: list[MarkerPlacement]) -> LayoutResult:
+        with self._lock:
+            self._layout = layout
+            self._detections.clear()
+        self.emit("status", {"stage": "configured", "message": f"layout with {len(layout)} markers"})
+        return LayoutResult(count=len(layout))
 
-    def execute(self, action: str, data: Any) -> Any:
-        if action == "set_marker_layout":
-            if not isinstance(data, list):
-                raise ValueError("marker_layout must be a list of {id, x, y, size}")
-            self._marker_layout = [self._validate_marker(m) for m in data]
-            self._last_detections.clear()
-            self.emit("status", {"stage": "configured", "message": f"layout with {len(self._marker_layout)} markers"})
-            return {"count": len(self._marker_layout)}
+    @action("Detect markers in another event with `_frame` or `jpeg_base64` (default camera.frame).")
+    def set_camera_event(self, params: CameraEventParams | None) -> CameraEventResult:
+        previous = self._camera
+        driver = params.driver if params and params.driver else previous[0]
+        event = params.event if params and params.event else previous[1]
+        self.unsubscribe(*previous)
+        self._camera = (driver, event)
+        self.subscribe(driver, event)
+        return CameraEventResult(driver=driver, event=event)
 
-        if action == "set_camera_event":
-            self.unsubscribe(self._camera_driver, self._camera_event)
-            if isinstance(data, dict):
-                self._camera_driver = str(data.get("driver", self._camera_driver))
-                self._camera_event = str(data.get("event", self._camera_event))
-            self.subscribe(self._camera_driver, self._camera_event)
-            return {"driver": self._camera_driver, "event": self._camera_event}
+    @action("Compute the homographies from the current detections.")
+    def compute(self, params: ComputeParams | None) -> ComputeResult:
+        params = params or ComputeParams()
+        with self._lock:
+            layout = list(self._layout)
+            detections = dict(self._detections)
+            meta = dict(self._latest_meta)
+        surface_size = params.surface_size or Size(width=1920, height=1080)
+        frame_size = params.frame_size
+        if frame_size is None and meta.get("width") and meta.get("height"):
+            frame_size = Size(width=int(meta["width"]), height=int(meta["height"]))
+        focus_quad = [_xy(p) for p in params.focus_quad] if params.focus_quad else None
 
-        if action == "compute":
-            return self._compute_homography(data)
-
-        if action == "clear":
-            self._last_detections.clear()
-            self.emit("status", {"stage": "cleared", "message": "accumulated detections cleared"})
-            return {"ok": True}
-
-        if action == "render_marker":
-            marker_id = int(data.get("id", 0)) if isinstance(data, dict) else int(data)
-            size = int(data.get("size", 200)) if isinstance(data, dict) else 200
-            return self._render_marker(marker_id, size)
-
-        if action == "get_latest_frame":
-            return self._get_latest_frame()
-
-        if action == "reproject_point":
-            return self._reproject_point(data)
-
-        if action == "reproject_points":
-            return self._reproject_points(data)
-
-        return super().execute(action, data)
-
-    def _get_latest_frame(self) -> dict[str, Any]:
-        if self._latest_frame_b64 is None and self._latest_frame is None:
-            raise RuntimeError("no camera frame received yet")
-        if self._latest_frame_b64 is None:
-            self._latest_frame_b64 = frame_to_jpeg_base64(self._latest_frame, quality=75)
-        payload: dict[str, Any] = {
-            "ok": True,
-            "jpeg_base64": self._latest_frame_b64,
-        }
-        if self._latest_frame_meta is not None:
-            payload.update({k: v for k, v in self._latest_frame_meta.items() if v is not None})
-        return payload
-
-    def _validate_marker(self, m: dict[str, Any]) -> dict[str, float]:
-        for key in ("id", "x", "y"):
-            if key not in m:
-                raise ValueError(f"marker missing key {key!r}")
-        return {
-            "id": float(m["id"]),
-            "x": float(m["x"]),
-            "y": float(m["y"]),
-            "size": float(m.get("size", 60)),
-        }
-
-    def _render_marker(self, marker_id: int, size: int) -> dict[str, Any]:
-        try:
-            import cv2  # type: ignore[import-not-found]
-        except ImportError as exc:
-            raise RuntimeError(f"opencv required: {exc}") from exc
-
-        aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
-        img = cv2.aruco.generateImageMarker(aruco_dict, marker_id, size)
-
-        ok, buf = cv2.imencode(".png", img)
-        if not ok:
-            raise RuntimeError("imencode failed")
-        png_b64 = base64.b64encode(buf.tobytes()).decode("ascii")
-        return {"ok": True, "id": marker_id, "size": size, "png_base64": png_b64}
-
-    def _compute_homography(self, params: Any = None) -> dict[str, Any]:
-        try:
-            import cv2  # type: ignore[import-not-found]
-            import numpy as np  # type: ignore[import-not-found]
-        except ImportError as exc:
-            raise RuntimeError(f"opencv/numpy required: {exc}") from exc
-
-        if len(self._marker_layout) < 4:
-            raise ValueError("need at least 4 markers in layout")
-
-        # ------------------------------------------------------------------
-        # Parse optional params: focus_quad (4 normalised camera points),
-        # surface_size (target reference resolution), frame_size (camera
-        # frame in pixels). When all three are present, we also compute the
-        # camera->surface homography.
-        # ------------------------------------------------------------------
-        focus_quad_norm: list[tuple[float, float]] | None = None
-        surface_w = 1920
-        surface_h = 1080
-        frame_w: int | None = None
-        frame_h: int | None = None
-        if isinstance(params, dict):
-            fq = params.get("focus_quad")
-            if isinstance(fq, list) and len(fq) == 4:
-                try:
-                    focus_quad_norm = [
-                        (float(_get_xy(p, 0)), float(_get_xy(p, 1))) for p in fq
-                    ]
-                except (TypeError, ValueError):
-                    focus_quad_norm = None
-            ss = params.get("surface_size")
-            if isinstance(ss, dict):
-                surface_w = int(ss.get("width", surface_w))
-                surface_h = int(ss.get("height", surface_h))
-            fs = params.get("frame_size")
-            if isinstance(fs, dict):
-                frame_w = int(fs.get("width", 0)) or None
-                frame_h = int(fs.get("height", 0)) or None
-        # Fall back to the last seen frame size for normalisation if the caller
-        # did not supply one explicitly.
-        if (frame_w is None or frame_h is None) and self._latest_frame_meta is not None:
-            frame_w = frame_w or int(self._latest_frame_meta.get("width") or 0) or None
-            frame_h = frame_h or int(self._latest_frame_meta.get("height") or 0) or None
-
-        # ------------------------------------------------------------------
-        # Build per-corner correspondences. For each detected marker we have
-        # 4 corners (TL, TR, BR, BL); we pair them with the corresponding
-        # corners of the projected marker in display space, computed from
-        # the layout's {x, y, size}.
-        # ------------------------------------------------------------------
-        display_pts: list[list[float]] = []
-        camera_pts: list[list[float]] = []
-        detected_markers = 0
-        for m in self._marker_layout:
-            mid = int(m["id"])
-            cam_corners = self._last_detections.get(mid)
-            if cam_corners is None or len(cam_corners) != 4:
-                continue
-            disp_corners = _marker_display_corners(m)
-            for (cx, cy), (dx, dy) in zip(cam_corners, disp_corners, strict=True):
-                camera_pts.append([cx, cy])
-                display_pts.append([dx, dy])
-            detected_markers += 1
-
-        if detected_markers < 4:
-            raise RuntimeError(f"only {detected_markers} markers detected, need 4")
-
-        display_arr = np.array(display_pts, dtype=np.float64)
-        camera_arr = np.array(camera_pts, dtype=np.float64)
-
-        # Full projective (perspective) homography with RANSAC handles
-        # keystone deformation from angled projectors and/or cameras.
-        h_matrix, mask = cv2.findHomography(
-            camera_arr,
-            display_arr,
-            method=cv2.RANSAC,
-            ransacReprojThreshold=5.0,
+        result = homography.compute_homographies(
+            layout,
+            detections,
+            focus_quad=focus_quad,
+            surface_size=(surface_size.width, surface_size.height),
+            frame_size=(frame_size.width, frame_size.height) if frame_size else None,
         )
-        if h_matrix is None:
-            raise RuntimeError("findHomography returned None")
+        with self._lock:
+            self._display = result.display
+            if result.surface is not None:
+                self._surface = result.surface
 
-        inlier_count = int(mask.sum()) if mask is not None else len(display_pts)
-
-        # Reprojection error (mean and max) over inliers.
-        reprojected = cv2.perspectiveTransform(
-            camera_arr.reshape(-1, 1, 2), h_matrix,
-        ).reshape(-1, 2)
-        errors = np.linalg.norm(reprojected - display_arr, axis=1)
-        if mask is not None:
-            inlier_mask = mask.ravel().astype(bool)
-            inlier_errors = errors[inlier_mask]
-        else:
-            inlier_errors = errors
-        mean_err = float(np.mean(inlier_errors)) if len(inlier_errors) > 0 else 0.0
-        max_err = float(np.max(inlier_errors)) if len(inlier_errors) > 0 else 0.0
-
-        # Inverse homography (display→camera) for downstream usage.
-        h_inv = np.linalg.inv(h_matrix)
-        h_inv /= h_inv[2, 2]
-
-        self._homography = h_matrix
-        flat = [float(v) for v in h_matrix.flatten().tolist()]
-        flat_inv = [float(v) for v in h_inv.flatten().tolist()]
-
-        # ------------------------------------------------------------------
-        # Surface homography (camera -> reference space) and focus_quad
-        # in display space (used by apps for CSS-based keystone correction).
-        # ------------------------------------------------------------------
-        surface_flat: list[float] | None = None
-        surface_inv_flat: list[float] | None = None
-        surface_quad_display: list[dict[str, float]] | None = None
-        if focus_quad_norm is not None and frame_w and frame_h:
-            quad_camera_px = np.array(
-                [[u * frame_w, v * frame_h] for (u, v) in focus_quad_norm],
-                dtype=np.float64,
-            )
-            surface_rect = np.array(
-                [
-                    [0.0, 0.0],
-                    [float(surface_w), 0.0],
-                    [float(surface_w), float(surface_h)],
-                    [0.0, float(surface_h)],
-                ],
-                dtype=np.float64,
-            )
-            h_surface, _ = cv2.findHomography(quad_camera_px, surface_rect, method=0)
-            if h_surface is not None:
-                h_surface_inv = np.linalg.inv(h_surface)
-                h_surface_inv /= h_surface_inv[2, 2]
-                self._homography_surface = h_surface
-                surface_flat = [float(v) for v in h_surface.flatten().tolist()]
-                surface_inv_flat = [float(v) for v in h_surface_inv.flatten().tolist()]
-                # Apply camera->display to the focus quad so apps know where
-                # the physical surface lives in the projector's coordinate
-                # frame (for CSS matrix3d keystone correction).
-                quad_disp = cv2.perspectiveTransform(
-                    quad_camera_px.reshape(-1, 1, 2), h_matrix,
-                ).reshape(-1, 2)
-                surface_quad_display = [
-                    {"x": float(p[0]), "y": float(p[1])} for p in quad_disp.tolist()
-                ]
-
+        matrix = homography.flatten(result.display)
+        inverse = homography.flatten(result.display_inverse)
+        surface = None if result.surface is None else homography.flatten(result.surface)
+        surface_inverse = (
+            None if result.surface_inverse is None else homography.flatten(result.surface_inverse)
+        )
         self.emit(
             "homography",
             {
-                "matrix": flat,
-                "inverse": flat_inv,
-                "surface_matrix": surface_flat,
-                "surface_inverse": surface_inv_flat,
+                "matrix": matrix,
+                "inverse": inverse,
+                "surface_matrix": surface,
+                "surface_inverse": surface_inverse,
                 "ts": time.time(),
             },
         )
@@ -400,102 +275,75 @@ class CalibrationDriver(BaseDriver):
             {
                 "stage": "computed",
                 "message": (
-                    f"homography from {detected_markers} markers "
-                    f"({len(display_pts)} corner pairs, {inlier_count} inliers), "
-                    f"reproj error {mean_err:.2f}px mean / {max_err:.2f}px max"
+                    f"homography from {result.markers} markers "
+                    f"({result.samples} corner pairs, {result.inliers} inliers), "
+                    f"reproj error {result.error_mean:.2f}px mean / {result.error_max:.2f}px max"
                 ),
             },
         )
-        return {
-            "ok": True,
-            "matrix": flat,
-            "inverse": flat_inv,
-            "surface_matrix": surface_flat,
-            "surface_inverse": surface_inv_flat,
-            "surface_quad_display": surface_quad_display,
-            "surface_size": {"width": surface_w, "height": surface_h},
-            "frame_size": (
-                {"width": int(frame_w), "height": int(frame_h)}
-                if frame_w and frame_h
-                else None
-            ),
-            "samples": len(display_pts),
-            "markers": detected_markers,
-            "inliers": inlier_count,
-            "reprojection_error_mean": round(mean_err, 3),
-            "reprojection_error_max": round(max_err, 3),
-        }
+        quad = result.surface_quad_display
+        return ComputeResult(
+            matrix=matrix,
+            inverse=inverse,
+            surface_matrix=surface,
+            surface_inverse=surface_inverse,
+            surface_quad_display=None if quad is None else [Point(x=float(x), y=float(y)) for x, y in quad],
+            surface_size=surface_size,
+            frame_size=frame_size,
+            samples=result.samples,
+            markers=result.markers,
+            inliers=result.inliers,
+            reprojection_error_mean=round(result.error_mean, 3),
+            reprojection_error_max=round(result.error_max, 3),
+        )
 
-    def _reproject_point(self, data: Any) -> dict[str, Any]:
-        if not isinstance(data, dict):
-            raise ValueError("expected { x, y, space? }")
-        try:
-            x = float(data["x"])
-            y = float(data["y"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError("expected numeric x, y") from exc
-        space = str(data.get("space", "display"))
-        h = self._homography_surface if space == "surface" else self._homography
-        if h is None:
+    @action("Forget accumulated detections.")
+    def clear(self) -> Ok:
+        with self._lock:
+            self._detections.clear()
+        self.emit("status", {"stage": "cleared", "message": "accumulated detections cleared"})
+        return Ok()
+
+    @action("Render an ArUco marker as a PNG. Accepts {id, size} or a bare id.")
+    def render_marker(self, params: RenderMarkerParams | int) -> MarkerImage:
+        if isinstance(params, int):
+            params = RenderMarkerParams(id=params)
+        dictionary = cv2.aruco.getPredefinedDictionary(ARUCO_DICTIONARY)
+        image = cv2.aruco.generateImageMarker(dictionary, params.id, params.size)
+        ok, buf = cv2.imencode(".png", image)
+        if not ok:
+            raise RuntimeError("PNG encoding failed")
+        return MarkerImage(
+            id=params.id, size=params.size, png_base64=base64.b64encode(buf.tobytes()).decode("ascii")
+        )
+
+    @action("The latest camera frame as a base64 JPEG.")
+    def get_latest_frame(self) -> LatestFrame:
+        with self._lock:
+            frame, encoded, meta = self._latest_frame, self._latest_jpeg, dict(self._latest_meta)
+        if encoded is None:
+            if frame is None:
+                raise RuntimeError("no camera frame received yet")
+            encoded = frame_to_jpeg_base64(frame, quality=75)
+        return LatestFrame(
+            jpeg_base64=encoded, width=meta["width"], height=meta["height"], ts=meta["ts"]
+        )
+
+    @action("Warp a camera pixel into display or surface space.")
+    def reproject_point(self, params: ReprojectPointParams) -> ReprojectedPoint:
+        [[x, y]] = homography.warp_points(self._matrix_for(params.space), [[params.x, params.y]])
+        return ReprojectedPoint(x=float(x), y=float(y))
+
+    @action("Warp camera pixels into display or surface space.")
+    def reproject_points(self, params: ReprojectPointsParams) -> ReprojectedPoints:
+        warped = homography.warp_points(
+            self._matrix_for(params.space), [_xy(p) for p in params.points]
+        )
+        return ReprojectedPoints(points=[Point(x=float(x), y=float(y)) for x, y in warped])
+
+    def _matrix_for(self, space: Space) -> homography.Matrix:
+        with self._lock:
+            matrix = self._surface if space == "surface" else self._display
+        if matrix is None:
             raise RuntimeError(f"homography for '{space}' not computed yet")
-        try:
-            import cv2  # type: ignore[import-not-found]
-            import numpy as np  # type: ignore[import-not-found]
-        except ImportError as exc:
-            raise RuntimeError(f"opencv/numpy required: {exc}") from exc
-        warped = cv2.perspectiveTransform(
-            np.array([[[x, y]]], dtype=np.float64), h,
-        ).reshape(-1, 2)
-        return {"ok": True, "x": float(warped[0][0]), "y": float(warped[0][1])}
-
-    def _reproject_points(self, data: Any) -> dict[str, Any]:
-        if not isinstance(data, dict):
-            raise ValueError("expected { points: [...], space? }")
-        raw_points = data.get("points")
-        if not isinstance(raw_points, list) or not raw_points:
-            raise ValueError("expected non-empty points list")
-        try:
-            pts = [(float(_get_xy(p, 0)), float(_get_xy(p, 1))) for p in raw_points]
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError("points must be [{x,y}] or [[x,y]]") from exc
-        space = str(data.get("space", "display"))
-        h = self._homography_surface if space == "surface" else self._homography
-        if h is None:
-            raise RuntimeError(f"homography for '{space}' not computed yet")
-        try:
-            import cv2  # type: ignore[import-not-found]
-            import numpy as np  # type: ignore[import-not-found]
-        except ImportError as exc:
-            raise RuntimeError(f"opencv/numpy required: {exc}") from exc
-        arr = np.array([[p] for p in pts], dtype=np.float64)
-        warped = cv2.perspectiveTransform(arr, h).reshape(-1, 2)
-        return {
-            "ok": True,
-            "points": [
-                {"x": float(p[0]), "y": float(p[1])} for p in warped.tolist()
-            ],
-        }
-
-
-def _get_xy(point: Any, axis: int) -> float:
-    """Read x/y from either a `{x, y}` dict or `[x, y]` sequence."""
-    if isinstance(point, dict):
-        key = "x" if axis == 0 else "y"
-        return float(point[key])
-    if isinstance(point, (list, tuple)) and len(point) > axis:
-        return float(point[axis])
-    raise ValueError("point must be {x, y} or [x, y]")
-
-
-def _marker_display_corners(m: dict[str, float]) -> list[tuple[float, float]]:
-    """Return the 4 corners of a marker layout entry in TL, TR, BR, BL order
-    (matching the cv2.aruco corner ordering convention)."""
-    cx = float(m["x"])
-    cy = float(m["y"])
-    half = float(m.get("size", 60)) / 2.0
-    return [
-        (cx - half, cy - half),
-        (cx + half, cy - half),
-        (cx + half, cy + half),
-        (cx - half, cy + half),
-    ]
+        return matrix

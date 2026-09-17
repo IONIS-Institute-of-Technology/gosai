@@ -77,6 +77,8 @@ export type ClientMessage =
   | MessageEnvelope<'experience:stop', { appSlug: string; experienceSlug: string }>
   | MessageEnvelope<'experiences:list', Record<string, never>>
   | MessageEnvelope<'drivers:list', Record<string, never>>
+  // Omit `driver` for every driver's schema. Returns `DriverSchemasResult`.
+  | MessageEnvelope<'drivers:schema', { driver?: string }>
   // `binding` identifies the requesting app (its slug) so the server can route
   // to the right per-app driver instance. Omitted => the `system` binding.
   | MessageEnvelope<'driver:get-data', { driver: string; event: string; binding?: string }>

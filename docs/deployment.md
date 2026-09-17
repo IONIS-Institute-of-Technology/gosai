@@ -130,7 +130,7 @@ Options: `--target <linux-x64|mac-arm64|win-x64>` (default: this machine),
 `--macos` (same as `--target mac-arm64`), `--experience <slug>` (default: the
 manifest's `default`), `--display <index>` (default: primary),
 `--python-extras <list>` (extra Python dependencies such as
-`speech,realsense`), `--windowed`, `--skip-build` (reuse the workspace and
+`speech`), `--windowed`, `--skip-build` (reuse the workspace and
 app builds).
 
 The bundle contains the same runtime as the regular desktop package

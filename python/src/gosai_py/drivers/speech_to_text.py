@@ -1,16 +1,13 @@
 """Speech-to-text driver (faster-whisper).
 
-Exposes a `transcribe` action that takes a 16 kHz mono float32 buffer and
-returns the recognized text via the `transcription` event. Apps decide when
-to call `transcribe` (typically after VAD flags end-of-utterance).
+`transcribe` takes a 16 kHz mono float32 buffer, returns the text and emits
+it as `transcription`. The driver doesn't subscribe to the microphone, since
+transcribing every block would be wasteful. Apps usually buffer
+`microphone.audio_stream`, watch `speech_activity_detection.activity` for the
+end of an utterance, then call `transcribe`.
 
-This driver does NOT auto-subscribe to the microphone because doing inference
-per-block would be wasteful. The expected pattern is:
-
-1. App subscribes to `microphone.audio_stream` and accumulates samples.
-2. App subscribes to `speech_activity_detection.activity` to know when to
-   transcribe.
-3. App calls `driver.execute('speech_to_text', 'transcribe', { audio_buffer })`.
+faster-whisper and CTranslate2 come with the `speech` extra, so they load when
+the driver starts.
 """
 
 from __future__ import annotations
@@ -18,9 +15,13 @@ from __future__ import annotations
 import ctypes
 import sys
 import time
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
-from gosai_py.driver import BaseDriver, DriverContext
+import msgspec
+
+from gosai_py.driver import BaseDriver, DriverContext, Event, action
+from gosai_py.payloads import AudioSamples, mono_samples
 from gosai_py.runtime import AcceleratorConfig, RuntimeInfo
 
 # CTranslate2 4.x is built against CUDA 12. The gpu extra's onnxruntime-gpu
@@ -66,12 +67,34 @@ def select_device(
     return "cpu", "CTranslate2 found no CUDA device"
 
 
+class TranscriptionPayload(msgspec.Struct, kw_only=True):
+    transcription: str
+    audio_duration_s: float
+    transcription_duration_s: float
+    ts: float
+
+
+class TranscribeParams(msgspec.Struct, kw_only=True):
+    audio_buffer: AudioSamples | None = None
+    samples: AudioSamples | None = None
+
+
+class TranscribeResult(TranscriptionPayload, kw_only=True):
+    ok: bool = True
+
+
+class ModelResult(msgspec.Struct, kw_only=True):
+    model: str
+    ok: bool
+
+
 class SpeechToTextDriver(BaseDriver):
-    name: ClassVar[str] = "speech_to_text"
-    description: ClassVar[str] = "Speech-to-text via faster-whisper."
-    events: ClassVar[tuple[str, ...]] = ("transcription",)
-    actions: ClassVar[tuple[str, ...]] = ("transcribe", "set_model")
-    loop_interval_s: ClassVar[float | None] = None  # callback driven
+    name = "speech_to_text"
+    description = "Speech-to-text via faster-whisper."
+    events: ClassVar[Mapping[str, Event]] = {
+        "transcription": Event(TranscriptionPayload, "Text of each transcribed buffer."),
+    }
+    loop_interval_s = None
 
     DEFAULT_MODEL_SIZE: ClassVar[str] = "medium.en"
     SAMPLE_RATE: ClassVar[int] = 16_000
@@ -81,35 +104,48 @@ class SpeechToTextDriver(BaseDriver):
         self._model: Any = None
         self._model_size = self.DEFAULT_MODEL_SIZE
         self._device = "cpu"
-        self._compute_type = "int8"
 
     def pre_run(self) -> None:
         self._load_model()
 
-    def execute(self, action: str, data: Any) -> Any:
-        if action == "transcribe":
-            if isinstance(data, dict):
-                buffer = data.get("audio_buffer") or data.get("samples")
-            else:
-                buffer = data
-            return self._transcribe(buffer)
-        if action == "set_model":
-            self._model_size = str(data)
-            self._model = None
-            self._load_model()
-            return {"model": self._model_size, "ok": self._model is not None}
-        return super().execute(action, data)
+    @action("Transcribe 16 kHz mono audio: a sample list, or {audio_buffer} / {samples}.")
+    def transcribe(self, params: TranscribeParams | AudioSamples) -> TranscribeResult:
+        if self._model is None:
+            raise RuntimeError("model not loaded")
+        if isinstance(params, TranscribeParams):
+            audio = params.audio_buffer or params.samples
+            if audio is None:
+                raise ValueError("transcribe needs audio_buffer or samples")
+        else:
+            audio = params
+        samples = mono_samples(audio)
+        start = time.time()
+        segments, _info = self._model.transcribe(samples, beam_size=5)
+        text = "".join(segment.text for segment in segments)
+        payload = {
+            "transcription": text,
+            "audio_duration_s": len(samples) / self.SAMPLE_RATE,
+            "transcription_duration_s": time.time() - start,
+            "ts": time.time(),
+        }
+        self.emit("transcription", payload)
+        return TranscribeResult(**payload)
 
-    # ------------------------------------------------------------------
-    # Internals
-    # ------------------------------------------------------------------
+    @action("Load another Whisper model, such as `small.en` or `large-v3`.")
+    def set_model(self, model: str) -> ModelResult:
+        self._model_size = model
+        self._model = None
+        self._load_model()
+        return ModelResult(model=self._model_size, ok=self._model is not None)
 
     def _load_model(self) -> None:
         try:
-            import ctranslate2  # type: ignore[import-not-found]
-            from faster_whisper import WhisperModel  # type: ignore[import-not-found]
+            import ctranslate2  # pyright: ignore[reportMissingImports]
+            from faster_whisper import WhisperModel  # pyright: ignore[reportMissingImports]
         except ImportError as exc:
-            raise RuntimeError(f"faster-whisper required: {exc}") from exc
+            raise RuntimeError(
+                f"speech_to_text needs the speech extra (uv sync --extra speech): {exc}"
+            ) from exc
         config = AcceleratorConfig.from_env()
         cuda_devices = ctranslate2.get_cuda_device_count()
         self._device, reason = select_device(
@@ -117,17 +153,13 @@ class SpeechToTextDriver(BaseDriver):
         )
         if reason is not None:
             self.log("info", f"faster-whisper runs on CPU: {reason}")
-        self._compute_type = "float16" if self._device == "cuda" else "int8"
-        try:
-            self._model = WhisperModel(
-                self._model_size,
-                device=self._device,
-                device_index=config.cuda_device_id if self._device == "cuda" else 0,
-                compute_type=self._compute_type,
-            )
-        except Exception as exc:
-            self.log("error", f"failed to load whisper model {self._model_size}: {exc!r}")
-            raise
+        compute_type = "float16" if self._device == "cuda" else "int8"
+        self._model = WhisperModel(
+            self._model_size,
+            device=self._device,
+            device_index=config.cuda_device_id if self._device == "cuda" else 0,
+            compute_type=compute_type,
+        )
         info = RuntimeInfo(
             backend="faster-whisper",
             provider="CTranslate2",
@@ -141,28 +173,3 @@ class SpeechToTextDriver(BaseDriver):
             info["reason"] = reason
         self.set_runtime_info(info)
         self.log("info", f"whisper model loaded: {self._model_size} on {self._device}")
-
-    def _transcribe(self, audio: Any) -> dict[str, Any]:
-        if self._model is None:
-            raise RuntimeError("model not loaded")
-        if audio is None:
-            raise ValueError("audio buffer is None")
-        import numpy as np  # type: ignore[import-not-found]
-
-        arr = np.asarray(audio, dtype=np.float32)
-        if arr.ndim > 1:
-            arr = arr[:, 0]
-
-        start = time.time()
-        segments, _info = self._model.transcribe(arr, beam_size=5)
-        text = "".join(s.text for s in segments)
-        elapsed = time.time() - start
-
-        payload = {
-            "transcription": text,
-            "audio_duration_s": float(arr.shape[0]) / self.SAMPLE_RATE,
-            "transcription_duration_s": elapsed,
-            "ts": time.time(),
-        }
-        self.emit("transcription", payload)
-        return {"ok": True, **payload}

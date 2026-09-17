@@ -29,7 +29,6 @@ For NVIDIA GPUs and optional drivers, add extras (see `python/README.md`):
 
 ```bash
 cd python && uv sync --extra gpu --no-group cpu   # CUDA onnxruntime on NVIDIA GPUs
-cd python && uv sync --extra realsense   # Intel RealSense depth camera
 cd python && uv sync --extra speech      # Whisper speech recognition
 ```
 

@@ -36,7 +36,6 @@ Optional extras:
 
 ```bash
 uv sync --extra speech      # speech_to_text (faster-whisper)
-uv sync --extra realsense   # Intel RealSense depth camera, not on macOS
 ```
 
 faster-whisper depends on the CPU `onnxruntime`, which overwrites
@@ -92,13 +91,29 @@ Drivers declare their model files in `gosai_py.runtime.models`:
 
 ## Camera Modes
 
-The camera driver probes exact modes by asking OpenCV to open and decode frames
-for each candidate resolution/FPS through native, MJPG, and H264-style capture
-paths where supported. The dashboard only lists modes that pass this check.
+`camera.list_formats` opens the device, prefers MJPG, requests each standard
+resolution and keeps the sizes the camera actually decodes. Results are cached
+for 10 seconds. A device a camera instance already holds answers from the cache
+(or its current mode) with `in_use: true`, since a second handle would fail.
 
-When a selected mode is applied, the driver verifies the decoded frame size and
-reported FPS. If the camera falls back to a lower resolution, startup/action
-fails visibly instead of continuing with the wrong stream.
+A mode change stops capture and releases the device before opening it with
+the new settings, and restores the previous mode if the new one fails. When the
+camera rounds a requested resolution, the driver logs a warning and keeps the
+size it delivers.
+
+## Driver schemas
+
+Drivers declare their startup config, events and actions with msgspec types
+(see `gosai_py/driver.py`). The bridge's `list-drivers` reply includes each
+driver's JSON Schema under `schema`; `gosai_py/schemas.py` documents its shape.
+Resolve each driver's `$ref`s against its own `$defs`, since type names repeat
+across drivers. The server serves the schemas through the `drivers:schema`
+WebSocket command, and `DriverInfo.schemaVersion` changes when one does.
+To print every built-in driver's description:
+
+```bash
+uv run python -m gosai_py.schemas
+```
 
 ## Run the bridge directly (for development)
 

@@ -45,6 +45,7 @@ export const ClientCommands = {
   ExperienceList: 'experiences:list',
 
   DriverListAvailable: 'drivers:list',
+  DriverSchemas: 'drivers:schema',
   DriverGetData: 'driver:get-data',
   DriverExecute: 'driver:execute',
   DriverSubscribe: 'driver:subscribe',

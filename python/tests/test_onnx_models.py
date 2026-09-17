@@ -97,7 +97,7 @@ def test_ball_model_detects_on_cpu() -> None:
     tensor, scale, pad = ball._preprocess(frame, size)
     outputs = session.run(None, {name: tensor})
 
-    assert info["provider"] == "CPUExecutionProvider"
+    assert info.get("provider") == "CPUExecutionProvider"
     assert tensor.shape == (1, 3, *size)
     assert outputs[0].shape[0] == 1 and outputs[0].shape[-1] == 6
     detections = ball._postprocess(outputs, scale, pad, 0.7, 10.0, 100.0, 1.6)
