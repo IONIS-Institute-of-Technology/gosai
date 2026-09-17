@@ -38,11 +38,14 @@ export async function bootRuntime(options: BootOptions): Promise<BootedRuntime> 
   const pythonDir = await preparePython(options, warnings);
 
   splash.setStatus('Starting the GOSAI server…');
+  // From source the server finds the repository's apps/ itself.
+  const builtinAppsDir =
+    options.builtinAppsDir ?? (app.isPackaged ? join(process.resourcesPath, 'apps') : null);
   const runner = new ServerRunner({
     dashboardToken: options.dashboardToken,
     ...(pythonDir ? { pythonDir } : {}),
     ...(options.homeDir ? { homeDir: options.homeDir } : {}),
-    ...(options.builtinAppsDir ? { builtinAppsDir: options.builtinAppsDir } : {}),
+    ...(builtinAppsDir ? { builtinAppsDir } : {}),
   });
   try {
     runner.start();
