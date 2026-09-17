@@ -100,8 +100,9 @@ git init && git add . && git commit -m "initial"
 
 ```bash
 bun run typecheck
-bun run python:test
-bun run python:lint
+bun run lint
+bun run test
+bun run python:check
 ```
 
 End-to-end checks live in `packages/server/test/phase*-e2e.ts`. Each one

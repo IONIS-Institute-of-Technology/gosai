@@ -79,7 +79,14 @@ export async function ensurePythonRuntime(
   });
 
   const uv = resolveUv();
-  const args = ['sync', '--frozen', '--python', '3.12', ...extras.flatMap((e) => ['--extra', e])];
+  const args = [
+    'sync',
+    '--frozen',
+    '--no-dev',
+    '--python',
+    '3.12',
+    ...extras.flatMap((e) => ['--extra', e]),
+  ];
   onStatus('Installing Python and the CV driver dependencies…');
   await runUv(uv, args, pythonDir, join(runtimeDir, 'cpython'), onStatus);
 

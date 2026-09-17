@@ -112,8 +112,10 @@ To install a new app paste its git URL into the Apps tab of the dashboard.
 | `bun run test`             | Server tests                                      |
 | `bun run format:check`     | Prettier check across the workspace               |
 | `bun run python:sync`      | `uv sync` for the Python runtime                  |
-| `bun run python:lint`      | `ruff check src` for the Python runtime           |
+| `bun run python:lint`      | `ruff check` for the Python runtime               |
 | `bun run python:test`      | `pytest` for the Python runtime                   |
+| `bun run python:check`     | ruff, pyright and pytest for the Python runtime   |
+| `bun run training:lint`    | `ruff check` for the training pipeline            |
 | `bun run package:mac`      | Build server bin + macOS DMG (arm64+x64)          |
 | `bun run package:linux`    | Build server bin + Linux AppImage                 |
 | `bun run package:kiosk`    | Build a single-app kiosk bundle (see below)       |
