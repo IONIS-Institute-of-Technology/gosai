@@ -356,3 +356,47 @@ describe('ServerClient retained resources', () => {
     client.close();
   });
 });
+
+describe('ServerClient retained resources across reconnects', () => {
+  test('an acquire queued for a replaced connection runs once, on the new one', async () => {
+    const { client, sockets, latest } = setup();
+    client.connect();
+    latest().accept();
+    const log: string[] = [];
+    let slowRelease: () => void = () => undefined;
+    // A slow release of an earlier holder keeps the queue for this key busy.
+    const earlier = client.retain('pose', {
+      acquire: async () => {
+        log.push('acquire-1');
+      },
+      release: () =>
+        new Promise<void>((resolve) => {
+          log.push('release-1');
+          slowRelease = resolve;
+        }),
+    });
+    await settle();
+    earlier.release();
+    const held = client.retain('pose', {
+      acquire: async () => {
+        log.push(`acquire-2@${sockets.length}`);
+      },
+      release: async () => {
+        log.push('release-2');
+      },
+    });
+    await settle();
+    // The connection drops and comes back while the queue is still blocked.
+    latest().drop();
+    await settle();
+    latest().accept('c2');
+    slowRelease();
+    await settle();
+    await held.ready;
+    expect(log).toEqual(['acquire-1', 'release-1', 'acquire-2@2']);
+    held.release();
+    await settle();
+    expect(log.at(-1)).toBe('release-2');
+    client.close();
+  });
+});

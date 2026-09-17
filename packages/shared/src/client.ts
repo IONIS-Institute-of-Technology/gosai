@@ -140,6 +140,8 @@ interface Holding {
   count: number;
   readonly ready: Promise<void>;
   settle: { resolve: () => void; reject: (err: unknown) => void } | null;
+  /** Connection generation the resource was last acquired in, if any. */
+  acquiredIn: number | null;
 }
 
 type Listener = (payload: never) => void;
@@ -159,6 +161,8 @@ export class ServerClient {
   private readonly holdings = new Map<string, Holding>();
   /** Last queued acquire or release per retained key, so they reach the server in order. */
   private readonly retainQueues = new Map<string, Promise<void>>();
+  /** Bumped for every welcomed connection; retained resources belong to one. */
+  private generation = 0;
 
   constructor(private readonly options: ServerClientOptions) {
     this.reconnectDelay = options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS;
@@ -317,7 +321,7 @@ export class ServerClient {
       });
       // Callers may ignore `ready`; failures also reach onError.
       ready.catch(() => undefined);
-      const created: Holding = { resource, count: 1, ready, settle };
+      const created: Holding = { resource, count: 1, ready, settle, acquiredIn: null };
       holding = created;
       this.holdings.set(key, created);
       if (this.connected()) this.acquire(key, created);
@@ -333,7 +337,11 @@ export class ServerClient {
         if (held.count > 0 || this.holdings.get(key) !== held) return;
         this.holdings.delete(key);
         if (!this.connected()) return;
+        const generation = this.generation;
         this.enqueue(key, async () => {
+          // Only the connection that holds the resource can release it; a
+          // newer one never acquired it, and the server dropped the old one.
+          if (held.acquiredIn !== generation || this.generation !== generation) return;
           try {
             await held.resource.release();
           } catch (err) {
@@ -345,17 +353,23 @@ export class ServerClient {
   }
 
   private acquire(key: string, holding: Holding): void {
+    const generation = this.generation;
     this.enqueue(key, async () => {
+      // Skip a release that came first, an acquire queued for a connection
+      // that has since been replaced, and a second acquire on one connection.
       if (this.holdings.get(key) !== holding) return;
+      if (this.generation !== generation || holding.acquiredIn === generation) return;
       try {
         await holding.resource.acquire();
+        holding.acquiredIn = generation;
         holding.settle?.resolve();
-      } catch (err) {
-        holding.settle?.reject(err);
-        // A lost connection retries on reconnect; anything else is worth reporting.
-        if (!isNotConnectedError(err)) this.report(err, `acquiring ${key}`);
-      } finally {
         holding.settle = null;
+      } catch (err) {
+        // A lost connection retries on reconnect, and `ready` waits for it.
+        if (isNotConnectedError(err)) return;
+        holding.settle?.reject(err);
+        holding.settle = null;
+        this.report(err, `acquiring ${key}`);
       }
     });
   }
@@ -433,6 +447,7 @@ export class ServerClient {
 
   private handleWelcome(welcome: WelcomePayload): void {
     this.welcome = welcome;
+    this.generation += 1;
     this.reconnectDelay = this.options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS;
     const events = Array.from(this.listeners.keys());
     this.setStatus('connected');
