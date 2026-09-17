@@ -303,7 +303,7 @@ function applyKeystone(state: State, quad: readonly Point2D[] | null): void {
 // ---------------------------------------------------------------------------
 
 function wireDrivers(state: State, rt: ExperienceRuntimeContext): void {
-  // Balls: the Python ball driver emits `{ balls: [{x, y, r, vx, vy}, ...], count, ts }`
+  // Balls: the Python ball driver emits `{ balls: [{x, y, diameter, vx, vy}, ...], count, ts }`
   // and `{ fps: number }`.
   state.subs.push(
     rt.drivers.on('ball', 'balls', (data) => {
@@ -335,7 +335,7 @@ function wireDrivers(state: State, rt: ExperienceRuntimeContext): void {
   );
 }
 
-type ParsedBall = { x: number; y: number; r: number; vx: number; vy: number };
+type ParsedBall = { x: number; y: number; diameter: number; vx: number; vy: number };
 
 function parseBalls(data: unknown): ParsedBall[] | null {
   if (data === null || data === undefined) return null;
@@ -355,20 +355,20 @@ function coerceBall(entry: unknown): ParsedBall | null {
     const obj = entry as {
       x?: unknown;
       y?: unknown;
-      r?: unknown;
+      diameter?: unknown;
       vx?: unknown;
       vy?: unknown;
     };
     const x = Number(obj.x);
     const y = Number(obj.y);
     if (Number.isFinite(x) && Number.isFinite(y)) {
-      const r = Number(obj.r);
+      const diameter = Number(obj.diameter);
       const vx = Number(obj.vx);
       const vy = Number(obj.vy);
       return {
         x,
         y,
-        r: Number.isFinite(r) && r > 0 ? r : 80,
+        diameter: Number.isFinite(diameter) && diameter > 0 ? diameter : 80,
         vx: Number.isFinite(vx) ? vx : 0,
         vy: Number.isFinite(vy) ? vy : 0,
       };

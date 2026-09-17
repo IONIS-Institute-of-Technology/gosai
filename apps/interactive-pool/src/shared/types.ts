@@ -15,7 +15,7 @@ export const REF_HEIGHT = 1080;
 export interface Ball {
   x: number;
   y: number;
-  r: number;
+  diameter: number;
   /** Smoothed velocity in px/s (reference space). 0 when unknown. */
   vx: number;
   vy: number;

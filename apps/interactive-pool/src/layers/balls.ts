@@ -36,7 +36,7 @@ export function createBallsLayer(feed: PoolFeed): Layer {
       for (const ball of feed.balls.balls) {
         const x = ball.x + ball.vx * dt;
         const y = ball.y + ball.vy * dt;
-        strokeCircle(ctx, x, y, ball.r || BALL_DIAMETER, BALL_STROKE, BALL_COLOR);
+        strokeCircle(ctx, x, y, ball.diameter || BALL_DIAMETER, BALL_STROKE, BALL_COLOR);
       }
 
       // Detection FPS read-out, mirrored to the bottom-right of the legacy
