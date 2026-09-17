@@ -288,7 +288,10 @@ function AppRow({
     !!requirements.speaker;
   const hasCalibration = calibrationSchema !== undefined;
   const requiresCalibration = calibrationSchema?.required === true;
-  const experiences = app.manifest.experiences;
+  // A custom calibration experience runs through Calibrate, not as a normal experience.
+  const experiences = app.manifest.experiences.filter(
+    (e) => e.slug !== calibrationSchema?.experience,
+  );
   const defaultExp =
     experiences.find((e) => e.slug === app.manifest.default) ?? experiences[0] ?? null;
   const anyRunning = running.length > 0;
@@ -310,8 +313,13 @@ function AppRow({
   }, [client, app.manifest.slug]);
 
   useEffect(() => {
-    if (hasCalibration) void probeCalibration();
-  }, [hasCalibration, probeCalibration]);
+    if (!hasCalibration) return;
+    void probeCalibration();
+    // Saves from anywhere: this row, a kiosk flow, or the app's own experience.
+    return client.on('calibration:changed', (payload) => {
+      if (payload.appSlug === app.manifest.slug) void probeCalibration();
+    });
+  }, [client, app.manifest.slug, hasCalibration, probeCalibration]);
 
   // Lazily load the shared device catalog the first time this row opens.
   useEffect(() => {

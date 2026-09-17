@@ -32,6 +32,9 @@ export const ServerEvents = {
   ExperienceStateChanged: 'experience:state-changed',
   ExperiencesListChanged: 'experiences:list-changed',
 
+  /** An app's calibration profile was saved. */
+  CalibrationChanged: 'calibration:changed',
+
   Stats: 'system:stats',
 } as const;
 
@@ -158,6 +161,7 @@ export const EVENTS: { readonly [E in FixedServerEventName]: EventSpec<E> } = {
   'apps:list-changed': { capability: Capabilities.AppsRead },
   'experience:state-changed': { capability: Capabilities.ExperiencesRead },
   'experiences:list-changed': { capability: Capabilities.ExperiencesRead },
+  'calibration:changed': { capability: Capabilities.StorageRead, apps: (p) => [p.appSlug] },
   'system:stats': { capability: Capabilities.SystemRead },
 };
 

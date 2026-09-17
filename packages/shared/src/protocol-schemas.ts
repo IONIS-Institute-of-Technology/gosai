@@ -249,6 +249,7 @@ export const eventSchemas = {
   }),
   'experience:state-changed': runningExperienceSchema,
   'experiences:list-changed': z.object({ experiences: z.array(runningExperienceSchema) }),
+  'calibration:changed': z.object({ appSlug: z.string(), calibrated: z.boolean() }),
   'system:stats': systemStatsSchema,
 } as const;
 

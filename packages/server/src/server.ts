@@ -116,6 +116,8 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
     getManifest: (slug) => apps.getManifest(slug),
     storage,
     logger: logger.child('calibration'),
+    onChanged: (appSlug, { calibrated }) =>
+      bus.emit(ServerEvents.CalibrationChanged, { appSlug, calibrated }, 'calibration'),
   });
 
   const monitor = new SystemMonitor({ bus, logger: logger.child('monitor') });

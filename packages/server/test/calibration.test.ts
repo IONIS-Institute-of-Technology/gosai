@@ -45,6 +45,7 @@ function setup(): {
   store: CalibrationStore;
   storage: AppStorage & { dataDir: string };
   logs: string[];
+  changes: Array<{ appSlug: string; calibrated: boolean }>;
 } {
   const dataDir = mkdtempSync(join(tmpdir(), 'gosai-calibration-'));
   const storage = Object.assign(new AppStorage({ data: dataDir }), { dataDir });
@@ -54,13 +55,15 @@ function setup(): {
     plain: manifest('plain'),
   };
   const logs: string[] = [];
+  const changes: Array<{ appSlug: string; calibrated: boolean }> = [];
   const store = new CalibrationStore({
+    onChanged: (appSlug, { calibrated }) => changes.push({ appSlug, calibrated }),
     getManifest: (slug) => manifests[slug],
     storage,
     logger: { info: (m) => logs.push(m), warn: (m) => logs.push(m) },
     now: () => 1234,
   });
-  return { store, storage, logs };
+  return { store, storage, logs, changes };
 }
 
 function writeLegacy(
@@ -91,7 +94,7 @@ describe('CalibrationStore', () => {
   });
 
   test('saves one versioned profile and derives "calibrated" from it', () => {
-    const { store, storage } = setup();
+    const { store, storage, changes } = setup();
     const saved = store.save('pool', { kind: 'camera-projector-surface', data: DATA });
     expect(saved).toEqual({
       version: 1,
@@ -102,10 +105,11 @@ describe('CalibrationStore', () => {
     expect(storage.get('pool', CALIBRATION_PROFILE_KEY)).toEqual({ found: true, value: saved });
     expect(storage.list('pool')).toEqual([CALIBRATION_PROFILE_KEY]);
     expect(store.get('pool')).toEqual({ profile: saved, calibrated: true });
+    expect(changes).toEqual([{ appSlug: 'pool', calibrated: true }]);
   });
 
   test('refuses profiles the manifest does not declare, and invalid data', () => {
-    const { store } = setup();
+    const { store, changes } = setup();
     expect(() => store.save('plain', { kind: 'camera-projector-surface', data: DATA })).toThrow(
       'does not declare calibration',
     );
@@ -119,6 +123,7 @@ describe('CalibrationStore', () => {
       }),
     ).toThrow('Invalid camera-projector-surface calibration: homography');
     expect(store.get('pool').profile).toBeNull();
+    expect(changes).toEqual([]);
   });
 
   test('custom kinds store any data', () => {

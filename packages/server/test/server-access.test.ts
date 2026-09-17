@@ -317,13 +317,24 @@ describe('calibration commands', () => {
       mintAppToken(SECRET, 'calibration', { driverBinding: 'pool', target: 'pool' }),
     );
     const pool = await connect(mintAppToken(SECRET, 'pool', { target: 'table' }));
+    const table = await connect(mintAppToken(SECRET, 'table'));
     try {
+      // The app itself hears about the save; another app can't even subscribe to it.
+      for (const client of [table, pool]) {
+        expect((await client.request('subscribe', { events: ['calibration:changed'] })).ok).toBe(
+          true,
+        );
+      }
+      const leaked: unknown[] = [];
+      pool.onEvent('calibration:changed', (payload) => leaked.push(payload));
+      const changed = table.nextEvent('calibration:changed');
       expect((await runner.request('calibration:get', { appSlug: 'table' })).data).toEqual({
         profile: null,
         calibrated: false,
       });
       const saved = await runner.request('calibration:save', { appSlug: 'table', profile });
       expect(saved.ok).toBe(true);
+      expect(await changed).toEqual({ appSlug: 'table', calibrated: true });
       expect((await runner.request('calibration:get', { appSlug: 'table' })).data).toMatchObject({
         calibrated: true,
         profile: { version: 1, kind: 'camera-projector-surface' },
@@ -355,7 +366,10 @@ describe('calibration commands', () => {
         profile: { kind: 'acme-depth', data: {} },
       });
       expect(wrongKind.error?.message).toContain('calibrates as camera-projector-surface');
+      expect((await pool.request('system:ping')).ok).toBe(true);
+      expect(leaked).toEqual([]);
     } finally {
+      table.close();
       runner.close();
       misdirected.close();
       pool.close();

@@ -298,6 +298,9 @@ if (calibration?.surfaceQuadDisplay) applyQuadWarp(canvas, calibration.surfaceQu
 
 `loadCalibrationProfile(rt, { kind })` returns the whole profile of any kind:
 `{ version, kind, savedAt, data }`.
+The server broadcasts `calibration:changed` with `{ appSlug, calibrated }`
+after each save, so a running experience can reload it:
+`rt.app.server.on('calibration:changed', reload)`.
 
 ### Custom flows
 

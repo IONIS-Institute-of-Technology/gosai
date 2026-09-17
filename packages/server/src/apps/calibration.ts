@@ -48,6 +48,8 @@ export interface CalibrationStoreOptions {
   readonly getManifest: (slug: string) => AppManifest | undefined;
   readonly storage: Pick<AppStorage, 'get' | 'set' | 'remove'>;
   readonly logger: Pick<ChildLogger, 'info' | 'warn'>;
+  /** Called after a save, e.g. to broadcast `calibration:changed`. */
+  readonly onChanged?: (appSlug: string, state: CalibrationState) => void;
   readonly now?: () => number;
 }
 
@@ -79,6 +81,7 @@ export class CalibrationStore {
     this.options.storage.set(appSlug, CALIBRATION_PROFILE_KEY, profile);
     this.removeLegacyKeys(appSlug);
     this.options.logger.info('calibration saved', { app: appSlug, kind: profile.kind });
+    this.options.onChanged?.(appSlug, { profile, calibrated: true });
     return profile;
   }
 
