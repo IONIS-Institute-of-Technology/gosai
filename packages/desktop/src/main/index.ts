@@ -1,6 +1,4 @@
 import { app, BrowserWindow } from 'electron';
-import { fileURLToPath } from 'node:url';
-import { dirname } from 'node:path';
 import { generateDashboardToken } from '@gosai/shared/auth';
 import { registerIpc } from './ipc.js';
 import { installWebContentsGuards } from './security.js';
@@ -10,9 +8,6 @@ import { ServerRunner, shouldAutostartServer } from './server-runner.js';
 import { applyKioskPaths, resolveKioskConfig, runKiosk } from './kiosk.js';
 import { ensurePythonRuntime } from './python-bootstrap.js';
 import { SplashWindow } from './splash.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 
 function configureLinuxWindowingBackend(): void {
   if (process.platform !== 'linux') return;
@@ -38,7 +33,7 @@ if (kioskConfig) applyKioskPaths(kioskConfig);
 const dashboardToken = process.env.GOSAI_DASHBOARD_TOKEN || generateDashboardToken();
 delete process.env.GOSAI_DASHBOARD_TOKEN;
 
-const windows = new WindowRegistry({ rootDir: __dirname, dashboardToken });
+const windows = new WindowRegistry({ rootDir: import.meta.dirname, dashboardToken });
 let serverRunner: ServerRunner | null = null;
 
 installWebContentsGuards((contents) => windows.isAppWindow(contents));

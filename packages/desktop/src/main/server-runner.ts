@@ -183,7 +183,7 @@ export class ServerRunner {
       if (existsSync(candidate)) return { bin: candidate, args: [] };
     }
     // Dev/local: run the server source with bun.
-    const repoServer = resolve(__dirname, '..', '..', '..', 'server', 'src', 'index.ts');
+    const repoServer = resolve(import.meta.dirname, '..', '..', '..', 'server', 'src', 'index.ts');
     if (existsSync(repoServer)) {
       const bun = findBun();
       if (bun) {
