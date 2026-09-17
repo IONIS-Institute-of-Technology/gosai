@@ -16,6 +16,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
+import threading
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -26,6 +28,9 @@ type LogFn = Callable[[str, str], None]
 
 LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1"
 DOWNLOAD_TIMEOUT_S = 60.0
+
+_download_locks: dict[str, threading.Lock] = {}
+_download_locks_guard = threading.Lock()
 
 
 class ModelUnavailableError(RuntimeError):
@@ -110,21 +115,37 @@ def _check_bundled(model: Model, path: Path) -> Path:
     return path
 
 
+def _download_lock(filename: str) -> threading.Lock:
+    with _download_locks_guard:
+        return _download_locks.setdefault(filename, threading.Lock())
+
+
 def _ensure_download(model: Model, log_fn: LogFn) -> Path:
     assert model.url is not None and model.sha256 is not None
     target = models_dir() / model.filename
-    if target.exists():
-        if file_sha256(target) == model.sha256:
-            return target
-        log_fn("warn", f"cached {model.filename} doesn't match its sha256; downloading again")
+    # Drivers in one bridge share this lock. Each download also writes its own
+    # temp file and renames it into place, so other processes can't collide.
+    with _download_lock(model.filename):
+        if target.exists():
+            if file_sha256(target) == model.sha256:
+                return target
+            log_fn("warn", f"cached {model.filename} doesn't match its sha256; downloading again")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _download(model, target, log_fn)
+    return target
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    part = target.with_name(target.name + ".part")
+
+def _download(model: Model, target: Path, log_fn: LogFn) -> None:
+    assert model.url is not None
     log_fn("info", f"downloading {model.filename} from {model.url}")
+    fd, part_name = tempfile.mkstemp(
+        dir=target.parent, prefix=f".{model.filename}.", suffix=".part"
+    )
+    part = Path(part_name)
     try:
         with (
+            os.fdopen(fd, "wb") as fp,
             urllib.request.urlopen(model.url, timeout=DOWNLOAD_TIMEOUT_S) as response,
-            part.open("wb") as fp,
         ):
             while chunk := response.read(1024 * 1024):
                 fp.write(chunk)
@@ -133,7 +154,7 @@ def _ensure_download(model: Model, log_fn: LogFn) -> Path:
             raise ModelUnavailableError(
                 f"download of {model.filename} has sha256 {actual}, expected {model.sha256}"
             )
-        part.replace(target)
+        os.replace(part, target)
     except OSError as exc:
         raise ModelUnavailableError(
             f"could not download {model.filename} from {model.url}: {exc}"
@@ -141,4 +162,3 @@ def _ensure_download(model: Model, log_fn: LogFn) -> Path:
     finally:
         part.unlink(missing_ok=True)
     log_fn("info", f"downloaded {model.filename}")
-    return target

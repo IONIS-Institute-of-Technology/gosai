@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -98,6 +101,47 @@ def test_download_with_wrong_sha256_leaves_nothing(
     with pytest.raises(ModelUnavailableError, match="expected 00"):
         resolve_model(model, _log)
     assert list((tmp_path / "home" / "models").iterdir()) == []
+
+
+def test_concurrent_downloads_of_one_model_both_succeed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GOSAI_HOME", str(tmp_path / "home"))
+    requests: list[str] = []
+
+    class SlowResponse(io.BytesIO):
+        def read(self, size: int | None = -1) -> bytes:
+            time.sleep(0.05)
+            return super().read(4)
+
+    def urlopen(url: str, timeout: float) -> SlowResponse:
+        requests.append(url)
+        return SlowResponse(CONTENT)
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    model = Model.download("m.task", url="https://example.com/m.task", sha256=CONTENT_SHA)
+    results: list[Path] = []
+    errors: list[BaseException] = []
+    start = threading.Barrier(2)
+
+    def resolve() -> None:
+        start.wait()
+        try:
+            results.append(resolve_model(model, _log))
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=resolve) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert len(results) == 2 and results[0] == results[1]
+    assert results[0].read_bytes() == CONTENT
+    assert requests == ["https://example.com/m.task"]
+    assert [p.name for p in results[0].parent.iterdir()] == ["m.task"]
 
 
 def test_download_failure_names_the_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
