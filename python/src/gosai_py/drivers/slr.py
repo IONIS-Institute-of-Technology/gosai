@@ -21,10 +21,15 @@ from __future__ import annotations
 
 import time
 from collections import deque
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 
-from gosai_py.driver import BaseDriver, DriverContext
+import msgspec
+import numpy as np
+
+from gosai_py.driver import BaseDriver, DriverContext, Event, action
+from gosai_py.payloads import Ok
 from gosai_py.runtime import create_onnx_session
 from gosai_py.runtime.models import Model, resolve_model
 
@@ -96,7 +101,8 @@ def _adapt_frame(frame: dict[str, Any], include_face: bool) -> list[float]:
 
     feats: list[float] = []
     if include_face:
-        face = frame.get("face_mesh") or []
+        # pose moves the mesh to `_face_mesh` when Node doesn't want it.
+        face = frame.get("_face_mesh") or frame.get("face_mesh") or []
         for idx in FACE_LM_IND:
             if idx < len(face) and face[idx]:
                 feats.extend((float(face[idx][0]) * s + ox, float(face[idx][1]) * s + oy))
@@ -108,18 +114,24 @@ def _adapt_frame(frame: dict[str, Any], include_face: bool) -> list[float]:
     return feats
 
 
+class SignPayload(msgspec.Struct, kw_only=True):
+    guessed_sign: str
+    probability: float
+
+
 class SLRDriver(BaseDriver):
     """Sign-language recognition over a rolling window of pose frames."""
 
-    name: ClassVar[str] = "slr"
-    description: ClassVar[str] = "Sign-language recognition from pose sequences (ONNX)."
-    events: ClassVar[tuple[str, ...]] = ("new_sign",)
-    actions: ClassVar[tuple[str, ...]] = ("set_actions",)
-    dependencies: ClassVar[tuple[str, ...]] = ("pose",)
-    subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("pose", "raw_data"),)
+    name = "slr"
+    description = "Sign-language recognition from pose sequences (ONNX)."
+    events: ClassVar[Mapping[str, Event]] = {
+        "new_sign": Event(SignPayload, "Most likely sign over the last 30 pose frames."),
+    }
+    dependencies = ("pose",)
+    subscribed = (("pose", "raw_data"),)
     # Each prediction covers a 30-frame sequence, so frames are queued, not skipped.
-    subscription_queue_size: ClassVar[int | None] = 60
-    loop_interval_s: ClassVar[float | None] = None
+    subscription_queue_size = 60
+    loop_interval_s = None
 
     def __init__(self, context: DriverContext) -> None:
         super().__init__(context)
@@ -129,13 +141,10 @@ class SLRDriver(BaseDriver):
         self._actions: list[str] = []
         self._frames: deque[list[float]] = deque(maxlen=SEQUENCE_LENGTH)
 
-    def execute(self, action: str, data: Any) -> Any:
-        if action == "set_actions":
-            if not isinstance(data, list) or not all(isinstance(a, str) for a in data):
-                raise ValueError("set_actions expects a list of strings")
-            self._load_model(data)
-            return {"ok": True}
-        return super().execute(action, data)
+    @action("Register the sign labels, in model output order. Selects slr_<count>.onnx.")
+    def set_actions(self, labels: list[str]) -> Ok:
+        self._load_model(labels)
+        return Ok()
 
     def _load_model(self, actions: list[str]) -> None:
         model = MODELS.get(len(actions))
@@ -167,8 +176,6 @@ class SLRDriver(BaseDriver):
         self._frames.append(_adapt_frame(data, self._include_face))
         if len(self._frames) < SEQUENCE_LENGTH:
             return
-
-        import numpy as np
 
         sequence = np.array([list(self._frames)], dtype=np.float32)
         start = time.perf_counter()

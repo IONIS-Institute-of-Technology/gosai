@@ -327,6 +327,12 @@ describe('WebSocket access', () => {
     try {
       expect((await client.request('subscribe', { events: ['*'] })).ok).toBe(true);
       expect((await client.request('config:get')).ok).toBe(true);
+      expect((await client.request('drivers:schema', {})).data).toEqual({ schemas: {} });
+      const unknown = await client.request('drivers:schema', { driver: 'nope' });
+      expect(unknown.error?.message).toBe('Unknown driver: nope');
+      expect((await client.request('drivers:schema', { driver: 7 })).error?.code).toBe(
+        'INVALID_PAYLOAD',
+      );
       expect((await client.request('app:config:get', { appSlug: 'other' })).ok).toBe(true);
     } finally {
       client.close();
@@ -392,6 +398,7 @@ describe('WebSocket access', () => {
       expect((await client.request('app:log', { source: 'app:pool:main', message: 'hi' })).ok).toBe(
         true,
       );
+      expect((await client.request('drivers:schema', {})).ok).toBe(true);
       expect((await client.request('system:ping')).ok).toBe(true);
     } finally {
       client.close();

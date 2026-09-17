@@ -26,17 +26,11 @@ with the training pipeline in the repo's ``training/`` folder, which also writes
 ``ball.onnx.json``; when present, the driver checks the model's sha256 against
 it. The input size comes from the ONNX model.
 
-Events:
-- ``balls``: list of ``{x, y, r}`` positions in display pixels.
-- ``fps``: rolling FPS estimate.
+Events and actions are declared with their types on the driver class. Each
+ball has a center ``x, y``, a ``diameter`` and a velocity ``vx, vy`` in px/s.
 
-Actions:
-- ``set_homography(matrix9)``
-- ``set_output_size({width, height})``
-- ``set_confidence(0..1)``
-- ``set_max_ball_px(px)`` / ``set_min_ball_px(px)``
-- ``set_frame_skip(n)``             — run YOLO every (n+1) frames; 0 = every frame
-- ``set_cuda_device(id)``           — NVIDIA GPU index (default 0)
+The letterbox preprocessing mirrors ``training/``'s ONNX export, which is a
+separate package and keeps its own copy.
 
 Environment (optional):
 - ``GOSAI_BALL_CONFIDENCE`` — detection confidence threshold 0..1 (default 0.70);
@@ -55,12 +49,21 @@ import math
 import os
 import time
 from collections import deque
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, ClassVar, NamedTuple
 
-from gosai_py.driver import BaseDriver, DriverContext
+import cv2
+import msgspec
+import numpy as np
+
+from gosai_py.driver import BaseDriver, DriverContext, Event, action
+from gosai_py.frames import capture_timing, latency_ms
+from gosai_py.geometry import homography
+from gosai_py.payloads import FpsPayload, Matrix3x3, Ok, Size, SizeResult
 from gosai_py.runtime import create_onnx_session
 from gosai_py.runtime.models import Model, resolve_model
+from gosai_py.smoothing import lerp
 
 MODEL = Model.bundled(Path(__file__).resolve().parent / "ball_models" / "ball.onnx")
 
@@ -85,15 +88,11 @@ class _Detection(NamedTuple):
     score: float
 
 
-# ── ONNX inference helpers ───────────────────────────────────────────────
-
 def _letterbox(img: Any, size: tuple[int, int]) -> tuple[Any, float, tuple[int, int]]:
     """Resize with aspect-preserving padding (letterbox) to (height, width).
 
     Returns the padded image, the scale factor, and (pad_top, pad_left).
     """
-    import cv2  # type: ignore[import-not-found]
-
     ih, iw = size
     h, w = img.shape[:2]
     scale = min(ih / h, iw / w)
@@ -118,9 +117,6 @@ def _input_spec(session: Any) -> tuple[str, tuple[int, int]]:
 
 def _preprocess(frame: Any, size: tuple[int, int]) -> tuple[Any, float, tuple[int, int]]:
     """BGR frame -> float32 NCHW tensor for ONNX."""
-    import cv2  # type: ignore[import-not-found]
-    import numpy as np  # type: ignore[import-not-found]
-
     img, scale, pad = _letterbox(frame, size)
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     img = img.astype(np.float32) / 255.0
@@ -142,8 +138,6 @@ def _postprocess(
     Each row is ``[x1, y1, x2, y2, confidence, class_id]`` in letterbox pixels.
     The model already performs duplicate suppression, so no NMS is required.
     """
-    import numpy as np  # type: ignore[import-not-found]
-
     preds = np.asarray(output[0])
     if preds.ndim == 3:
         preds = preds[0]  # [N, 6]
@@ -180,29 +174,22 @@ def _postprocess(
 
 def _warp_detections(
     detections: list[_Detection],
-    homography: Any,
+    matrix: homography.Matrix,
 ) -> list[_Detection]:
     if not detections:
         return []
-    import cv2  # type: ignore[import-not-found]
-    import numpy as np  # type: ignore[import-not-found]
-
-    centers = np.asarray([[[d.x, d.y]] for d in detections], dtype=np.float32)
-    warped = cv2.perspectiveTransform(centers, homography).reshape(-1, 2)
-
-    # Estimate radius scale locally by transforming one horizontal and one
+    centers = homography.warp_points(matrix, [[d.x, d.y] for d in detections])
+    # Estimate the radius scale locally by warping one horizontal and one
     # vertical radius endpoint, then averaging the distances in target space.
-    endpoints = np.asarray(
-        [[[d.x + d.r, d.y], [d.x, d.y + d.r]] for d in detections],
-        dtype=np.float32,
-    )
-    warped_endpoints = cv2.perspectiveTransform(endpoints, homography)
-    out: list[_Detection] = []
-    for idx, (x, y) in enumerate(warped):
-        r1 = float(np.linalg.norm(warped_endpoints[idx, 0] - warped[idx]))
-        r2 = float(np.linalg.norm(warped_endpoints[idx, 1] - warped[idx]))
-        out.append(_Detection(float(x), float(y), (r1 + r2) * 0.5, detections[idx].score))
-    return out
+    horizontal = homography.warp_points(matrix, [[d.x + d.r, d.y] for d in detections])
+    vertical = homography.warp_points(matrix, [[d.x, d.y + d.r] for d in detections])
+    radii = (
+        np.linalg.norm(horizontal - centers, axis=1) + np.linalg.norm(vertical - centers, axis=1)
+    ) / 2.0
+    return [
+        _Detection(float(x), float(y), float(r), d.score)
+        for (x, y), r, d in zip(centers, radii, detections, strict=True)
+    ]
 
 
 def _filter_output_bounds(
@@ -221,8 +208,6 @@ def _filter_output_bounds(
             filtered.append(det)
     return filtered
 
-
-# ── Minimal ball tracker ─────────────────────────────────────────────────
 
 # EMA weight for velocity estimation (velocity only -- positions pass raw).
 _VELOCITY_ALPHA = 0.5
@@ -244,8 +229,8 @@ class _TrackedBall:
         dt = max(t - self.last_seen_t, 1e-6)
         # Positions pass through raw; only velocity is lightly averaged so
         # renderer-side extrapolation doesn't jitter.
-        self.vx = _VELOCITY_ALPHA * ((det.x - self.x) / dt) + (1.0 - _VELOCITY_ALPHA) * self.vx
-        self.vy = _VELOCITY_ALPHA * ((det.y - self.y) / dt) + (1.0 - _VELOCITY_ALPHA) * self.vy
+        self.vx = lerp(self.vx, (det.x - self.x) / dt, _VELOCITY_ALPHA)
+        self.vy = lerp(self.vy, (det.y - self.y) / dt, _VELOCITY_ALPHA)
         self.x = det.x
         self.y = det.y
         self.r = det.r
@@ -329,25 +314,57 @@ class _BallTracker:
         return [t for t in self.tracks if t.missed <= self.render_miss]
 
 
-# ── Driver ───────────────────────────────────────────────────────────────
+class Ball(msgspec.Struct, kw_only=True):
+    """A tracked ball in output pixels."""
+
+    x: int
+    y: int
+    diameter: float
+    # Velocity in px/s, for extrapolating between detections.
+    vx: float
+    vy: float
+
+
+class BallsPayload(msgspec.Struct, kw_only=True):
+    balls: list[Ball]
+    count: int
+    ts: float
+    capture_ts: float
+    frame_age_ms: float
+    latency_ms: float
+
+
+class ConfidenceResult(msgspec.Struct, kw_only=True):
+    confidence: float
+
+
+class MaxBallResult(msgspec.Struct, kw_only=True):
+    max_ball_px: float
+
+
+class MinBallResult(msgspec.Struct, kw_only=True):
+    min_ball_px: float
+
+
+class FrameSkipResult(msgspec.Struct, kw_only=True):
+    frame_skip: int
+
+
+class CudaDeviceResult(msgspec.Struct, kw_only=True):
+    cuda_device_id: int
+
 
 class BallDriver(BaseDriver):
-    name: ClassVar[str] = "ball"
-    description: ClassVar[str] = "YOLO-based ball detector (ONNX Runtime)."
-    events: ClassVar[tuple[str, ...]] = ("balls", "fps")
-    stream_events: ClassVar[tuple[str, ...]] = ("balls", "fps")
-    actions: ClassVar[tuple[str, ...]] = (
-        "set_homography",
-        "set_output_size",
-        "set_confidence",
-        "set_max_ball_px",
-        "set_min_ball_px",
-        "set_frame_skip",
-        "set_cuda_device",
-    )
-    dependencies: ClassVar[tuple[str, ...]] = ("camera",)
-    subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("camera", "frame"),)
-    loop_interval_s: ClassVar[float | None] = None
+    name = "ball"
+    description = "YOLO-based ball detector (ONNX Runtime)."
+    events: ClassVar[Mapping[str, Event]] = {
+        "balls": Event(BallsPayload, "Balls tracked in the latest processed frame."),
+        "fps": Event(FpsPayload, "Detection rate over the last 50 frames."),
+    }
+    stream_events = ("balls", "fps")
+    dependencies = ("camera",)
+    subscribed = (("camera", "frame"),)
+    loop_interval_s = None
 
     DEFAULT_OUTPUT_SIZE: ClassVar[tuple[int, int]] = (1920, 1080)
 
@@ -356,7 +373,7 @@ class BallDriver(BaseDriver):
         self._session: Any = None
         self._input_name: str = ""
         self._input_size: tuple[int, int] = (0, 0)
-        self._homography: Any = None
+        self._homography: homography.Matrix | None = None
         self._output_size = self.DEFAULT_OUTPUT_SIZE
         self._confidence = _default_confidence()
         self._min_ball_px = 10.0
@@ -384,34 +401,43 @@ class BallDriver(BaseDriver):
         self._session = session
         self.set_runtime_info(dict(info))
 
-    def execute(self, action: str, data: Any) -> Any:
-        if action == "set_homography":
-            return self._set_homography(data)
-        if action == "set_output_size":
-            return self._set_output_size(data)
-        if action == "set_confidence":
-            self._confidence = max(0.01, min(1.0, float(data)))
-            return {"confidence": self._confidence}
-        if action == "set_max_ball_px":
-            self._max_ball_px = float(data)
-            return {"max_ball_px": self._max_ball_px}
-        if action == "set_min_ball_px":
-            self._min_ball_px = float(data)
-            return {"min_ball_px": self._min_ball_px}
-        if action == "set_frame_skip":
-            self._skip = max(0, int(data))
-            return {"frame_skip": self._skip}
-        if action == "set_cuda_device":
-            self._cuda_device_id = max(0, int(data))
-            self._session = None
-            self._load_session()
-            self.publish_state("running")
-            return {"cuda_device_id": self._cuda_device_id}
-        return super().execute(action, data)
+    @action("Set the camera->output homography (9 values, row-major).")
+    def set_homography(self, matrix: Matrix3x3) -> Ok:
+        self._homography = homography.to_matrix(matrix)
+        return Ok()
 
-    # ------------------------------------------------------------------
-    # Detection pipeline
-    # ------------------------------------------------------------------
+    @action("Set the output size balls are kept within once a homography is set.")
+    def set_output_size(self, size: Size) -> SizeResult:
+        self._output_size = (size.width, size.height)
+        return SizeResult(width=size.width, height=size.height)
+
+    @action("Set the detection confidence threshold (clamped to 0.01..1).")
+    def set_confidence(self, confidence: float) -> ConfidenceResult:
+        self._confidence = max(0.01, min(1.0, confidence))
+        return ConfidenceResult(confidence=self._confidence)
+
+    @action("Ignore detections larger than this, in camera pixels.")
+    def set_max_ball_px(self, px: float) -> MaxBallResult:
+        self._max_ball_px = px
+        return MaxBallResult(max_ball_px=px)
+
+    @action("Ignore detections smaller than this, in camera pixels.")
+    def set_min_ball_px(self, px: float) -> MinBallResult:
+        self._min_ball_px = px
+        return MinBallResult(min_ball_px=px)
+
+    @action("Run detection on one frame out of n + 1; 0 processes every frame.")
+    def set_frame_skip(self, skip: int) -> FrameSkipResult:
+        self._skip = max(0, skip)
+        return FrameSkipResult(frame_skip=self._skip)
+
+    @action("Reload the model on another CUDA device.")
+    def set_cuda_device(self, device: int) -> CudaDeviceResult:
+        self._cuda_device_id = max(0, device)
+        self._session = None
+        self._load_session()
+        self.publish_state("running")
+        return CudaDeviceResult(cuda_device_id=self._cuda_device_id)
 
     def on_data(self, driver: str, event: str, data: Any) -> None:
         if not isinstance(data, dict) or self._session is None:
@@ -421,15 +447,11 @@ class BallDriver(BaseDriver):
             raise RuntimeError("ball requires camera.frame payload with _frame")
 
         start = time.perf_counter()
-        capture_ts = data.get("capture_ts")
-        capture_ts_f = float(capture_ts) if isinstance(capture_ts, int | float) else time.time()
-        frame_age_ms = (time.time() - capture_ts_f) * 1000.0
+        capture_ts, frame_age_ms = capture_timing(data)
         self.record("frame_age_ms", frame_age_ms)
 
-        # Optional frame skipping (default 0 = every frame).  On skipped
-        # frames we don't re-emit anything: the renderer keeps the last
-        # outline visible until the next detection refreshes it, which
-        # avoids ghost outlines and reduces apparent jitter.
+        # On skipped frames nothing is emitted: the renderer keeps the last
+        # outline until the next detection, which avoids ghost outlines.
         self._frame_idx += 1
         if self._skip > 0 and self._frame_idx % (self._skip + 1) != 0:
             return
@@ -448,10 +470,8 @@ class BallDriver(BaseDriver):
 
         now = time.perf_counter()
         stable = self._tracker.update(detections, now)
-        # Emit per-ball velocity (px/s) alongside position so the renderer
-        # can extrapolate between detections.  Critical for low-FPS cameras:
-        # without it, a 15 Hz camera produces visible stepping on a 60 Hz
-        # display because each detection is drawn for ~4 display frames.
+        # Velocity lets the renderer extrapolate between detections, which a
+        # 15 Hz camera on a 60 Hz display needs to avoid visible stepping.
         balls: list[dict[str, Any]] = []
         for t in stable:
             x, y = t.render_position(now)
@@ -460,7 +480,7 @@ class BallDriver(BaseDriver):
                 {
                     "x": int(x),
                     "y": int(y),
-                    "r": round(t.r * 2, 1),
+                    "diameter": round(t.r * 2, 1),
                     "vx": round(vx, 1),
                     "vy": round(vy, 1),
                 },
@@ -479,28 +499,8 @@ class BallDriver(BaseDriver):
                 "balls": balls,
                 "count": len(balls),
                 "ts": time.time(),
-                "capture_ts": capture_ts_f,
+                "capture_ts": capture_ts,
                 "frame_age_ms": frame_age_ms,
-                "latency_ms": (time.time() - capture_ts_f) * 1000.0,
+                "latency_ms": latency_ms(capture_ts),
             },
         )
-
-    # ------------------------------------------------------------------
-    # Setters
-    # ------------------------------------------------------------------
-
-    def _set_homography(self, data: Any) -> dict[str, Any]:
-        import numpy as np  # type: ignore[import-not-found]
-
-        if not isinstance(data, list) or len(data) != 9:
-            raise ValueError("homography must be a length-9 list")
-        self._homography = np.asarray(data, dtype=np.float32).reshape(3, 3)
-        return {"ok": True}
-
-    def _set_output_size(self, data: Any) -> dict[str, Any]:
-        if not isinstance(data, dict):
-            raise ValueError("output size must be { width, height }")
-        width = int(data.get("width", self._output_size[0]))
-        height = int(data.get("height", self._output_size[1]))
-        self._output_size = (width, height)
-        return {"ok": True, "width": width, "height": height}

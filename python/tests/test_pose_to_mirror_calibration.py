@@ -8,20 +8,17 @@ parameters with near-zero residual.
 from __future__ import annotations
 
 import math
+import threading
 import time
 from typing import Any
 
+import numpy as np
 import pytest
 
-from gosai_py.driver import DriverContext
-from gosai_py.drivers.pose_to_mirror import (
-    LEFT_SHOULDER,
-    NOSE,
-    RIGHT_INDEX,
-    RIGHT_SHOULDER,
-    PoseToMirrorDriver,
-    _map_location,
-)
+from fakes import RecordingContext, check_events, check_result
+from gosai_py.drivers.pose_to_mirror import RIGHT_INDEX, MirrorSettings, PoseToMirrorDriver
+from gosai_py.geometry import mirror
+from gosai_py.geometry.mirror import LEFT_SHOULDER, NOSE, RIGHT_SHOULDER
 
 # MediaPipe hip/ankle indices (used by the physical-invariant test).
 LEFT_HIP = 23
@@ -38,36 +35,13 @@ TRUE_AFFINE_FLIPPED = (-2.4, 560.0, 2.6, 180.0)
 
 FRAME_W = 720.0
 FRAME_H = 1280.0
-HFOV_DEG = 60.0  # matches DEFAULT_CONFIG
+HFOV_DEG = 60.0  # matches the default settings
 
 
-class _FakeContext(DriverContext):
-    def __init__(self) -> None:
-        self.events: list[tuple[str, Any]] = []
-
-    def emit(self, event: str, data: Any) -> None:
-        self.events.append((event, data))
-
-    def log(self, level: str, message: str) -> None:
-        pass
-
-    def record_performance(self, metric: str, value: float) -> None:
-        pass
-
-    def set_state(self, state: str, runtime_info: dict[str, Any] | None = None) -> None:
-        pass
-
-    def subscribe(self, driver: str, event: str, callback: Any) -> None:
-        pass
-
-    def unsubscribe(self, driver: str, event: str, callback: Any) -> None:
-        pass
-
-    def get_event_data(self, driver: str, event: str) -> Any:
-        return None
-
-    def has_subscribers(self, event: str) -> bool:
-        return True
+def _reflect(raw: dict[str, Any], index: int, tilt_deg: float, scale: float) -> np.ndarray:
+    optics = MirrorSettings().optics(tilt_deg, scale)
+    pose, world, sizes = mirror.stack_frames([raw])
+    return mirror.reflect_landmark(pose, world, sizes, index, optics)[0]
 
 
 def _project_px(x_mm: float, y_mm: float, z_mm: float) -> list[float]:
@@ -109,21 +83,20 @@ def _make_raw(
 
 
 def _target_for(
-    driver: PoseToMirrorDriver,
     raw: dict[str, Any],
     affine: tuple[float, float, float, float],
 ) -> list[float]:
     """Ground-truth target pixel: reflect with the true tilt/scale, then apply
     the true affine."""
-    loc = driver._reflect_body_landmark(raw, RIGHT_INDEX, TRUE_TILT_DEG, TRUE_SCALE)
-    assert loc is not None
+    loc = _reflect(raw, RIGHT_INDEX, TRUE_TILT_DEG, TRUE_SCALE)
+    assert np.isfinite(loc).all()
     ax, bx, ay, by = affine
-    return [ax * loc[0] + bx, ay * loc[1] + by]
+    return [float(ax * loc[0] + bx), float(ay * loc[1] + by)]
 
 
 @pytest.fixture()
 def driver() -> PoseToMirrorDriver:
-    return PoseToMirrorDriver(_FakeContext())
+    return PoseToMirrorDriver(RecordingContext())
 
 
 # Fingertip positions (camera-space mm) at two distances: spread over both
@@ -147,9 +120,14 @@ def _capture_all(
 ) -> None:
     for distance, fingertip in SAMPLE_SPECS:
         raw = _make_raw(distance, fingertip)
-        target = _target_for(driver, raw, affine)
-        driver._raw_history.extend(_make_raw(distance, fingertip) for _ in range(6))
-        result = driver.execute("capture_calibration_sample", {"target": target})
+        target = _target_for(raw, affine)
+        for _ in range(6):
+            driver.on_data("pose", "raw_data", _make_raw(distance, fingertip))
+        result = check_result(
+            PoseToMirrorDriver,
+            "capture_calibration_sample",
+            driver.execute("capture_calibration_sample", {"target": target}),
+        )
         assert result["ok"], result
         assert result["landmark"] == RIGHT_INDEX
 
@@ -178,19 +156,23 @@ def test_solver_recovers_ground_truth(
     assert by == pytest.approx(affine[3], abs=25.0)
 
     # The fit is applied to the live config/affine by default.
-    assert driver._affine is not None
-    cfg = driver.execute("set_mirror_config", {})
+    cfg = check_result(
+        PoseToMirrorDriver, "set_mirror_config", driver.execute("set_mirror_config", {})
+    )
     assert cfg["affine"] == fit["affine"]
     assert cfg["tilt_deg"] == pytest.approx(fit["tilt_deg"])
 
 
 def test_solver_respects_apply_false(driver: PoseToMirrorDriver) -> None:
     _capture_all(driver)
-    before_tilt = driver._config["tilt_deg"]
-    fit = driver.execute("solve_calibration", {"apply": False})
+    before = driver.execute("set_mirror_config", None)
+    fit = check_result(
+        PoseToMirrorDriver, "solve_calibration", driver.execute("solve_calibration", {"apply": False})
+    )
     assert fit["ok"], fit
-    assert driver._affine is None
-    assert driver._config["tilt_deg"] == before_tilt
+    after = driver.execute("set_mirror_config", None)
+    assert after["affine"] is None
+    assert after["tilt_deg"] == before["tilt_deg"]
 
 
 def test_clear_samples(driver: PoseToMirrorDriver) -> None:
@@ -274,10 +256,10 @@ def test_reflection_matches_physical_mirror(
     raw = _make_standing_raw(distance_mm, MIRROR_TILT_DEG)
     eye_x, eye_y = STANDING_JOINTS_MIRROR[NOSE]
 
-    reflected: dict[int, list[float]] = {}
+    reflected: dict[int, np.ndarray] = {}
     for index, (px, py) in STANDING_JOINTS_MIRROR.items():
-        loc = driver._reflect_body_landmark(raw, index, MIRROR_TILT_DEG, 1.0)
-        assert loc is not None
+        loc = _reflect(raw, index, MIRROR_TILT_DEG, 1.0)
+        assert np.isfinite(loc).all()
         assert loc[0] == pytest.approx((eye_x + px) / 2.0, abs=1e-3)
         assert loc[1] == pytest.approx((eye_y + py) / 2.0, abs=1e-3)
         reflected[index] = loc
@@ -290,21 +272,20 @@ def test_reflection_matches_physical_mirror(
 def test_mirror_offset_shifts_intersection() -> None:
     """A camera offset along the mirror normal changes the interpolation
     weight when eye and point sit at different depths."""
-    fx = fy = 600.0
+    fx = 600.0
     ppx, ppy = FRAME_W / 2.0, FRAME_H / 2.0
     eye_depth, point_depth = 2000.0, 1000.0
     eye = (0.0, 0.0, eye_depth)
     point_mm = (100.0, 300.0)
     point_px = [
         point_mm[0] * fx / point_depth + ppx,
-        point_mm[1] * fy / point_depth + ppy,
+        point_mm[1] * fx / point_depth + ppy,
     ]
 
     for offset in (0.0, 100.0):
         t = (eye_depth - offset) / (eye_depth + point_depth - 2.0 * offset)
-        loc = _map_location(
-            point_px, eye_depth, eye, point_depth, fx, fy, ppx, ppy, 0.0, offset
-        )
+        point = mirror.deproject(point_px, point_depth, fx, ppx, ppy)
+        loc = mirror.reflect(eye, point, 0.0, offset)
         assert loc[0] == pytest.approx(t * point_mm[0], abs=1e-6)
         assert loc[1] == pytest.approx(t * point_mm[1], abs=1e-6)
 
@@ -312,3 +293,118 @@ def test_mirror_offset_shifts_intersection() -> None:
 def test_mirror_offset_config_roundtrip(driver: PoseToMirrorDriver) -> None:
     cfg = driver.execute("set_mirror_config", {"mirror_offset_mm": 45.0})
     assert cfg["mirror_offset_mm"] == 45.0
+
+
+def _hand(x: float, y: float) -> list[list[float]]:
+    return [[x + i, y + i, 0.8] for i in range(21)]
+
+
+def _live_frame() -> dict[str, Any]:
+    raw = _make_standing_raw(1500.0, MIRROR_TILT_DEG)
+    raw["right_hand_pose"] = _hand(300.0, 500.0)
+    raw["left_hand_pose"] = _hand(400.0, 500.0)
+    raw["face_mesh"] = [[360.0 + i % 7, 300.0 + i % 5, 1.0] for i in range(478)]
+    return raw
+
+
+@pytest.mark.parametrize("mode", ["direct", "reflection"])
+def test_emits_payloads_matching_the_schema(mode: str) -> None:
+    context = RecordingContext()
+    driver = PoseToMirrorDriver(context)
+    driver.execute("set_mirror_config", {"mode": mode})
+
+    for _ in range(3):
+        driver.on_data("pose", "raw_data", _live_frame())
+
+    check_events(PoseToMirrorDriver, context)
+    mirrored = context.emitted("mirrored_data")
+    assert len(mirrored) == 3
+    assert len(mirrored[-1]["face_mesh"]) == 478
+    assert len(mirrored[-1]["right_hand_pose"]) == 21
+    assert all(len(point) == 4 for point in mirrored[-1]["body_pose"])
+    assert len(context.emitted("projected_data")) == (3 if mode == "reflection" else 0)
+
+
+def test_direct_mode_fits_and_mirrors_the_frame() -> None:
+    context = RecordingContext()
+    driver = PoseToMirrorDriver(context)
+    driver.execute("set_mirror_config", {"width": 1080, "height": 1920, "fit": "contain"})
+    raw = _live_frame()
+    raw["body_pose"] = [[0.0, 0.0, 0.5]] * 33
+    raw["frame_width"], raw["frame_height"] = 720.0, 1280.0
+
+    driver.on_data("pose", "raw_data", raw)
+
+    # 720x1280 scales by 1.5 to exactly fill 1080x1920; x flips to the right edge.
+    x, y, depth, visibility = context.emitted("mirrored_data")[0]["body_pose"][0]
+    assert (x, y, depth, visibility) == pytest.approx((1080.0, 0.0, 0.0, 0.5))
+
+
+def test_smoothing_moves_part_of_the_way() -> None:
+    context = RecordingContext()
+    driver = PoseToMirrorDriver(context)
+    first, second = _live_frame(), _live_frame()
+    second["body_pose"] = [[u + 100.0, v, vis] for u, v, vis in first["body_pose"]]
+
+    driver.on_data("pose", "raw_data", first)
+    driver.on_data("pose", "raw_data", second)
+
+    before, after = (payload["body_pose"][0] for payload in context.emitted("mirrored_data"))
+    unsmoothed_shift = -100.0 * 1080.0 / 720.0  # flipped, then scaled to the canvas
+    assert after[0] - before[0] == pytest.approx(0.4 * unsmoothed_shift)
+
+
+def test_smoothing_recovers_after_a_missing_landmark() -> None:
+    context = RecordingContext()
+    driver = PoseToMirrorDriver(context)
+    gap, full = _live_frame(), _live_frame()
+    gap["body_pose"] = [[], *full["body_pose"][1:]]
+
+    driver.on_data("pose", "raw_data", gap)
+    driver.on_data("pose", "raw_data", full)
+
+    missing, recovered = (p["body_pose"][0] for p in context.emitted("mirrored_data"))
+    assert np.isnan(missing[:2]).all()
+    assert np.isfinite(recovered).all()
+
+
+def test_face_mesh_opt_out_sends_empty_meshes() -> None:
+    context = RecordingContext()
+    driver = PoseToMirrorDriver(context)
+    settings = driver.execute("set_mirror_config", {"face_mesh": False})
+
+    driver.on_data("pose", "raw_data", _live_frame())
+
+    assert settings["face_mesh"] is False
+    assert context.emitted("mirrored_data")[0]["face_mesh"] == []
+
+
+def test_invalid_settings_are_rejected(driver: PoseToMirrorDriver) -> None:
+    with pytest.raises(ValueError, match="mode"):
+        driver.execute("set_mirror_config", {"mode": "sideways"})
+    with pytest.raises(ValueError, match="affine"):
+        driver.execute("set_mirror_config", {"affine": [1.0, 2.0]})
+
+
+def test_capture_while_frames_arrive_on_another_thread(driver: PoseToMirrorDriver) -> None:
+    stop = threading.Event()
+
+    def feed() -> None:
+        while not stop.is_set():
+            driver.on_data("pose", "raw_data", _make_raw(1200.0, (0.0, -150.0)))
+
+    thread = threading.Thread(target=feed)
+    thread.start()
+    try:
+        captured = 0
+        deadline = time.monotonic() + 5.0
+        while captured < 20 and time.monotonic() < deadline:
+            try:
+                driver.execute("capture_calibration_sample", {"target": [100, 100]})
+                captured += 1
+            except RuntimeError as exc:
+                assert "recent pose frames" in str(exc)
+    finally:
+        stop.set()
+        thread.join()
+    assert captured == 20

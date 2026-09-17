@@ -15,6 +15,7 @@ import {
   deviceCatalogSchema,
   driverEventPayloadSchema,
   driverInfoSchema,
+  driverSchemasResultSchema,
   globalConfigPatchSchema,
   globalConfigSchema,
   installedAppSchema,
@@ -136,6 +137,11 @@ export const commandSchemas = {
   'drivers:list': {
     request: empty,
     response: z.object({ drivers: z.array(driverInfoSchema) }),
+  },
+  'drivers:schema': {
+    /** Omit `driver` for every driver's schema. */
+    request: z.strictObject({ driver: text.optional() }),
+    response: driverSchemasResultSchema,
   },
   'devices:list': {
     request: empty,

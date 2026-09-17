@@ -82,13 +82,13 @@ describe('resolveKioskConfig', () => {
     const env = {
       GOSAI_KIOSK_DISPLAY: '1',
       GOSAI_KIOSK_EXPERIENCE: 'demo',
-      GOSAI_KIOSK_PYTHON_EXTRAS: 'realsense',
+      GOSAI_KIOSK_PYTHON_EXTRAS: 'speech',
       GOSAI_HOME: join(root, 'env-home'),
     };
     expect(resolveKioskConfig(sources({ resourcesPath: resources, env }))).toMatchObject({
       displayIndex: 1,
       experienceSlug: 'demo',
-      pythonExtras: ['realsense'],
+      pythonExtras: ['speech'],
       homeDir: join(root, 'env-home'),
     });
 

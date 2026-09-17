@@ -13,6 +13,7 @@ type SystemCommands = Pick<
   | 'app:config:get'
   | 'app:config:set'
   | 'drivers:list'
+  | 'drivers:schema'
   | 'devices:list'
   | 'driver:get-data'
   | 'driver:execute'
@@ -51,6 +52,7 @@ export function systemCommands(services: ServerServices): SystemCommands {
     },
 
     'drivers:list': () => ({ drivers: drivers.listDrivers() }),
+    'drivers:schema': ({ driver }) => drivers.getSchemas(driver),
     'devices:list': () => drivers.listDevices(),
     'driver:get-data': (p) => drivers.getData(binding(p.binding), p.driver, p.event),
     'driver:execute': (p) => drivers.execute(binding(p.binding), p.driver, p.action, p.data),

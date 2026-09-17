@@ -13,7 +13,7 @@ describe('parseLaunchArgs', () => {
       '--kiosk-experience',
       'main',
       '--kiosk-python-extras',
-      'speech, realsense',
+      'speech, gpu',
       '--kiosk-home',
       '/tmp/pool',
       '--kiosk-windowed',
@@ -24,7 +24,7 @@ describe('parseLaunchArgs', () => {
       kioskHome: '/tmp/pool',
       kioskDisplay: 1,
       kioskExperience: 'main',
-      kioskPythonExtras: ['speech', 'realsense'],
+      kioskPythonExtras: ['speech', 'gpu'],
       kioskWindowed: true,
       kioskCalibrate: true,
     });
@@ -46,7 +46,7 @@ describe('parseLaunchArgs', () => {
 
 describe('parseExtras', () => {
   test('splits, trims and drops empty entries', () => {
-    expect(parseExtras(' speech,,realsense ,')).toEqual(['speech', 'realsense']);
+    expect(parseExtras(' speech,,gpu ,')).toEqual(['speech', 'gpu']);
     expect(parseExtras('')).toEqual([]);
   });
 });

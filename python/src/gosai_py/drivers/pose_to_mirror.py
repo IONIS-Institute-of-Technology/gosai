@@ -1,791 +1,490 @@
 """Pose-to-mirror driver (webcam-only).
 
-Projects MediaPipe body/hand/face landmarks onto an augmented mirror so that the
-on-screen skeleton lines up with the user's reflection, then maps the result
-into the mirror's pixel space.
+Maps MediaPipe body, hand and face landmarks from `pose.raw_data` onto a
+portrait screen, so the drawn skeleton lines up with the user. The geometry
+lives in `gosai_py.geometry.mirror`.
 
-This is a faithful, webcam-only re-implementation of the legacy `pose_to_mirror`
-driver. The legacy version required an Intel RealSense depth camera to recover a
-per-pixel distance and deproject pixels into 3D. We remove that hardware
-dependency by using the metric 3D that MediaPipe Holistic already produces
-(`body_world_pose`, in meters) and a plain pinhole camera model:
+Two modes, chosen with `set_mirror_config({"mode": ...})`:
 
-- The legacy RealSense intrinsics used zero distortion coefficients, so
-  `rs2_deproject_pixel_to_point` reduces to the exact pinhole formula used here
-  (`x = (u - ppx) / fx * depth`). Unlike the legacy path, the camera tilt is
-  applied as a full rigid rotation into a mirror-aligned frame, so the virtual
-  image construction uses distances perpendicular to the mirror plane (the
-  legacy code rotated only the y coordinates, which broke the geometry for any
-  nonzero tilt).
-- Absolute camera distance is recovered with a weak-perspective estimate from
-  shoulder span (metric size from `body_world_pose` vs. pixel size from
-  `body_pose`). Per-joint depth offsets come from `body_world_pose.z`.
-- Hands and face are anchored to the relevant body joint's depth (the legacy
-  `ref` trick), so no per-finger/per-face depth sensing is needed.
+- `direct` (default): a webcam selfie overlay. Landmarks are normalised by the
+  camera frame, optionally flipped, and fitted to the canvas (`contain` or
+  `cover`, times `zoom`). No calibration needed.
+- `reflection`: the calibrated projection for a physical augmented mirror.
+  Landmarks are reflected onto the mirror plane in millimeters, then mapped to
+  pixels by an affine `x_px = ax * x_mm + bx`, `y_px = ay * y_mm + by`.
 
-Emitted events:
+Reflection calibration: the user holds an index fingertip's reflection over a
+target dot, the app calls `capture_calibration_sample` with the dot's pixel
+position, and after enough targets `solve_calibration` grid-searches
+`tilt_deg` x `scale` and fits the affine per axis by least squares. Without a
+fitted affine, one is derived from the `x_offset`, `y_offset` and `screen_*_mm`
+settings.
 
-- ``mirrored_data`` - landmarks mapped into mirror pixel space (1080x1920 by
-  default) with temporal smoothing. Shape matches the legacy payload:
-  ``{ body_pose, right_hand_pose, left_hand_pose, face_mesh, body_world_pose,
-  ts }``. Each landmark is ``[x, y, depth_mm, visibility]``.
-- ``projected_data`` - the same landmarks reflected onto the mirror plane but
-  still in millimeters (pre pixel-mapping). Useful for debugging/calibration.
-
-Two modes (selected via ``set_mirror_config`` ``{"mode": ...}``):
-
-- ``direct`` (default) - a webcam selfie overlay. No mirror hardware: landmarks
-  are normalized by the camera frame, mirrored horizontally, and "cover"-fit to
-  the portrait canvas. Works on any laptop/webcam with no calibration.
-- ``reflection`` - the calibrated projection for the physical augmented-mirror
-  rig.
-
-Reflection-mode calibration
----------------------------
-
-The reflection model has two kinds of parameters:
-
-- the geometric ones (``tilt_deg`` camera tilt, ``scale`` distance correction),
-  which feed the eye-line reflection math, and
-- a 2D affine output stage mapping reflected millimeters to mirror pixels
-  (``x_px = ax * x_mm + bx``; ``y_px = ay * y_mm + by``), which absorbs the
-  legacy ``x_offset`` / ``y_offset`` / ``screen_*_mm`` measurements.
-
-Instead of hand-measuring those, the driver can *fit* all of them from guided
-samples: the user aligns their index fingertip's reflection with a target dot
-drawn at a known pixel position, the app calls ``capture_calibration_sample``,
-and once enough targets were captured ``solve_calibration`` grid-searches
-``tilt_deg`` x ``scale`` and solves the affine per axis in closed form,
-returning the residual error in pixels. The legacy mm parameters remain as the
-fallback used to derive the affine when no fit has been applied.
-
-Actions:
-
-- ``set_mirror_config`` - merge a partial config dict (see ``DEFAULT_CONFIG``)
-  and/or switch ``mode`` (``"direct"`` | ``"reflection"``); also accepts
-  ``affine`` (``[ax, bx, ay, by]`` or ``None`` to fall back to the mm config).
-- ``capture_calibration_sample`` - ``{ target: [x_px, y_px], landmark? }``:
-  snapshot the recent raw-pose frames for one calibration target.
-- ``solve_calibration`` - fit ``tilt_deg``/``scale``/``affine`` from the
-  captured samples; applies the fit (unless ``{"apply": false}``) and returns
-  it with per-target residuals.
-- ``clear_calibration_samples`` - drop all captured samples.
+Both events are smoothed over time per part. Setting `face_mesh` to false
+sends empty face meshes and skips their projection.
 """
 
 from __future__ import annotations
 
-import math
+import threading
 import time
 from collections import deque
-from statistics import median
-from typing import Any, ClassVar
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Annotated, Any, ClassVar, Literal
 
-from gosai_py.driver import BaseDriver, DriverContext
+import msgspec
+import numpy as np
+from msgspec import UNSET, Meta, UnsetType
 
-# MediaPipe pose landmark indices used as anchors (match the legacy driver).
-NOSE = 0
-FACE_ANCHOR = 2  # left-eye landmark; face mesh is anchored to its depth.
-LEFT_SHOULDER = 11
-RIGHT_SHOULDER = 12
-RIGHT_HAND_ANCHOR = 15  # left wrist (legacy swaps handedness upstream).
+from gosai_py.driver import BaseDriver, DriverContext, Event, action
+from gosai_py.geometry import mirror
+from gosai_py.geometry.mirror import Array, BodyFrame
+from gosai_py.smoothing import lerp
+
+FACE_ANCHOR = 2  # left-eye landmark; the face mesh takes its depth.
+RIGHT_HAND_ANCHOR = 15  # left wrist; pose swaps hand keys upstream.
 LEFT_HAND_ANCHOR = 16  # right wrist.
 LEFT_INDEX = 19  # body-pose index fingertips used for calibration samples.
 RIGHT_INDEX = 20
 
-# Calibration capture/solve tuning.
 RAW_HISTORY = 24  # recent raw-pose frames kept for sample capture.
-SAMPLE_MAX_AGE_S = 2.0  # only frames this fresh enter a captured sample.
+SAMPLE_MAX_AGE_S = 2.0
 SAMPLE_MIN_FRAMES = 5
 SOLVE_MIN_SAMPLES = 4
 MIN_FINGERTIP_VISIBILITY = 0.35
 
-# Parts that get reflected + pixel-mapped. Other keys pass through untouched.
-PARTS: tuple[str, ...] = ("body_pose", "right_hand_pose", "left_hand_pose", "face_mesh")
+PARTS = ("body_pose", "right_hand_pose", "left_hand_pose", "face_mesh")
+# How far each part moves toward the new frame per update.
+SMOOTHING = {"body_pose": 0.4, "right_hand_pose": 0.6, "left_hand_pose": 0.6, "face_mesh": 0.6}
+# Rate for points at or above the top edge, which are usually spurious.
+OFFSCREEN_SMOOTHING = 0.01
 
-# Per-part temporal smoothing factor (lerp toward the new value). Matches legacy.
-INTER_RATES: dict[str, float] = {
-    "body_pose": 0.4,
-    "right_hand_pose": 0.6,
-    "left_hand_pose": 0.6,
-    "face_mesh": 0.6,
-}
-
-# Defaults taken from the legacy second-self config.json + mirror.py. Distances
-# are in millimeters; the screen is portrait 1080x1920. The mm entries only
-# serve to derive a fallback affine when no fitted calibration is applied.
-DEFAULT_CONFIG: dict[str, float] = {
-    "x_offset": -230.0,  # mm; increase to move the skeleton left.
-    "y_offset": 100.0,  # mm; increase to move it down.
-    "screen_width_mm": 392.85,
-    "screen_height_mm": 698.4,
-    "width": 1080.0,
-    "height": 1920.0,
-    "tilt_deg": 17.0,  # camera tilt relative to the mirror plane (deg).
-    "mirror_offset_mm": 0.0,  # camera center's distance from the mirror plane along its normal.
-    "hfov_deg": 60.0,  # used to derive focal length from frame width.
-    "scale": 1.0,  # multiplies the estimated distance (per-install tuning).
-    "default_distance_mm": 1500.0,  # fallback subject distance.
-    "zoom": 1.0,  # direct mode: >1 crops in for a fuller portrait fill.
-}
-
-# Solver grid. Coarse pass over the full plausible range, then one refinement
-# pass around the best coarse candidate.
-TILT_COARSE = [t * 2.5 for t in range(0, 17)]  # 0..40 deg
-SCALE_COARSE = [0.5 + 0.1 * s for s in range(0, 14)]  # 0.5..1.8
+TILT_COARSE = [t * 2.5 for t in range(17)]  # 0..40 deg
+SCALE_COARSE = [0.5 + 0.1 * s for s in range(14)]  # 0.5..1.8
 TILT_REFINE_STEP = 0.5
 SCALE_REFINE_STEP = 0.02
 
-
-def _lerp(a: float, b: float, t: float) -> float:
-    return (1.0 - t) * a + t * b
-
-
-def _parse_affine(value: Any) -> list[float] | None:
-    """Validate an ``[ax, bx, ay, by]`` payload; ``None``/invalid clears the fit."""
-    if isinstance(value, (list, tuple)) and len(value) == 4:
-        try:
-            return [float(v) for v in value]
-        except (TypeError, ValueError):
-            return None
-    return None
+Affine = Annotated[list[float], Meta(min_length=4, max_length=4, description="[ax, bx, ay, by]")]
+Landmark = list[float]
 
 
-def _median_visibility(frames: list[dict[str, Any]], index: int) -> float:
-    vals: list[float] = []
-    for raw in frames:
-        body = raw.get("body_pose") or []
-        if len(body) > index and body[index] and len(body[index]) > 2:
-            vals.append(float(body[index][2]))
-    return median(vals) if vals else 0.0
+class MirrorSettings(msgspec.Struct, kw_only=True):
+    """Every setting of the driver. Distances are millimeters."""
+
+    mode: Literal["direct", "reflection"] = "direct"
+    fit: Literal["contain", "cover"] = "contain"
+    mirror: bool = True
+    affine: Affine | None = None
+    face_mesh: bool = True
+    x_offset: float = -230.0
+    y_offset: float = 100.0
+    screen_width_mm: float = 392.85
+    screen_height_mm: float = 698.4
+    width: float = 1080.0
+    height: float = 1920.0
+    tilt_deg: float = 17.0
+    mirror_offset_mm: float = 0.0
+    hfov_deg: float = 60.0
+    scale: float = 1.0
+    default_distance_mm: float = 1500.0
+    zoom: float = 1.0
+
+    def optics(self, tilt_deg: float | None = None, scale: float | None = None) -> mirror.Optics:
+        return mirror.Optics(
+            hfov_deg=self.hfov_deg,
+            tilt_deg=self.tilt_deg if tilt_deg is None else tilt_deg,
+            scale=self.scale if scale is None else scale,
+            mirror_offset_mm=self.mirror_offset_mm,
+            default_distance_mm=self.default_distance_mm,
+        )
+
+    def pixel_affine(self) -> tuple[float, float, float, float]:
+        if self.affine is not None:
+            ax, bx, ay, by = self.affine
+            return ax, bx, ay, by
+        ax = self.width / self.screen_width_mm
+        ay = self.height / self.screen_height_mm
+        return ax, -ax * self.x_offset, ay, -ay * self.y_offset
 
 
-def _pick_fingertip(frames: list[dict[str, Any]]) -> int | None:
-    """Choose the more visible body index fingertip (19/20) over the frames."""
-    left = _median_visibility(frames, LEFT_INDEX)
-    right = _median_visibility(frames, RIGHT_INDEX)
-    if max(left, right) < MIN_FINGERTIP_VISIBILITY:
-        return None
-    return RIGHT_INDEX if right >= left else LEFT_INDEX
+class MirrorSettingsUpdate(msgspec.Struct, kw_only=True):
+    """Settings to change; omitted fields keep their value. `affine: null` drops the fit."""
+
+    mode: Literal["direct", "reflection"] | UnsetType = UNSET
+    fit: Literal["contain", "cover"] | UnsetType = UNSET
+    mirror: bool | UnsetType = UNSET
+    affine: Affine | UnsetType | None = UNSET
+    face_mesh: bool | UnsetType = UNSET
+    x_offset: float | UnsetType = UNSET
+    y_offset: float | UnsetType = UNSET
+    screen_width_mm: float | UnsetType = UNSET
+    screen_height_mm: float | UnsetType = UNSET
+    width: float | UnsetType = UNSET
+    height: float | UnsetType = UNSET
+    tilt_deg: float | UnsetType = UNSET
+    mirror_offset_mm: float | UnsetType = UNSET
+    hfov_deg: float | UnsetType = UNSET
+    scale: float | UnsetType = UNSET
+    default_distance_mm: float | UnsetType = UNSET
+    zoom: float | UnsetType = UNSET
 
 
-def _fit_axis(xs: list[float], ts: list[float]) -> tuple[float, float] | None:
-    """Closed-form 1D least squares for t = a*x + b."""
-    n = len(xs)
-    if n < 2:
-        return None
-    mean_x = sum(xs) / n
-    mean_t = sum(ts) / n
-    var = sum((x - mean_x) ** 2 for x in xs)
-    if var < 1e-9:
-        return None
-    a = sum((x - mean_x) * (t - mean_t) for x, t in zip(xs, ts, strict=True)) / var
-    return a, mean_t - a * mean_x
+class MirroredPayload(msgspec.Struct, kw_only=True):
+    """Landmarks as `[x, y, depth_mm, visibility]`: pixels for `mirrored_data`,
+    mirror-plane millimeters for `projected_data`. Direct mode reports depth 0."""
+
+    body_pose: list[Landmark]
+    right_hand_pose: list[Landmark]
+    left_hand_pose: list[Landmark]
+    face_mesh: list[Landmark]
+    body_world_pose: list[Landmark]
+    ts: float
 
 
-def _grid(tilts: list[float], scales: list[float]) -> list[tuple[float, float]]:
-    return [(t, s) for t in tilts for s in scales]
+class CaptureParams(msgspec.Struct, kw_only=True):
+    target: Annotated[list[float], Meta(min_length=2, description="[x_px, y_px]")]
+    # Body landmark to use; defaults to the more visible index fingertip.
+    landmark: int | None = None
 
 
-def _deproject(u: float, v: float, depth: float, fx: float, fy: float, ppx: float, ppy: float) -> tuple[float, float, float]:
-    """Pinhole back-projection (matches RealSense deproject with zero distortion)."""
-    x = (u - ppx) / fx * depth
-    y = (v - ppy) / fy * depth
-    return x, y, depth
+class CaptureResult(msgspec.Struct, kw_only=True):
+    ok: bool = True
+    samples: int
+    landmark: int
+    visibility: float
 
 
-def _map_location(
-    point: list[float],
-    eyes_depth: float,
-    eyes_coords: tuple[float, float, float],
-    point_depth: float,
-    fx: float,
-    fy: float,
-    ppx: float,
-    ppy: float,
-    theta: float,
-    mirror_offset: float = 0.0,
-) -> list[float]:
-    """Reflect a single point onto the mirror plane.
+class SolveParams(msgspec.Struct, kw_only=True):
+    apply: bool = True
 
-    Finds where the sight line from the eye to the point's virtual (mirror)
-    image crosses the mirror plane. Both points are first moved from the
-    camera frame into a mirror-aligned frame (rigid rotation about the x axis
-    by ``theta``, the camera tilt relative to the mirror), so distances are
-    measured perpendicular to the mirror plane. ``mirror_offset`` is the
-    camera center's distance (mm) from the extended mirror plane along its
-    normal (in-plane offsets are absorbed by the output affine).
-    """
-    xa, ya, za = eyes_coords
-    xb, yb, zb = _deproject(point[0], point[1], point_depth, fx, fy, ppx, ppy)
 
-    cos_t = math.cos(theta)
-    sin_t = math.sin(theta)
-    # Camera frame -> mirror-aligned frame.
-    ya2 = ya * cos_t + za * sin_t
-    za2 = za * cos_t - ya * sin_t
-    yb2 = yb * cos_t + zb * sin_t
-    zb2 = zb * cos_t - yb * sin_t
+class SolveResult(msgspec.Struct, kw_only=True):
+    ok: bool = True
+    tilt_deg: float
+    scale: float
+    affine: list[float]
+    residual_px_mean: float
+    residual_px_max: float
+    residuals_px: list[float]
+    samples: int
+    applied: bool
 
-    # Distances to the mirror plane, measured along its normal.
-    da = za2 - mirror_offset
-    db = zb2 - mirror_offset
 
-    dz = da + db
-    if dz > 1e-6:
-        t = da / dz
-        xi = xa + t * (xb - xa)
-        yi = ya2 + t * (yb2 - ya2)
-        if not math.isnan(xi) and not math.isnan(yi):
-            return [xi, yi]
-    return [-1.0, -1.0]
+class ClearResult(msgspec.Struct, kw_only=True):
+    ok: bool = True
+    samples: int
+
+
+@dataclass(frozen=True)
+class _Sample:
+    target: tuple[float, float]
+    landmark: int
+    pose: Array
+    world: Array
+    sizes: Array
+
+
+@dataclass(frozen=True)
+class _Fit:
+    tilt_deg: float
+    scale: float
+    affine: tuple[float, float, float, float]
+    errors: Array
+    rmse: float
 
 
 class PoseToMirrorDriver(BaseDriver):
-    """Reflects MediaPipe landmarks onto an augmented mirror (webcam-only)."""
+    """Maps MediaPipe landmarks onto an augmented mirror (webcam-only)."""
 
-    name: ClassVar[str] = "pose_to_mirror"
-    description: ClassVar[str] = "Reflect MediaPipe landmarks onto an augmented mirror (webcam-only)."
-    events: ClassVar[tuple[str, ...]] = ("mirrored_data", "projected_data")
-    stream_events: ClassVar[tuple[str, ...]] = ("mirrored_data", "projected_data")
-    actions: ClassVar[tuple[str, ...]] = (
-        "set_mirror_config",
-        "capture_calibration_sample",
-        "solve_calibration",
-        "clear_calibration_samples",
-    )
-    dependencies: ClassVar[tuple[str, ...]] = ("pose",)
-    subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("pose", "raw_data"),)
-    loop_interval_s: ClassVar[float | None] = None
+    name = "pose_to_mirror"
+    description = "Map MediaPipe landmarks onto an augmented mirror (webcam-only)."
+    events: ClassVar[Mapping[str, Event]] = {
+        "mirrored_data": Event(MirroredPayload, "Landmarks in screen pixels, smoothed."),
+        "projected_data": Event(
+            MirroredPayload, "Reflection mode only: landmarks on the mirror plane in mm."
+        ),
+    }
+    stream_events = ("mirrored_data", "projected_data")
+    dependencies = ("pose",)
+    subscribed = (("pose", "raw_data"),)
+    loop_interval_s = None
 
     def __init__(self, context: DriverContext) -> None:
         super().__init__(context)
-        self._config: dict[str, float] = dict(DEFAULT_CONFIG)
-        # "direct"  -> webcam selfie overlay (no mirror hardware; default).
-        # "reflection" -> calibrated projection for the physical mirror rig.
-        self._mode: str = "direct"
-        # Direct-mode knobs.
-        self._mirror_flip: bool = True  # horizontal flip (selfie view).
-        self._fit: str = "contain"  # "contain" (letterbox) | "cover" (fill+crop).
-        self._mirrored: dict[str, Any] = {}
-        # Fitted mm->px affine [ax, bx, ay, by]; None falls back to the mm config.
-        self._affine: list[float] | None = None
-        # Recent raw pose payloads + calibration samples (capture/solve actions).
+        self._lock = threading.Lock()
+        self._settings = MirrorSettings()
         self._raw_history: deque[dict[str, Any]] = deque(maxlen=RAW_HISTORY)
-        self._samples: list[dict[str, Any]] = []
+        self._samples: list[_Sample] = []
+        self._previous: dict[str, Array] = {}
 
-    def execute(self, action: str, data: Any) -> Any:
-        if action == "set_mirror_config":
-            if isinstance(data, dict):
-                mode = data.get("mode")
-                if isinstance(mode, str) and mode in ("direct", "reflection"):
-                    self._mode = mode
-                fit = data.get("fit")
-                if isinstance(fit, str) and fit in ("contain", "cover"):
-                    self._fit = fit
-                if "mirror" in data:
-                    self._mirror_flip = bool(data["mirror"])
-                if "affine" in data:
-                    self._affine = _parse_affine(data["affine"])
-                for key, value in data.items():
-                    if key in self._config:
-                        try:
-                            self._config[key] = float(value)
-                        except (TypeError, ValueError):
-                            self.log("warn", f"set_mirror_config: bad value for {key!r}")
-            return {
-                "mode": self._mode,
-                "fit": self._fit,
-                "mirror": self._mirror_flip,
-                "affine": self._affine,
-                **self._config,
-            }
-        if action == "capture_calibration_sample":
-            return self._capture_calibration_sample(data)
-        if action == "solve_calibration":
-            return self._solve_calibration(data)
-        if action == "clear_calibration_samples":
-            self._samples.clear()
-            return {"ok": True, "samples": 0}
-        return super().execute(action, data)
+    @action("Change settings and return all of them.")
+    def set_mirror_config(self, params: MirrorSettingsUpdate | None) -> MirrorSettings:
+        with self._lock:
+            if params is not None:
+                changes = {
+                    field: value
+                    for field in params.__struct_fields__
+                    if (value := getattr(params, field)) is not UNSET
+                }
+                self._settings = msgspec.structs.replace(self._settings, **changes)
+            return self._settings
 
-    # ------------------------------------------------------------------
-
-    def _intrinsics(self, frame_w: float, frame_h: float) -> tuple[float, float, float, float]:
-        """Derive pinhole intrinsics from the frame size and horizontal FOV."""
-        hfov = math.radians(self._config["hfov_deg"])
-        fx = (frame_w / 2.0) / max(math.tan(hfov / 2.0), 1e-6)
-        fy = fx  # assume square pixels.
-        return fx, fy, frame_w / 2.0, frame_h / 2.0
-
-    def _estimate_distance(
-        self,
-        body_pose: list[list[float]],
-        body_world: list[list[float]],
-        fx: float,
-        scale: float | None = None,
-    ) -> float:
-        """Weak-perspective distance (mm) of the world origin (mid-hips).
-
-        The shoulder span (metric size from ``body_world_pose`` vs pixel size
-        from ``body_pose``) yields the camera-z of the *shoulders*. Per-joint
-        depths are later composed as ``distance + world_z(i)`` where MediaPipe
-        world z is **hip-origin**, so the base must be re-anchored by
-        subtracting the shoulders' own world z. Skipping that adds a constant
-        offset to every depth, which distorts the reflection in a
-        distance-dependent way (skeleton too small up close).
-        """
-        default = self._config["default_distance_mm"]
-        if scale is None:
-            scale = self._config["scale"]
-        if len(body_pose) <= RIGHT_SHOULDER or len(body_world) <= RIGHT_SHOULDER:
-            return default
-        try:
-            lp, rp = body_pose[LEFT_SHOULDER], body_pose[RIGHT_SHOULDER]
-            lw, rw = body_world[LEFT_SHOULDER], body_world[RIGHT_SHOULDER]
-            px = math.hypot(lp[0] - rp[0], lp[1] - rp[1])
-            meters = math.hypot(lw[0] - rw[0], lw[1] - rw[1])
-            if px > 1.0 and meters > 0.05:
-                shoulders_z = fx * (meters * 1000.0) / px * scale
-                shoulders_wz_mm = (float(lw[2]) + float(rw[2])) / 2.0 * 1000.0
-                return shoulders_z - shoulders_wz_mm
-        except (IndexError, TypeError):
-            pass
-        return default
-
-    def _reflect_body_landmark(
-        self,
-        raw: dict[str, Any],
-        index: int,
-        tilt_deg: float,
-        scale: float,
-    ) -> list[float] | None:
-        """Reflect one body landmark of a raw pose payload onto the mirror plane.
-
-        Returns the point in millimeters (pre affine/pixel mapping), or ``None``
-        when the payload lacks the landmark. Used by the calibration solver so
-        candidate ``tilt``/``scale`` values run through the exact runtime math.
-        """
-        body_pose = raw.get("body_pose") or []
-        body_world = raw.get("body_world_pose") or []
-        if len(body_pose) <= index or not body_pose[index]:
-            return None
-        frame_w = float(raw.get("frame_width") or 1280.0)
-        frame_h = float(raw.get("frame_height") or 720.0)
-        fx, fy, ppx, ppy = self._intrinsics(frame_w, frame_h)
-        theta = math.radians(tilt_deg)
-        distance = self._estimate_distance(body_pose, body_world, fx, scale=scale)
-
-        def world_z_mm(i: int) -> float:
-            if i < len(body_world) and body_world[i] and len(body_world[i]) > 2:
-                return body_world[i][2] * 1000.0
-            return 0.0
-
-        eyes_depth = max(distance + world_z_mm(NOSE), 1.0)
-        eyes_px = (
-            body_pose[NOSE][:2]
-            if len(body_pose) > NOSE and body_pose[NOSE]
-            else [frame_w / 2.0, frame_h / 2.0]
-        )
-        eyes_coords = _deproject(eyes_px[0], eyes_px[1], eyes_depth, fx, fy, ppx, ppy)
-        point_depth = max(distance + world_z_mm(index), 1.0)
-        loc = _map_location(
-            body_pose[index][:2],
-            eyes_depth,
-            eyes_coords,
-            point_depth,
-            fx,
-            fy,
-            ppx,
-            ppy,
-            theta,
-            self._config["mirror_offset_mm"],
-        )
-        if loc[0] == -1.0 and loc[1] == -1.0:
-            return None
-        return loc
-
-    def _project(
-        self,
-        points: list[list[float]],
-        depths: list[float] | None,
-        eyes_depth: float,
-        eyes_coords: tuple[float, float, float],
-        fx: float,
-        fy: float,
-        ppx: float,
-        ppy: float,
-        theta: float,
-        ref: list[float] | None = None,
-    ) -> list[list[float]]:
-        mirror_offset = self._config["mirror_offset_mm"]
-        projected: list[list[float]] = []
-        for i, point in enumerate(points):
-            if not point:
-                projected.append([])
-                continue
-            if ref is None:
-                visibility = point[2] if len(point) > 2 else 1.0
-                point_depth = depths[i] if depths is not None and i < len(depths) else eyes_depth
-            else:
-                visibility = ref[3] if len(ref) > 3 else 1.0
-                point_depth = ref[2] if len(ref) > 2 else eyes_depth
-            loc = _map_location(
-                point[:2], eyes_depth, eyes_coords, point_depth, fx, fy, ppx, ppy, theta, mirror_offset
+    @action("Record recent pose frames for one calibration target.")
+    def capture_calibration_sample(self, params: CaptureParams) -> CaptureResult:
+        now = time.time()
+        with self._lock:
+            frames = [
+                raw
+                for raw in self._raw_history
+                if now - raw["ts"] <= SAMPLE_MAX_AGE_S and raw.get("body_pose")
+            ]
+            if len(frames) < SAMPLE_MIN_FRAMES:
+                raise RuntimeError(
+                    f"need {SAMPLE_MIN_FRAMES} recent pose frames, have {len(frames)}"
+                )
+            pose, world, sizes = mirror.stack_frames(frames)
+            landmark = params.landmark
+            if landmark is None:
+                left = _median_visibility(pose, LEFT_INDEX)
+                right = _median_visibility(pose, RIGHT_INDEX)
+                if max(left, right) < MIN_FINGERTIP_VISIBILITY:
+                    raise RuntimeError("no visible index fingertip (raise a hand)")
+                landmark = RIGHT_INDEX if right >= left else LEFT_INDEX
+            if not 0 <= landmark < mirror.BODY_LANDMARKS:
+                raise ValueError(f"landmark must be a body landmark index, got {landmark}")
+            visibility = _median_visibility(pose, landmark)
+            if visibility < MIN_FINGERTIP_VISIBILITY:
+                raise RuntimeError(f"fingertip landmark {landmark} barely visible ({visibility:.2f})")
+            target = (params.target[0], params.target[1])
+            self._samples.append(_Sample(target, landmark, pose, world, sizes))
+            # The next target must not reuse these frames; the stream refills
+            # the history within a second.
+            self._raw_history.clear()
+            return CaptureResult(
+                samples=len(self._samples), landmark=landmark, visibility=round(visibility, 2)
             )
-            projected.append([loc[0], loc[1], point_depth, visibility])
-        return projected
 
-    def _smooth(self, name: str, points: list[list[float]]) -> list[list[float]]:
-        """Temporally lerp pixel-space points toward the previous frame."""
-        old = self._mirrored.get(name)
-        t = INTER_RATES.get(name, 1.0)
-        if not (isinstance(old, list) and len(old) == len(points) and t < 1.0):
-            old = None
-        out: list[list[float]] = []
-        for i, point in enumerate(points):
-            if not point:
-                out.append([])
-                continue
-            x, y = point[0], point[1]
-            if old is not None and old[i]:
-                rate = t if y > 0 else 0.01
-                x = _lerp(old[i][0], x, rate)
-                y = _lerp(old[i][1], y, rate)
-            out.append([x, y, *point[2:]])
-        return out
+    @action("Fit tilt, scale and the pixel affine to the captured samples.")
+    def solve_calibration(self, params: SolveParams | None) -> SolveResult:
+        apply = True if params is None else params.apply
+        with self._lock:
+            samples = list(self._samples)
+            settings = self._settings
+        if len(samples) < SOLVE_MIN_SAMPLES:
+            raise RuntimeError(f"need at least {SOLVE_MIN_SAMPLES} samples, have {len(samples)}")
 
-    def _current_affine(self) -> tuple[float, float, float, float]:
-        """Active mm->px affine: the fitted one, else derived from the mm config."""
-        if self._affine is not None:
-            ax, bx, ay, by = self._affine
-            return ax, bx, ay, by
-        cfg = self._config
-        ax = cfg["width"] / cfg["screen_width_mm"]
-        ay = cfg["height"] / cfg["screen_height_mm"]
-        return ax, -ax * cfg["x_offset"], ay, -ay * cfg["y_offset"]
+        solver = _Solver(samples, settings)
+        best = solver.best(TILT_COARSE, SCALE_COARSE)
+        if best is None:
+            raise RuntimeError("could not project samples (poses unusable)")
+        # Two refinement passes of +-1 coarse cell; the second recenters.
+        for _ in range(2):
+            tilts = [best.tilt_deg + TILT_REFINE_STEP * i for i in range(-5, 6)]
+            scales = [max(best.scale + SCALE_REFINE_STEP * i, 0.05) for i in range(-5, 6)]
+            best = solver.best(tilts, scales, best) or best
 
-    def _mirror_part(self, name: str, points: list[list[float]]) -> list[list[float]]:
-        """Map reflected millimeters into mirror pixel space, then smooth."""
-        ax, bx, ay, by = self._current_affine()
-        mapped: list[list[float]] = []
-        for point in points:
-            if not point:
-                mapped.append([])
-                continue
-            mapped.append([ax * point[0] + bx, ay * point[1] + by, *point[2:]])
-        return self._smooth(name, mapped)
+        result = SolveResult(
+            tilt_deg=round(best.tilt_deg, 2),
+            scale=round(best.scale, 3),
+            affine=[round(v, 5) for v in best.affine],
+            residual_px_mean=round(float(best.errors.mean()), 1),
+            residual_px_max=round(float(best.errors.max()), 1),
+            residuals_px=[round(float(e), 1) for e in best.errors],
+            samples=len(samples),
+            applied=apply,
+        )
+        if apply:
+            with self._lock:
+                self._settings = msgspec.structs.replace(
+                    self._settings, tilt_deg=result.tilt_deg, scale=result.scale, affine=result.affine
+                )
+        self.log(
+            "info",
+            f"calibration solved: tilt={result.tilt_deg} scale={result.scale} "
+            f"residual={result.residual_px_mean}px mean / {result.residual_px_max}px max "
+            f"({len(samples)} samples, applied={apply})",
+        )
+        return result
 
-    def _direct_part(
-        self,
-        name: str,
-        points: list[list[float]],
-        sx: float,
-        sy: float,
-        ox: float,
-        oy: float,
-        frame_w: float,
-        frame_h: float,
-    ) -> list[list[float]]:
-        """Map camera-frame pixels to a mirrored, aspect-correct portrait fill."""
-        mapped: list[list[float]] = []
-        for point in points:
-            if not point:
-                mapped.append([])
-                continue
-            nx = point[0] / frame_w
-            ny = point[1] / frame_h
-            if self._mirror_flip:
-                nx = 1.0 - nx  # horizontal mirror (selfie view).
-            x = nx * sx + ox
-            y = ny * sy + oy
-            vis = point[2] if len(point) > 2 else 1.0
-            mapped.append([x, y, 0.0, vis])
-        return self._smooth(name, mapped)
-
-    def _project_direct(
-        self,
-        frame_w: float,
-        frame_h: float,
-        body_pose: list[list[float]],
-        body_world: list[list[float]],
-        face_mesh: list[list[float]],
-        right_hand: list[list[float]],
-        left_hand: list[list[float]],
-    ) -> None:
-        """Webcam selfie overlay: aspect-correct fit of the camera to the canvas.
-
-        ``fit='contain'`` (default) shows the whole camera frame (letterboxed if
-        aspect ratios differ); ``fit='cover'`` fills the canvas and crops the
-        overflow. ``zoom`` (>1) crops in further, ``mirror`` flips horizontally
-        for a selfie view. The user's movements map 1:1.
-        """
-        cfg = self._config
-        out_w, out_h = cfg["width"], cfg["height"]
-        zoom = max(cfg.get("zoom", 1.0), 0.1)
-        wr = out_w / max(frame_w, 1.0)
-        hr = out_h / max(frame_h, 1.0)
-        ratio = max(wr, hr) if self._fit == "cover" else min(wr, hr)
-        scale = ratio * zoom
-        sx = frame_w * scale
-        sy = frame_h * scale
-        ox = (out_w - sx) / 2.0
-        oy = (out_h - sy) / 2.0
-
-        mirrored: dict[str, Any] = {}
-        for name, pts in (
-            ("body_pose", body_pose),
-            ("right_hand_pose", right_hand),
-            ("left_hand_pose", left_hand),
-            ("face_mesh", face_mesh),
-        ):
-            mirrored[name] = self._direct_part(name, pts, sx, sy, ox, oy, frame_w, frame_h)
-        mirrored["body_world_pose"] = body_world
-        mirrored["ts"] = time.time()
-        self._mirrored = mirrored
-        self.emit("mirrored_data", mirrored)
-
-    # ------------------------------------------------------------------
+    @action("Drop all captured calibration samples.")
+    def clear_calibration_samples(self) -> ClearResult:
+        with self._lock:
+            self._samples.clear()
+        return ClearResult(samples=0)
 
     def on_data(self, driver: str, event: str, data: Any) -> None:
         if not isinstance(data, dict):
             return
-        body_pose = data.get("body_pose") or []
-        if not isinstance(body_pose, list) or not body_pose:
+        body_raw = data.get("body_pose")
+        if not isinstance(body_raw, list) or not body_raw:
             return
-
-        body_world = data.get("body_world_pose") or []
-        face_mesh = data.get("face_mesh") or []
-        right_hand = data.get("right_hand_pose") or []
-        left_hand = data.get("left_hand_pose") or []
-
-        # Actual camera frame size (reported by the pose driver). MediaPipe
-        # landmark x/y are pixel coordinates in this frame.
         frame_w = float(data.get("frame_width") or 1280.0)
         frame_h = float(data.get("frame_height") or 720.0)
-
-        # Keep a short raw history so calibration captures can median-filter
-        # over the frames of a dwell (the pose driver allocates fresh lists per
-        # frame, so storing references is safe).
-        self._raw_history.append(
-            {
-                "body_pose": body_pose,
-                "body_world_pose": body_world,
-                "frame_width": frame_w,
-                "frame_height": frame_h,
-                "ts": float(data.get("ts") or time.time()),
-            }
-        )
-
-        if self._mode == "direct":
-            self._project_direct(
-                frame_w, frame_h, body_pose, body_world, face_mesh, right_hand, left_hand
+        body_world = data.get("body_world_pose") or []
+        with self._lock:
+            settings = self._settings
+            self._raw_history.append(
+                {
+                    "body_pose": body_raw,
+                    "body_world_pose": body_world,
+                    "frame_width": frame_w,
+                    "frame_height": frame_h,
+                    "ts": float(data.get("ts") or time.time()),
+                }
             )
-            return
 
-        fx, fy, ppx, ppy = self._intrinsics(frame_w, frame_h)
-        theta = math.radians(self._config["tilt_deg"])
+        face_raw = (data.get("_face_mesh") or data.get("face_mesh")) if settings.face_mesh else None
+        parts = {
+            "body_pose": mirror.landmarks(body_raw),
+            "right_hand_pose": mirror.landmarks(data.get("right_hand_pose")),
+            "left_hand_pose": mirror.landmarks(data.get("left_hand_pose")),
+            "face_mesh": mirror.landmarks(face_raw),
+        }
+        if settings.mode == "direct":
+            pixels = self._direct(settings, parts, frame_w, frame_h)
+        else:
+            projected = self._reflect(settings, parts, mirror.landmarks(body_world), frame_w, frame_h)
+            self.emit("projected_data", _payload(projected, body_world))
+            ax, bx, ay, by = settings.pixel_affine()
+            pixels = {
+                name: np.column_stack([ax * mm[:, 0] + bx, ay * mm[:, 1] + by, mm[:, 2:]])
+                for name, mm in projected.items()
+            }
+        self.emit("mirrored_data", _payload(self._smooth(pixels), body_world))
 
-        distance = self._estimate_distance(body_pose, body_world, fx)
+    def _direct(
+        self, settings: MirrorSettings, parts: dict[str, Array], frame_w: float, frame_h: float
+    ) -> dict[str, Array]:
+        """Fit the camera frame to the canvas, keeping the aspect ratio."""
+        width_ratio = settings.width / max(frame_w, 1.0)
+        height_ratio = settings.height / max(frame_h, 1.0)
+        ratio = max(width_ratio, height_ratio) if settings.fit == "cover" else min(width_ratio, height_ratio)
+        scale = ratio * max(settings.zoom, 0.1)
+        sx, sy = frame_w * scale, frame_h * scale
+        ox, oy = (settings.width - sx) / 2.0, (settings.height - sy) / 2.0
+        out: dict[str, Array] = {}
+        for name, points in parts.items():
+            nx = points[:, 0] / frame_w
+            if settings.mirror:
+                nx = 1.0 - nx
+            visibility = np.where(np.isnan(points[:, 2]), 1.0, points[:, 2])
+            out[name] = np.column_stack(
+                [nx * sx + ox, points[:, 1] / frame_h * sy + oy, np.zeros(len(points)), visibility]
+            )
+        return out
 
-        # Per-joint depth (mm): absolute distance plus the metric z offset from
-        # MediaPipe world landmarks (origin at the hips, meters).
-        def world_z_mm(i: int) -> float:
-            if i < len(body_world) and body_world[i] and len(body_world[i]) > 2:
-                return body_world[i][2] * 1000.0
-            return 0.0
+    def _reflect(
+        self,
+        settings: MirrorSettings,
+        parts: dict[str, Array],
+        world: Array,
+        frame_w: float,
+        frame_h: float,
+    ) -> dict[str, Array]:
+        optics = settings.optics()
+        frame = BodyFrame.build(parts["body_pose"], world, frame_w, frame_h, optics)
+        body = mirror.project_part(frame, parts["body_pose"], optics, None, own_depths=True)
 
-        body_depths = [max(distance + world_z_mm(i), 1.0) for i in range(len(body_pose))]
+        def anchor(index: int) -> Array | None:
+            return body[index] if index < len(body) else None
 
-        eyes_depth = body_depths[NOSE] if len(body_depths) > NOSE else distance
-        eyes_px = body_pose[NOSE][:2] if body_pose[NOSE] else [frame_w / 2.0, frame_h / 2.0]
-        eyes_coords = _deproject(eyes_px[0], eyes_px[1], eyes_depth, fx, fy, ppx, ppy)
-
-        projected: dict[str, Any] = {}
-        projected["body_pose"] = self._project(
-            body_pose, body_depths, eyes_depth, eyes_coords, fx, fy, ppx, ppy, theta
-        )
-
-        pbody = projected["body_pose"]
-
-        def anchor(idx: int) -> list[float] | None:
-            return pbody[idx] if idx < len(pbody) and pbody[idx] else None
-
-        projected["right_hand_pose"] = self._project(
-            right_hand, None, eyes_depth, eyes_coords, fx, fy, ppx, ppy, theta, ref=anchor(RIGHT_HAND_ANCHOR)
-        )
-        projected["left_hand_pose"] = self._project(
-            left_hand, None, eyes_depth, eyes_coords, fx, fy, ppx, ppy, theta, ref=anchor(LEFT_HAND_ANCHOR)
-        )
-        projected["face_mesh"] = self._project(
-            face_mesh, None, eyes_depth, eyes_coords, fx, fy, ppx, ppy, theta, ref=anchor(FACE_ANCHOR)
-        )
-        projected["body_world_pose"] = body_world
-        projected["ts"] = time.time()
-        self.emit("projected_data", projected)
-
-        # Map the reflected millimeters into mirror pixel space, with smoothing.
-        mirrored: dict[str, Any] = dict(projected)
-        for part in PARTS:
-            mirrored[part] = self._mirror_part(part, projected.get(part) or [])
-        self._mirrored = mirrored
-        self.emit("mirrored_data", mirrored)
-
-    # ------------------------------------------------------------------
-    # Calibration: sample capture + solver
-    # ------------------------------------------------------------------
-
-    def _capture_calibration_sample(self, data: Any) -> dict[str, Any]:
-        """Snapshot the recent raw frames for one calibration target.
-
-        ``data``: ``{ target: [x_px, y_px], landmark?: int }``. When ``landmark``
-        is omitted the more visible body index fingertip (19/20) is chosen.
-        """
-        if not isinstance(data, dict):
-            raise ValueError("expected { target: [x, y], landmark? }")
-        target = data.get("target")
-        if not (isinstance(target, (list, tuple)) and len(target) >= 2):
-            raise ValueError("target must be [x_px, y_px]")
-        try:
-            target_px = [float(target[0]), float(target[1])]
-        except (TypeError, ValueError) as exc:
-            raise ValueError("target must be numeric") from exc
-
-        now = time.time()
-        frames = [
-            raw
-            for raw in self._raw_history
-            if now - raw["ts"] <= SAMPLE_MAX_AGE_S and raw.get("body_pose")
-        ]
-        if len(frames) < SAMPLE_MIN_FRAMES:
-            raise RuntimeError(f"need {SAMPLE_MIN_FRAMES} recent pose frames, have {len(frames)}")
-
-        raw_landmark = data.get("landmark")
-        landmark = (
-            int(raw_landmark)
-            if isinstance(raw_landmark, (int, float))
-            else _pick_fingertip(frames)
-        )
-        if landmark is None:
-            raise RuntimeError("no visible index fingertip (raise a hand)")
-
-        vis = _median_visibility(frames, landmark)
-        if vis < MIN_FINGERTIP_VISIBILITY:
-            raise RuntimeError(f"fingertip landmark {landmark} barely visible ({vis:.2f})")
-
-        self._samples.append({"target": target_px, "landmark": landmark, "frames": frames})
-        # Frames must not leak into the next target's sample; the history
-        # refills within a second from the live pose stream.
-        self._raw_history.clear()
         return {
-            "ok": True,
-            "samples": len(self._samples),
-            "landmark": landmark,
-            "visibility": round(vis, 2),
+            "body_pose": body,
+            "right_hand_pose": mirror.project_part(
+                frame, parts["right_hand_pose"], optics, anchor(RIGHT_HAND_ANCHOR), own_depths=False
+            ),
+            "left_hand_pose": mirror.project_part(
+                frame, parts["left_hand_pose"], optics, anchor(LEFT_HAND_ANCHOR), own_depths=False
+            ),
+            "face_mesh": mirror.project_part(
+                frame, parts["face_mesh"], optics, anchor(FACE_ANCHOR), own_depths=False
+            ),
         }
 
-    def _solve_calibration(self, data: Any) -> dict[str, Any]:
-        """Fit tilt/scale (grid search) + mm->px affine (least squares).
+    def _smooth(self, parts: dict[str, Array]) -> dict[str, Array]:
+        """Move each part toward the new frame from the previous smoothed one."""
+        out: dict[str, Array] = {}
+        for name, points in parts.items():
+            previous = self._previous.get(name)
+            if previous is not None and previous.shape == points.shape:
+                rate = np.where(points[:, 1] > 0, SMOOTHING[name], OFFSCREEN_SMOOTHING)[:, None]
+                points = points.copy()
+                # A point missing last frame (NaN) starts fresh instead of staying NaN.
+                points[:, :2] = np.where(
+                    np.isfinite(previous[:, :2]),
+                    lerp(previous[:, :2], points[:, :2], rate),
+                    points[:, :2],
+                )
+            out[name] = points
+        self._previous = out
+        return out
 
-        Returns the fitted parameters and residuals, and applies them to the
-        live config unless called with ``{"apply": false}``.
-        """
-        if len(self._samples) < SOLVE_MIN_SAMPLES:
-            raise RuntimeError(f"need at least {SOLVE_MIN_SAMPLES} samples, have {len(self._samples)}")
-        apply_fit = True
-        if isinstance(data, dict) and "apply" in data:
-            apply_fit = bool(data["apply"])
 
-        best: dict[str, Any] | None = None
-        for tilt, scale in _grid(TILT_COARSE, SCALE_COARSE):
-            fit = self._evaluate_candidate(tilt, scale)
-            if fit is not None and (best is None or fit["rmse"] < best["rmse"]):
-                best = fit
-        if best is None:
-            raise RuntimeError("could not project samples (poses unusable)")
+def _payload(parts: dict[str, Array], body_world: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {name: parts[name].tolist() for name in PARTS}
+    payload["body_world_pose"] = body_world
+    payload["ts"] = time.time()
+    return payload
 
-        # Two refinement passes, each covering +-1 coarse cell around the
-        # running optimum (the second pass recenters, so a coarse pick one cell
-        # off the true optimum still converges).
-        for _ in range(2):
-            tilts = [best["tilt_deg"] + TILT_REFINE_STEP * i for i in range(-5, 6)]
-            scales = [max(best["scale"] + SCALE_REFINE_STEP * i, 0.05) for i in range(-5, 6)]
-            for tilt, scale in _grid(tilts, scales):
-                fit = self._evaluate_candidate(tilt, scale)
-                if fit is not None and fit["rmse"] < best["rmse"]:
+
+def _median_visibility(pose: Array, index: int) -> float:
+    values = pose[:, index, 2]
+    values = values[np.isfinite(values)]
+    return float(np.median(values)) if values.size else 0.0
+
+
+def _rank(fit: _Fit) -> tuple[float, float]:
+    """Lower is better. Fits equal to a micropixel prefer the scale closest to 1,
+    since scale is unobservable when every joint sits at one depth."""
+    return round(fit.rmse, 6), abs(fit.scale - 1.0)
+
+
+class _Solver:
+    """Evaluates (tilt, scale) candidates over every captured frame at once."""
+
+    def __init__(self, samples: list[_Sample], settings: MirrorSettings) -> None:
+        self._settings = settings
+        self._pose = np.concatenate([s.pose for s in samples])
+        self._world = np.concatenate([s.world for s in samples])
+        self._sizes = np.concatenate([s.sizes for s in samples])
+        self._index = np.concatenate([np.full(len(s.pose), s.landmark) for s in samples])
+        self._bounds = np.cumsum([0, *(len(s.pose) for s in samples)])
+        self._targets = np.array([s.target for s in samples])
+
+    def best(self, tilts: list[float], scales: list[float], best: _Fit | None = None) -> _Fit | None:
+        for tilt in tilts:
+            for scale in scales:
+                fit = self._evaluate(tilt, scale)
+                if fit is not None and (best is None or _rank(fit) < _rank(best)):
                     best = fit
+        return best
 
-        result = {
-            "ok": True,
-            "tilt_deg": round(best["tilt_deg"], 2),
-            "scale": round(best["scale"], 3),
-            "affine": [round(v, 5) for v in best["affine"]],
-            "residual_px_mean": round(best["mean_err"], 1),
-            "residual_px_max": round(best["max_err"], 1),
-            "residuals_px": [round(e, 1) for e in best["errors"]],
-            "samples": len(self._samples),
-            "applied": apply_fit,
-        }
-        if apply_fit:
-            self._config["tilt_deg"] = float(result["tilt_deg"])
-            self._config["scale"] = float(result["scale"])
-            self._affine = [float(v) for v in result["affine"]]
-        self.log(
-            "info",
-            "calibration solved: "
-            f"tilt={result['tilt_deg']} scale={result['scale']} "
-            f"residual={result['residual_px_mean']}px mean / {result['residual_px_max']}px max "
-            f"({len(self._samples)} samples, applied={apply_fit})",
-        )
-        return result
-
-    def _evaluate_candidate(self, tilt_deg: float, scale: float) -> dict[str, Any] | None:
-        """Project all samples under one (tilt, scale) and fit the affine.
-
-        Per-axis closed-form least squares: minimize sum((a*x + b - t)^2).
-        Returns None when fewer than SOLVE_MIN_SAMPLES samples project cleanly.
-        """
-        pts: list[tuple[float, float]] = []  # reflected mm
-        targets: list[tuple[float, float]] = []  # target px
-        for sample in self._samples:
-            xs: list[float] = []
-            ys: list[float] = []
-            for raw in sample["frames"]:
-                loc = self._reflect_body_landmark(raw, sample["landmark"], tilt_deg, scale)
-                if loc is not None:
-                    xs.append(loc[0])
-                    ys.append(loc[1])
-            if len(xs) < SAMPLE_MIN_FRAMES:
-                continue
-            pts.append((median(xs), median(ys)))
-            targets.append((sample["target"][0], sample["target"][1]))
-        if len(pts) < SOLVE_MIN_SAMPLES:
+    def _evaluate(self, tilt_deg: float, scale: float) -> _Fit | None:
+        optics = self._settings.optics(tilt_deg, scale)
+        located = mirror.reflect_landmark(self._pose, self._world, self._sizes, self._index, optics)
+        points: list[Array] = []
+        targets: list[Array] = []
+        for i, (start, end) in enumerate(zip(self._bounds[:-1], self._bounds[1:], strict=True)):
+            rows = located[start:end]
+            rows = rows[np.isfinite(rows).all(axis=1)]
+            if len(rows) >= SAMPLE_MIN_FRAMES:
+                points.append(np.median(rows, axis=0))
+                targets.append(self._targets[i])
+        if len(points) < SOLVE_MIN_SAMPLES:
             return None
-
-        fit_x = _fit_axis([p[0] for p in pts], [t[0] for t in targets])
-        fit_y = _fit_axis([p[1] for p in pts], [t[1] for t in targets])
+        pts, tgt = np.array(points), np.array(targets)
+        fit_x = mirror.fit_axis(pts[:, 0], tgt[:, 0])
+        fit_y = mirror.fit_axis(pts[:, 1], tgt[:, 1])
         if fit_x is None or fit_y is None:
             return None
-        ax, bx = fit_x
-        ay, by = fit_y
-        # Reject degenerate fits (collapsed axes) and vertical flips (only a
-        # misconfigured camera rotation produces those). The horizontal sign is
-        # legitimate either way: it depends on which side of the mirror the
-        # camera looks from (a front-facing camera behind a one-way mirror
-        # needs ax < 0, the legacy above-the-mirror rig used ax > 0).
+        (ax, bx), (ay, by) = fit_x, fit_y
+        # Reject collapsed axes and vertical flips (only a misconfigured camera
+        # rotation produces those). Either horizontal sign is valid: it depends
+        # on which side of the mirror the camera looks from.
         if abs(ax) < 1e-9 or ay <= 0:
             return None
+        predicted = np.column_stack([ax * pts[:, 0] + bx, ay * pts[:, 1] + by])
+        errors = np.linalg.norm(predicted - tgt, axis=1)
+        return _Fit(tilt_deg, scale, (ax, bx, ay, by), errors, float(np.sqrt(np.mean(errors**2))))
 
-        errors = [
-            math.hypot(ax * p[0] + bx - t[0], ay * p[1] + by - t[1])
-            for p, t in zip(pts, targets, strict=True)
-        ]
-        rmse = math.sqrt(sum(e * e for e in errors) / len(errors))
-        return {
-            "tilt_deg": tilt_deg,
-            "scale": scale,
-            "affine": [ax, bx, ay, by],
-            "errors": errors,
-            "rmse": rmse,
-            "mean_err": sum(errors) / len(errors),
-            "max_err": max(errors),
-        }

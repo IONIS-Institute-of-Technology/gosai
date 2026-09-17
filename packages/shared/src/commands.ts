@@ -75,6 +75,7 @@ export const COMMANDS: { readonly [C in CommandName]: CommandSpec<C> } = {
   },
 
   'drivers:list': { capability: Capabilities.DriversRead },
+  'drivers:schema': { capability: Capabilities.DriversRead },
   'devices:list': { capability: Capabilities.DevicesRead, timeoutMs: MINUTE },
   'driver:get-data': { capability: Capabilities.DriversUse, apps: binding, timeoutMs: MINUTE },
   // The server lets an action run for two minutes.

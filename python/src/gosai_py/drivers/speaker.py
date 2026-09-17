@@ -1,55 +1,136 @@
 """Speaker driver.
 
-Streams audio samples from a thread-safe buffer to the system output device
-using `sounddevice`.
+Plays audio through `sounddevice`. Each instance has its own output stream
+and playback buffer: `play` appends samples, the output callback copies what
+it needs and fills the rest of the block with silence.
 
-Actions:
-- `play(samples)`: enqueue audio (list of floats in [-1, 1] OR a list of
-  lists where the first column is the sample value).
-- `clear()`: empty the playback buffer.
-- `list_devices()`: enumerate output devices.
-- `set_device(index)` / `set_samplerate(sr)`: reconfigure the output stream.
+The driver is exclusive, so every app gets its own instance. A shared
+instance would let one app's `clear` or `set_samplerate` cut another app's
+audio, and the bridge can't tell apps apart inside one instance. Mixing
+several streams is the OS's job: PipeWire, PulseAudio, CoreAudio and WASAPI
+shared mode all do it, and plain ALSA's `default` device goes through dmix.
+Only when an app picks a raw ALSA `hw` device can a second app fail to open
+it, and then its start fails with that error instead of silently sharing.
 """
 
 from __future__ import annotations
 
-import contextlib
-import queue
+import math
+import threading
+import time
+from collections import deque
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
-from gosai_py.driver import BaseDriver, DriverContext
+import msgspec
+import numpy as np
+
+from gosai_py import devices
+from gosai_py.driver import BaseDriver, DriverContext, Event, action
+from gosai_py.drivers.microphone import AudioSettingsPayload, DeviceResult, SamplerateResult
+from gosai_py.payloads import AudioSamples, Ok, mono_samples
+
+DEFAULT_SAMPLERATE = 44_100
+BLOCKSIZE = 1024
+CHANNELS = 1
+
+
+class SpeakerConfig(msgspec.Struct, kw_only=True):
+    device: int | None = None
+    samplerate: int | None = None
+
+
+class UnderrunPayload(msgspec.Struct, kw_only=True):
+    ts: float
+
+
+class PlayResult(msgspec.Struct, kw_only=True):
+    ok: bool = True
+    # Pending audio in blocks of 1024 samples, rounded up.
+    queued: int
+    queued_samples: int
+
+
+class OutputDevice(msgspec.Struct, kw_only=True):
+    index: int
+    name: str
+    max_output_channels: int
+    default_samplerate: float
+
+
+class OutputDevices(msgspec.Struct, kw_only=True):
+    ok: bool = True
+    default_output: int | None
+    devices: list[OutputDevice]
+
+
+class PlaybackBuffer:
+    """Mono samples waiting to be played, filled by `play` and drained by the callback."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._chunks: deque[np.ndarray] = deque()
+        self._offset = 0
+        self._pending = 0
+
+    def append(self, samples: np.ndarray) -> int:
+        with self._lock:
+            if len(samples):
+                self._chunks.append(samples)
+                self._pending += len(samples)
+            return self._pending
+
+    def clear(self) -> None:
+        with self._lock:
+            self._chunks.clear()
+            self._offset = 0
+            self._pending = 0
+
+    def pending(self) -> int:
+        with self._lock:
+            return self._pending
+
+    def read_into(self, out: np.ndarray) -> int:
+        """Copy up to `len(out)` samples into every channel of `out`, zero the rest.
+
+        Returns the number of samples copied.
+        """
+        filled = 0
+        with self._lock:
+            while filled < len(out) and self._chunks:
+                chunk = self._chunks[0]
+                take = min(len(chunk) - self._offset, len(out) - filled)
+                out[filled : filled + take] = chunk[self._offset : self._offset + take, None]
+                filled += take
+                self._offset += take
+                if self._offset == len(chunk):
+                    self._chunks.popleft()
+                    self._offset = 0
+            self._pending -= filled
+        out[filled:] = 0.0
+        return filled
 
 
 class SpeakerDriver(BaseDriver):
-    name: ClassVar[str] = "speaker"
-    description: ClassVar[str] = "Audio output via sounddevice."
-    events: ClassVar[tuple[str, ...]] = ("settings", "underrun")
-    actions: ClassVar[tuple[str, ...]] = (
-        "play",
-        "clear",
-        "list_devices",
-        "set_device",
-        "set_samplerate",
-    )
-    loop_interval_s: ClassVar[float | None] = None  # callback driven
-    # Output device: multiple apps may target the same speaker (the OS mixes).
-    shared: ClassVar[bool] = True
+    name = "speaker"
+    description = "Audio output via sounddevice."
+    events: ClassVar[Mapping[str, Event]] = {
+        "settings": Event(AudioSettingsPayload, "Stream settings after each (re)open."),
+        "underrun": Event(UnderrunPayload, "The output device ran out of data."),
+    }
+    config_type = SpeakerConfig
+    loop_interval_s = None
 
     def __init__(self, context: DriverContext) -> None:
         super().__init__(context)
         self._device: int | None = None
-        self._samplerate = 44_100
-        self._channels = 1
-        self._blocksize = 1024
-        self._buffer: queue.Queue[Any] = queue.Queue()
+        self._samplerate = DEFAULT_SAMPLERATE
+        self._buffer = PlaybackBuffer()
         self._stream: Any = None
 
-    def apply_config(self, cfg: dict[str, Any]) -> None:
-        """Apply persisted settings before the output stream opens."""
-        if "device" in cfg:
-            self._device = None if cfg["device"] is None else int(cfg["device"])
-        if "samplerate" in cfg and cfg["samplerate"] is not None:
-            self._samplerate = int(cfg["samplerate"])
+    def configure(self, config: SpeakerConfig) -> None:
+        self._device = config.device
+        self._samplerate = config.samplerate or DEFAULT_SAMPLERATE
 
     def pre_run(self) -> None:
         self._open_stream()
@@ -57,116 +138,78 @@ class SpeakerDriver(BaseDriver):
     def cleanup(self) -> None:
         self._close_stream()
 
-    # ------------------------------------------------------------------
-    # Actions
-    # ------------------------------------------------------------------
+    @action("Queue samples in [-1, 1] at the stream's sample rate. Rows use their first column.")
+    def play(self, samples: AudioSamples | None) -> PlayResult:
+        pending = self._buffer.append(mono_samples(samples)) if samples else self._buffer.pending()
+        return PlayResult(queued=math.ceil(pending / BLOCKSIZE), queued_samples=pending)
 
-    def execute(self, action: str, data: Any) -> Any:
-        if action == "play":
-            self._play(data)
-            return {"ok": True, "queued": self._buffer.qsize()}
-        if action == "clear":
-            with contextlib.suppress(Exception):
-                while True:
-                    self._buffer.get_nowait()
-            return {"ok": True}
-        if action == "list_devices":
-            return self._list_devices()
-        if action == "set_device":
-            self._device = None if data is None else int(data)
-            self._reopen()
-            return {"device": self._device}
-        if action == "set_samplerate":
-            self._samplerate = int(data)
-            self._reopen()
-            return {"samplerate": self._samplerate}
-        return super().execute(action, data)
+    @action("Drop queued audio.")
+    def clear(self) -> Ok:
+        self._buffer.clear()
+        return Ok()
 
-    # ------------------------------------------------------------------
-    # Internals
-    # ------------------------------------------------------------------
-
-    def _play(self, data: Any) -> None:
-        try:
-            import numpy as np  # type: ignore[import-not-found]
-        except ImportError as exc:
-            self.log("error", f"numpy required: {exc}")
-            return
-        if data is None:
-            return
-        samples = np.asarray(data, dtype=np.float32)
-        if samples.ndim > 1:
-            samples = samples[:, 0]
-        # Push in blocksize chunks (zero-padded if the tail is short).
-        bs = self._blocksize
-        n = samples.shape[0]
-        i = 0
-        while i < n:
-            chunk = samples[i : i + bs]
-            if chunk.shape[0] < bs:
-                chunk = np.concatenate([chunk, np.zeros(bs - chunk.shape[0], dtype=np.float32)])
-            self._buffer.put(chunk)
-            i += bs
-
-    def _list_devices(self) -> dict[str, Any]:
-        try:
-            import sounddevice as sd  # type: ignore[import-not-found]
-        except ImportError as exc:
-            raise RuntimeError(f"sounddevice not available: {exc}") from exc
-        devices = sd.query_devices()
-        defaults = sd.default.device
-        return {
-            "ok": True,
-            "default_output": defaults[1] if isinstance(defaults, (list, tuple)) else defaults,
-            "devices": [
-                {
-                    "index": idx,
-                    "name": d.get("name"),
-                    "max_output_channels": d.get("max_output_channels", 0),
-                    "default_samplerate": d.get("default_samplerate", 0),
-                }
-                for idx, d in enumerate(devices)
-                if d.get("max_output_channels", 0) > 0
+    @action("List output devices.")
+    def list_devices(self) -> OutputDevices:
+        listing = devices.audio_devices()
+        return OutputDevices(
+            default_output=listing.default_output,
+            devices=[
+                OutputDevice(
+                    index=d.index,
+                    name=d.name,
+                    max_output_channels=d.max_output_channels,
+                    default_samplerate=d.default_samplerate,
+                )
+                for d in listing.devices
+                if d.max_output_channels > 0
             ],
-        }
+        )
+
+    @action("Play on another device; null picks the system default.")
+    def set_device(self, device: int | None) -> DeviceResult:
+        self._reopen(device, self._samplerate)
+        return DeviceResult(device=self._device)
+
+    @action("Play at another sample rate.")
+    def set_samplerate(self, samplerate: int) -> SamplerateResult:
+        self._reopen(self._device, samplerate)
+        return SamplerateResult(samplerate=self._samplerate)
+
+    def _reopen(self, device: int | None, samplerate: int) -> None:
+        previous = (self._device, self._samplerate)
+        self._close_stream()
+        self._device, self._samplerate = device, samplerate
+        try:
+            self._open_stream()
+        except Exception:
+            self._device, self._samplerate = previous
+            try:
+                self._open_stream()
+            except Exception as exc:
+                self.log("error", f"could not restore {self.name} device={previous[0]}: {exc!r}")
+                self.publish_state("errored")
+            raise
 
     def _open_stream(self) -> None:
-        try:
-            import numpy as np  # type: ignore[import-not-found]
-            import sounddevice as sd  # type: ignore[import-not-found]
-        except ImportError as exc:
-            self.log("error", f"sounddevice/numpy required: {exc}")
-            return
+        sd = devices.sounddevice()
 
-        def callback(outdata: Any, frames: int, _time: Any, _status: Any) -> None:
-            try:
-                block = self._buffer.get_nowait()
-            except queue.Empty:
-                outdata[:] = np.zeros((frames, self._channels), dtype=np.float32)
-                return
-            if block.shape[0] != frames:
-                # Shouldn't happen if _play pads correctly, but be defensive.
-                if block.shape[0] > frames:
-                    block = block[:frames]
-                else:
-                    block = np.concatenate(
-                        [block, np.zeros(frames - block.shape[0], dtype=np.float32)]
-                    )
-            outdata[:] = block.reshape(-1, self._channels)
+        def callback(outdata: np.ndarray, _frames: int, _time: Any, status: Any) -> None:
+            self._buffer.read_into(outdata)
+            if status.output_underflow:
+                self.emit("underrun", {"ts": time.time()})
 
         try:
             stream = sd.OutputStream(
                 samplerate=self._samplerate,
-                channels=self._channels,
-                blocksize=self._blocksize,
+                channels=CHANNELS,
+                blocksize=BLOCKSIZE,
                 callback=callback,
                 device=self._device,
                 dtype="float32",
             )
             stream.start()
         except Exception as exc:
-            self.log("error", f"cannot open speaker: {exc!r}")
-            return
+            raise RuntimeError(f"cannot open speaker device={self._device}: {exc}") from exc
 
         self._stream = stream
         self.emit(
@@ -174,23 +217,14 @@ class SpeakerDriver(BaseDriver):
             {
                 "device": self._device,
                 "samplerate": self._samplerate,
-                "channels": self._channels,
-                "blocksize": self._blocksize,
+                "channels": CHANNELS,
+                "blocksize": BLOCKSIZE,
             },
         )
-        self.log(
-            "info",
-            f"speaker open device={self._device} sr={self._samplerate} ch={self._channels}",
-        )
+        self.log("info", f"speaker open device={self._device} sr={self._samplerate} ch={CHANNELS}")
 
     def _close_stream(self) -> None:
-        if self._stream is None:
-            return
-        with contextlib.suppress(Exception):
-            self._stream.stop()
-            self._stream.close()
-        self._stream = None
-
-    def _reopen(self) -> None:
-        self._close_stream()
-        self._open_stream()
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            stream.stop()
+            stream.close()

@@ -159,11 +159,11 @@ def test_create_session_on_cpu_reports_runtime(identity_model: Path) -> None:
 
     x = np.ones((1, 3), dtype=np.float32)
     assert np.array_equal(session.run(None, {"x": x})[0], x)
-    assert info["provider"] == CPU
-    assert info["device"] == "cpu"
-    assert info["accelerated"] is False
-    assert info["model"] == "identity.onnx"
-    assert info["reason"] == "CPU explicitly requested"
+    assert info.get("provider") == CPU
+    assert info.get("device") == "cpu"
+    assert info.get("accelerated") is False
+    assert info.get("model") == "identity.onnx"
+    assert info.get("reason") == "CPU explicitly requested"
     assert lines and lines[0][0] == "info"
 
 
@@ -189,9 +189,9 @@ def test_create_session_checks_the_active_provider(
     assert "reinstall" not in str(error.value)
 
     _, info = create_onnx_session(model, log_fn=log, allow_cpu=True, config=AcceleratorConfig())
-    assert info["provider"] == CPU
-    assert info["requested_providers"] == [CUDA]
-    assert "no accelerated" in info["reason"]
+    assert info.get("provider") == CPU
+    assert info.get("requested_providers") == [CUDA]
+    assert "no accelerated" in info.get("reason", "")
 
 
 def test_mediapipe_auto_uses_macos_gpu_delegate(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -202,9 +202,9 @@ def test_mediapipe_auto_uses_macos_gpu_delegate(monkeypatch: pytest.MonkeyPatch)
     )
 
     assert options.kwargs["delegate"] == FakeBaseOptions.Delegate.GPU
-    assert info["provider"] == "GPUDelegate"
-    assert info["device"] == "coreml"
-    assert info["accelerated"] is True
+    assert info.get("provider") == "GPUDelegate"
+    assert info.get("device") == "coreml"
+    assert info.get("accelerated") is True
 
 
 @pytest.mark.parametrize("mode", ["cuda", "tensorrt", "auto"])
@@ -218,8 +218,8 @@ def test_mediapipe_runs_on_cpu_off_macos(mode: str, monkeypatch: pytest.MonkeyPa
     )
 
     assert options.kwargs["delegate"] == FakeBaseOptions.Delegate.CPU
-    assert info["accelerated"] is False
-    assert "only have a GPU delegate on macOS" in info["reason"]
+    assert info.get("accelerated") is False
+    assert "only have a GPU delegate on macOS" in info.get("reason", "")
 
 
 def test_mediapipe_allow_gpu_false_forces_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -233,9 +233,9 @@ def test_mediapipe_allow_gpu_false_forces_cpu(monkeypatch: pytest.MonkeyPatch) -
     )
 
     assert options.kwargs["delegate"] == FakeBaseOptions.Delegate.CPU
-    assert info["provider"] == "CPUDelegate"
-    assert info["accelerated"] is False
-    assert info["reason"] == "MediaPipe GPU delegate rejected this model; running on CPU"
+    assert info.get("provider") == "CPUDelegate"
+    assert info.get("accelerated") is False
+    assert info.get("reason") == "MediaPipe GPU delegate rejected this model; running on CPU"
 
 
 def test_mediapipe_gpu_flag_overrides_mode(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -250,5 +250,5 @@ def test_mediapipe_gpu_flag_overrides_mode(monkeypatch: pytest.MonkeyPatch) -> N
         config=AcceleratorConfig(mode="cpu", mediapipe_gpu=True),
     )
 
-    assert disabled["accelerated"] is False
-    assert forced["accelerated"] is True
+    assert disabled.get("accelerated") is False
+    assert forced.get("accelerated") is True

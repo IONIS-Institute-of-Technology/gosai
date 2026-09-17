@@ -13,19 +13,120 @@ The bridge wires drivers to an in-process publish/subscribe bus and handles
 serialization for the Node-side server. Drivers should never touch sockets or
 stdio directly; they call `self.emit(event, data)` and `self.log(...)`.
 
+Schemas
+-------
+Drivers describe their interface with msgspec types, and the bridge sends it to
+Node as JSON Schema (see `gosai_py.schemas`):
+
+- `config_type`: a Struct for the startup config. `apply_config` decodes into
+  it and passes the result to `configure`.
+- `events`: a mapping from event name to `Event(payload_type, description)`.
+  The payload type describes the JSON Node receives; top-level `_` keys stay
+  in-process and are not part of it.
+- `@action(description)` on a method makes it an action named after the
+  method. The annotation of its only parameter is the type of `data`, decoded
+  with `msgspec.convert` before the call; a method without a parameter takes
+  no data. The return annotation is the result type.
+
 Actions report failures by raising. The bridge turns the exception into an
 error reply.
 """
 
 from __future__ import annotations
 
+import inspect
 import threading
 import time
 import traceback
+import typing
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any, ClassVar
 
+import msgspec
+
 from gosai_py.workers import BoundedQueueWorker, LatestValueWorker
+
+_ACTION_MARK = "__gosai_action__"
+
+
+def decode[T](value: Any, type_: type[T]) -> T:
+    """Convert JSON-like data into `type_`, accepting numeric strings and similar."""
+    return msgspec.convert(value, type_, strict=False)
+
+
+@dataclass(frozen=True)
+class Event:
+    """An event a driver publishes. `payload` is the type of its public JSON."""
+
+    payload: Any
+    description: str = ""
+
+
+@dataclass(frozen=True)
+class _ActionMark:
+    description: str
+    requires_instance: bool
+
+
+@dataclass(frozen=True)
+class ActionSpec:
+    """An action resolved from an `@action` method."""
+
+    name: str
+    description: str
+    # Type of the request `data`, or None when the action takes no data.
+    params: Any
+    result: Any
+    # False for class-level actions the bridge can run without an instance.
+    requires_instance: bool
+
+    def invoke(self, target: Any, data: Any) -> Any:
+        handler = getattr(target, self.name)
+        result = handler() if self.params is None else handler(decode(data, self.params))
+        return msgspec.to_builtins(result)
+
+
+def action[F](description: str = "", *, requires_instance: bool = True) -> Callable[[F], F]:
+    """Declare a method as a driver action. See the module docstring.
+
+    With `requires_instance=False` the method must be a staticmethod or
+    classmethod, and the bridge runs it even when no instance is running.
+    """
+
+    def mark(fn: F) -> F:
+        is_static = isinstance(fn, staticmethod | classmethod)
+        func: Any = fn.__func__ if isinstance(fn, staticmethod | classmethod) else fn
+        if is_static == requires_instance:
+            kind = "an instance method" if requires_instance else "a staticmethod or classmethod"
+            raise TypeError(f"action {func.__name__!r} must be {kind}")
+        setattr(func, _ACTION_MARK, _ActionMark(description, requires_instance))
+        return fn
+
+    return mark
+
+
+def _action_mark(value: Any) -> _ActionMark | None:
+    func = value.__func__ if isinstance(value, staticmethod | classmethod) else value
+    return getattr(func, _ACTION_MARK, None)
+
+
+def _resolve_action(owner: type, name: str, value: Any, mark: _ActionMark) -> ActionSpec:
+    func = value.__func__ if isinstance(value, staticmethod | classmethod) else value
+    hints = typing.get_type_hints(func, include_extras=True)
+    parameters = list(inspect.signature(func).parameters.values())
+    if not isinstance(value, staticmethod):
+        parameters = parameters[1:]
+    if len(parameters) > 1:
+        raise TypeError(f"{owner.__name__}.{name} takes more than one parameter")
+    params = hints.get(parameters[0].name, Any) if parameters else None
+    return ActionSpec(
+        name=name,
+        description=mark.description,
+        params=params,
+        result=hints.get("return", Any),
+        requires_instance=mark.requires_instance,
+    )
 
 
 class DriverContext:
@@ -71,8 +172,13 @@ class BaseDriver:
     Subclasses declare class-level metadata:
 
     - `name`: stable identifier matching the registration key.
-    - `events`: tuple of event names the driver publishes.
-    - `actions`: tuple of action names the driver accepts via `execute`.
+    - `events`: the events the driver publishes, as a mapping from name to
+      `Event`. A plain tuple of names is accepted and leaves payloads
+      undescribed.
+    - `actions`: names of the actions the driver accepts via `execute`. Filled
+      in from `@action` methods; drivers that override `execute` list them by
+      hand.
+    - `config_type`: msgspec Struct for the startup config, or None.
     - `dependencies`: tuple of driver names this driver depends on. The server
       starts them first, in the same instance namespace.
     - `stream_events`: high-rate events (frames, per-frame results) where only
@@ -94,8 +200,9 @@ class BaseDriver:
 
     name: ClassVar[str] = ""
     description: ClassVar[str] = ""
-    events: ClassVar[tuple[str, ...]] = ()
+    events: ClassVar[Mapping[str, Event] | tuple[str, ...]] = ()
     actions: ClassVar[tuple[str, ...]] = ()
+    config_type: ClassVar[type[msgspec.Struct] | None] = None
     dependencies: ClassVar[tuple[str, ...]] = ()
     stream_events: ClassVar[tuple[str, ...]] = ()
     buffered_events: ClassVar[dict[str, int]] = {}
@@ -108,6 +215,33 @@ class BaseDriver:
     # driver is treated as exclusive regardless of this flag.
     shared: ClassVar[bool] = False
 
+    _action_specs: ClassVar[dict[str, ActionSpec] | None] = None
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        cls._action_specs = None
+        marked = [
+            name
+            for klass in reversed(cls.__mro__)
+            for name, value in vars(klass).items()
+            if _action_mark(value) is not None
+        ]
+        if marked:
+            cls.actions = tuple(dict.fromkeys([*cls.actions, *marked]))
+
+    @classmethod
+    def action_specs(cls) -> dict[str, ActionSpec]:
+        """Actions declared with `@action`, by name. Resolved on first use."""
+        if cls._action_specs is None:
+            specs: dict[str, ActionSpec] = {}
+            for klass in reversed(cls.__mro__):
+                for name, value in vars(klass).items():
+                    mark = _action_mark(value)
+                    if mark is not None:
+                        specs[name] = _resolve_action(cls, name, value, mark)
+            cls._action_specs = specs
+        return cls._action_specs
+
     def __init__(self, context: DriverContext) -> None:
         self._context = context
         self._stop = threading.Event()
@@ -118,10 +252,6 @@ class BaseDriver:
         self._subscriptions: dict[tuple[str, str], LatestValueWorker] = {}
         self._retired_workers: list[LatestValueWorker] = []
         self._subscriptions_lock = threading.Lock()
-
-    # ------------------------------------------------------------------
-    # Lifecycle hooks (override in subclasses).
-    # ------------------------------------------------------------------
 
     def pre_run(self) -> None:
         """Called once before the loop starts. Acquire resources here.
@@ -145,15 +275,25 @@ class BaseDriver:
         """Called when the driver is stopping. Release resources here."""
 
     def execute(self, action: str, data: Any) -> Any:
-        """Handle an action invocation. Raise to report a failure."""
-        raise NotImplementedError(f"{self.name}: action {action!r} is not implemented")
+        """Handle an action invocation. Raise to report a failure.
 
-    def apply_config(self, cfg: dict[str, Any]) -> None:
-        """Apply startup configuration supplied by the server."""
+        The default runs the `@action` method of that name.
+        """
+        spec = self.action_specs().get(action)
+        if spec is None:
+            raise NotImplementedError(f"{self.name}: action {action!r} is not implemented")
+        return spec.invoke(self if spec.requires_instance else type(self), data)
 
-    # ------------------------------------------------------------------
-    # API for subclasses to use inside their hooks.
-    # ------------------------------------------------------------------
+    def apply_config(self, cfg: Mapping[str, Any]) -> None:
+        """Apply startup configuration supplied by the server.
+
+        The default decodes `cfg` into `config_type` and passes it to `configure`.
+        """
+        if self.config_type is not None:
+            self.configure(decode(cfg, self.config_type))
+
+    def configure(self, config: Any) -> None:
+        """Receive the decoded startup config, before `pre_run`."""
 
     def emit(self, event: str, data: Any) -> None:
         if event not in self.events:
@@ -254,10 +394,6 @@ class BaseDriver:
         worker.close()
         with self._subscriptions_lock:
             self._retired_workers.append(worker)
-
-    # ------------------------------------------------------------------
-    # Bridge-only API. Apps must not call these directly.
-    # ------------------------------------------------------------------
 
     def _bridge_start(self) -> None:
         """Start the driver thread and wait for `pre_run` to finish.

@@ -60,7 +60,7 @@ export function parseLaunchArgs(argv: readonly string[]): LaunchArgs {
   };
 }
 
-/** `"speech, realsense,"` -> `["speech", "realsense"]`. */
+/** `"speech, gpu,"` -> `["speech", "gpu"]`. */
 export function parseExtras(value: string): string[] {
   return value
     .split(',')

@@ -27,6 +27,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal, TypedDict, cast
 
+import onnxruntime as ort
+
 type Mode = Literal["auto", "cuda", "tensorrt", "coreml", "dml", "cpu"]
 MODES: tuple[Mode, ...] = ("auto", "cuda", "tensorrt", "coreml", "dml", "cpu")
 type ProviderSpec = str | tuple[str, dict[str, Any]]
@@ -196,8 +198,6 @@ def create_onnx_session(
     config: AcceleratorConfig | None = None,
 ) -> tuple[Any, RuntimeInfo]:
     """Create an ONNX Runtime session, then check which provider it activated."""
-    import onnxruntime as ort
-
     config = config or AcceleratorConfig.from_env()
     if cuda_device_id is not None:
         config = replace(config, cuda_device_id=cuda_device_id)

@@ -1,11 +1,4 @@
-"""Tests that exercise the new Phase 6 drivers without requiring native deps.
-
-These verify:
-- Bridge discovers all expected driver classes.
-- Each declared driver has unique events/actions/dependencies.
-- The hand_sign geometric classifier returns plausible labels.
-- The interpolate driver lerps numeric points correctly.
-"""
+"""Driver discovery, the metadata apps rely on, and small pure helpers."""
 
 from __future__ import annotations
 
@@ -30,7 +23,7 @@ EXPECTED_DRIVERS = {
 }
 
 
-def test_bridge_discovers_all_phase6_drivers() -> None:
+def test_bridge_discovers_all_builtin_drivers() -> None:
     bridge = Bridge()
     bridge.discover_builtin()
     found = set(bridge._driver_classes.keys())
@@ -53,7 +46,7 @@ def test_each_driver_has_unique_metadata() -> None:
 EXPECTED_METADATA: dict[str, dict[str, tuple[str, ...]]] = {
     "heartbeat": {"events": ("tick",), "actions": ("echo",), "dependencies": ()},
     "camera": {
-        "events": ("frame", "color", "depth", "frame_size", "fps"),
+        "events": ("frame", "color", "frame_size", "fps"),
         "actions": ("set_device", "set_mode", "set_resolution", "set_fps", "snapshot", "list_formats"),
         "dependencies": (),
     },
@@ -66,6 +59,8 @@ EXPECTED_METADATA: dict[str, dict[str, tuple[str, ...]]] = {
             "clear",
             "render_marker",
             "get_latest_frame",
+            "reproject_point",
+            "reproject_points",
         ),
         "dependencies": ("camera",),
     },
@@ -89,8 +84,23 @@ EXPECTED_METADATA: dict[str, dict[str, tuple[str, ...]]] = {
         "actions": ("set_max_frequency", "set_window_size"),
         "dependencies": ("microphone",),
     },
-    "hand_pose": {"events": ("raw_data",), "actions": ("set_flip", "set_window"), "dependencies": ("camera",)},
+    "hand_pose": {
+        "events": ("raw_data",),
+        "actions": ("set_flip", "set_window", "set_homography", "set_frame_size", "set_surface_size"),
+        "dependencies": ("camera",),
+    },
     "pose": {"events": ("raw_data",), "actions": ("set_flip", "set_window"), "dependencies": ("camera",)},
+    "pose_to_mirror": {
+        "events": ("mirrored_data", "projected_data"),
+        "actions": (
+            "set_mirror_config",
+            "capture_calibration_sample",
+            "solve_calibration",
+            "clear_calibration_samples",
+        ),
+        "dependencies": ("pose",),
+    },
+    "slr": {"events": ("new_sign",), "actions": ("set_actions",), "dependencies": ("pose",)},
     "hand_sign": {"events": ("sign",), "actions": (), "dependencies": ("hand_pose",)},
     "ball": {
         "events": ("balls", "fps"),
@@ -107,7 +117,7 @@ EXPECTED_METADATA: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "speech_activity_detection": {
         "events": ("activity",),
-        "actions": ("predict",),
+        "actions": ("predict", "reset"),
         "dependencies": ("microphone",),
     },
     "speech_to_text": {

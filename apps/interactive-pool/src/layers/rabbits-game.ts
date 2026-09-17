@@ -100,7 +100,7 @@ export function createRabbitsLayer(feed: PoolFeed): Layer {
       for (const rabbit of rabbits) {
         if (!rabbit.alive) continue;
         for (const ball of feed.balls.balls) {
-          const sumR = rabbit.r / 2 + (ball.r || BALL_DIAMETER_FOR_COLLISION) / 2;
+          const sumR = rabbit.r / 2 + (ball.diameter || BALL_DIAMETER_FOR_COLLISION) / 2;
           if (dist({ x: ball.x, y: ball.y }, { x: rabbit.x, y: rabbit.y }) < sumR) {
             rabbit.alive = false;
             rabbit.deathTime = now;

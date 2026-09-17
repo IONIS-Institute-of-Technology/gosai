@@ -8,6 +8,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { DriverSchema } from '@gosai/shared';
 import type { BridgeHandlers, BridgeRequestSansId, DriverBridge } from '../src/drivers/bridge.js';
 import { DriverManager, SYSTEM_BINDING, type DriverManifestEntry } from '../src/drivers/manager.js';
 import { EventBus } from '../src/ipc/bus.js';
@@ -22,10 +23,20 @@ interface RecordedRequest {
   readonly data?: unknown;
 }
 
+const TICK_SCHEMA: DriverSchema = {
+  $schema: 'https://json-schema.org/draft/2020-12/schema',
+  config: null,
+  events: {
+    tick: { description: 'A tick.', delivery: 'ordered', payload: { $ref: '#/$defs/Tick' } },
+  },
+  actions: {},
+  $defs: { Tick: { type: 'object', properties: { count: { type: 'integer' } } } },
+};
+
 const MANIFEST: DriverManifestEntry[] = [
   { name: 'camera', events: ['color', 'frame'], actions: ['set_mode'], dependencies: [] },
   { name: 'calibration', events: ['homography'], actions: [], dependencies: ['camera'] },
-  { name: 'unrelated', events: ['tick'], actions: [], dependencies: [] },
+  { name: 'unrelated', events: ['tick'], actions: [], dependencies: [], schema: TICK_SCHEMA },
   { name: 'speaker', events: ['level'], actions: ['play'], dependencies: [], shared: true },
 ];
 
@@ -219,6 +230,29 @@ async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<vo
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
+
+describe('driver catalogue', () => {
+  test('driver info carries a schema version and schemas are served on request', async () => {
+    const { manager } = await startManager();
+
+    const version = manager.getDriver('unrelated')?.schemaVersion;
+    expect(version).toMatch(/^[0-9a-f]{16}$/);
+    expect(manager.getDriver('unrelated')).not.toHaveProperty('schema');
+    expect(manager.getDriver('camera')).not.toHaveProperty('schemaVersion');
+    expect(manager.getSchemas('unrelated')).toEqual({
+      schemas: { unrelated: { schemaVersion: version ?? null, schema: TICK_SCHEMA } },
+    });
+    const all = manager.getSchemas();
+    expect(Object.keys(all.schemas).sort()).toEqual([
+      'calibration',
+      'camera',
+      'speaker',
+      'unrelated',
+    ]);
+    expect(all.schemas['camera']).toEqual({ schemaVersion: null, schema: null });
+    expect(() => manager.getSchemas('nope')).toThrow();
+  });
+});
 
 describe('driver leases', () => {
   test('starting a driver starts its dependencies first', async () => {

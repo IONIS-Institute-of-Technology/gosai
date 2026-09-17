@@ -28,6 +28,8 @@ import type {
   DriverInfo,
   DriverInstanceInfo,
   DriverRuntimeInfo,
+  DriverSchema,
+  DriverSchemasResult,
   ExperienceDescriptor,
   GlobalConfig,
   GlobalConfigPatch,
@@ -527,6 +529,7 @@ export const driverInfoSchema: z.ZodType<DriverInfo> = z.object({
   shared: z.boolean(),
   runtime: driverRuntimeSchema.optional(),
   instances: z.array(driverInstanceSchema).optional(),
+  schemaVersion: z.string().optional(),
 });
 
 export const driverEventPayloadSchema: z.ZodType<DriverEventPayload> = z.object({
@@ -535,6 +538,22 @@ export const driverEventPayloadSchema: z.ZodType<DriverEventPayload> = z.object(
   data: z.unknown(),
   ts: z.number(),
   binding: z.string(),
+});
+
+/**
+ * A driver's schema, as the Python bridge describes it. The bridge owns its
+ * shape (see `DriverSchema`), so the protocol passes it through as JSON.
+ */
+export const driverSchemasResultSchema: z.ZodType<DriverSchemasResult> = z.object({
+  schemas: z.record(
+    z.string(),
+    z.object({
+      schemaVersion: z.string().nullable(),
+      schema: z
+        .custom<DriverSchema>((value) => typeof value === 'object' && value !== null)
+        .nullable(),
+    }),
+  ),
 });
 
 export const installedAppSchema: z.ZodType<InstalledApp> = z.object({
