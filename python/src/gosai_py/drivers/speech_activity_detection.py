@@ -1,9 +1,10 @@
 """Voice Activity Detection driver (Silero VAD).
 
-Lazily loads Silero VAD via `torch.hub` on first invocation, then exposes a
-`predict` action that scores a 16 kHz mono float32 audio block. The score is
-emitted as `activity` events. Apps can subscribe to the event stream OR call
-`predict` synchronously for offline use.
+Runs the Silero VAD ONNX model with ONNX Runtime on CPU, one thread, as Silero
+recommends. The model is downloaded on first use. A `predict` action scores a
+512-sample, 16 kHz mono float32 audio block, keeping the model's recurrent
+state across calls. The score is emitted as `activity` events. Apps can
+subscribe to the event stream OR call `predict` synchronously for offline use.
 
 The driver also auto-classifies live `microphone.audio_stream` frames if the
 mic samplerate is 16 kHz; if not, it logs a one-shot warning telling the app
@@ -15,8 +16,51 @@ from __future__ import annotations
 import time
 from typing import Any, ClassVar
 
+import numpy as np
+
 from gosai_py.driver import BaseDriver, DriverContext
-from gosai_py.runtime import accelerator_mode, runtime_info
+from gosai_py.runtime import RuntimeInfo
+from gosai_py.runtime.models import Model, resolve_model
+
+MODEL = Model.download(
+    "silero_vad.onnx",
+    url=(
+        "https://raw.githubusercontent.com/snakers4/silero-vad/"
+        "v6.2.1/src/silero_vad/data/silero_vad.onnx"
+    ),
+    sha256="1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
+)
+
+
+class SileroVad:
+    """Stateful Silero VAD v5+ over ONNX Runtime, matching Silero's own OnnxWrapper."""
+
+    SAMPLE_RATE: ClassVar[int] = 16_000
+    CHUNK: ClassVar[int] = 512
+    CONTEXT: ClassVar[int] = 64
+
+    def __init__(self, session: Any) -> None:
+        self._session = session
+        self._sr = np.array(self.SAMPLE_RATE, dtype=np.int64)
+        self.reset()
+
+    def reset(self) -> None:
+        self._state = np.zeros((2, 1, 128), dtype=np.float32)
+        self._context = np.zeros((1, self.CONTEXT), dtype=np.float32)
+
+    def __call__(self, chunk: Any) -> float:
+        samples = np.asarray(chunk, dtype=np.float32).reshape(1, -1)
+        if samples.shape[1] != self.CHUNK:
+            raise ValueError(
+                f"Silero VAD needs {self.CHUNK} samples at {self.SAMPLE_RATE} Hz, "
+                f"got {samples.shape[1]}"
+            )
+        x = np.concatenate([self._context, samples], axis=1)
+        out, self._state = self._session.run(
+            None, {"input": x, "state": self._state, "sr": self._sr}
+        )
+        self._context = x[:, -self.CONTEXT :]
+        return float(out[0, 0])
 
 
 class SpeechActivityDriver(BaseDriver):
@@ -32,8 +76,7 @@ class SpeechActivityDriver(BaseDriver):
 
     def __init__(self, context: DriverContext) -> None:
         super().__init__(context)
-        self._model: Any = None
-        self._device = "cpu"
+        self._model: SileroVad | None = None
         self._warned_samplerate = False
 
     def pre_run(self) -> None:
@@ -74,68 +117,37 @@ class SpeechActivityDriver(BaseDriver):
     # ------------------------------------------------------------------
 
     def _load_model(self) -> None:
-        try:
-            import torch  # type: ignore[import-not-found]
-        except ImportError as exc:
-            raise RuntimeError(f"torch required for VAD: {exc}") from exc
-        self._device, reason = self._select_device(torch)
-        try:
-            model, _ = torch.hub.load(
-                repo_or_dir="snakers4/silero-vad",
-                model="silero_vad",
-                trust_repo=True,
-            )
-            if hasattr(model, "to"):
-                model = model.to(self._device)
-        except Exception as exc:
-            self.log("error", f"failed to load Silero VAD: {exc!r}")
-            raise
-        self._model = model
+        import onnxruntime as ort
+
+        model_path = resolve_model(MODEL, self.log)
+        options = ort.SessionOptions()
+        options.inter_op_num_threads = 1
+        options.intra_op_num_threads = 1
+        session = ort.InferenceSession(
+            str(model_path), sess_options=options, providers=["CPUExecutionProvider"]
+        )
+        self._model = SileroVad(session)
         self.set_runtime_info(
-            runtime_info(
-                backend="torch",
-                provider="Silero VAD",
-                device=self._device,
-                model="silero_vad",
-                accelerated=self._device in {"cuda", "mps"},
-                reason=reason,
+            RuntimeInfo(
+                backend="onnxruntime",
+                provider="CPUExecutionProvider",
+                device="cpu",
+                model=MODEL.filename,
+                accelerated=False,
+                reason="Silero VAD is built for single-threaded CPU inference",
             )
         )
-        self.log("info", f"Silero VAD loaded on {self._device}")
-
-    def _select_device(self, torch: Any) -> tuple[str, str | None]:
-        mode = accelerator_mode()
-        if mode == "cpu":
-            return "cpu", "CPU explicitly requested"
-        if mode == "cuda":
-            if torch.cuda.is_available():
-                return "cuda", None
-            raise RuntimeError("CUDA requested for VAD but torch.cuda is unavailable")
-        if mode in {"auto", "coreml"}:
-            if torch.cuda.is_available():
-                return "cuda", None
-            mps = getattr(getattr(torch, "backends", None), "mps", None)
-            if mps is not None and mps.is_available():
-                return "mps", None
-        if mode == "coreml":
-            return "cpu", "Torch MPS backend unavailable for VAD"
-        return "cpu", "no supported Torch accelerator available"
+        self.log("info", "Silero VAD loaded")
 
     def _predict(self, audio: Any) -> dict[str, Any]:
         if self._model is None:
             raise RuntimeError("model not loaded")
-        try:
-            import numpy as np  # type: ignore[import-not-found]
-            import torch  # type: ignore[import-not-found]
-        except ImportError as exc:
-            raise RuntimeError(f"torch/numpy required: {exc}") from exc
         if audio is None:
             raise ValueError("audio buffer is None")
         arr = np.asarray(audio, dtype=np.float32)
         if arr.ndim > 1:
             arr = arr[:, 0]
-        tensor = torch.from_numpy(arr).to(self._device)
-        score = float(self._model(tensor, self.SAMPLE_RATE).item())
+        score = self._model(arr)
         payload = {"confidence": score, "is_speech": score > 0.5, "ts": time.time()}
         self.emit("activity", payload)
         return {"ok": True, **payload}

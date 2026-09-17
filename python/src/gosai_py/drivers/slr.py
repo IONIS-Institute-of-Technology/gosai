@@ -26,8 +26,20 @@ from typing import Any, ClassVar
 
 from gosai_py.driver import BaseDriver, DriverContext
 from gosai_py.runtime import create_onnx_session
+from gosai_py.runtime.models import Model, resolve_model
 
 MODELS_DIR = Path(__file__).resolve().parent / "slr_models"
+# Keyed by the number of actions each model classifies.
+MODELS = {
+    16: Model.bundled(
+        MODELS_DIR / "slr_16.onnx",
+        sha256="a7a85e349687124ba62cbee2ad105270f2cd30f197593a5dad165fef7f607c58",
+    ),
+    17: Model.bundled(
+        MODELS_DIR / "slr_17.onnx",
+        sha256="ddaf74ac7c90ede0e8e7f63871ab6cf5c056305bdbd64948856297b46cd9b293",
+    ),
+}
 
 SEQUENCE_LENGTH = 30
 # Face landmark indices used by the 158-feature models (legacy ``face_lm_ind``).
@@ -124,17 +136,14 @@ class SLRDriver(BaseDriver):
         return super().execute(action, data)
 
     def _load_model(self, actions: list[str]) -> None:
-        model_path = MODELS_DIR / f"slr_{len(actions)}.onnx"
-        if not model_path.exists():
-            raise ValueError(f"slr: no model for {len(actions)} actions ({model_path.name})")
+        model = MODELS.get(len(actions))
+        if model is None:
+            raise ValueError(f"slr: no model for {len(actions)} actions")
         try:
-            session, info = create_onnx_session(
-                model_path,
-                model_name=model_path.name,
-                log_fn=self.log,
-            )
+            model_path = resolve_model(model, self.log)
+            session, info = create_onnx_session(model_path, log_fn=self.log, allow_cpu=True)
         except Exception as exc:
-            raise RuntimeError(f"slr: failed to load {model_path.name}: {exc!r}") from exc
+            raise RuntimeError(f"slr: failed to load {model.filename}: {exc!r}") from exc
 
         inp = session.get_inputs()[0]
         feature_dim = int(inp.shape[2]) if len(inp.shape) >= 3 and isinstance(inp.shape[2], int) else 158

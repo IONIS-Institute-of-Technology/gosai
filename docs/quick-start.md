@@ -15,20 +15,22 @@ bun run build:apps                 # builds built-in app entry bundles
 ```
 
 All Python driver dependencies (OpenCV, MediaPipe, ONNX Runtime, audio) are
-installed automatically by `python:sync`. In auto mode, ONNX drivers prefer
-CUDA on Linux/Windows and CoreML/Metal providers on macOS when available. The
-Drivers panel shows the active hardware/provider for each running driver.
+installed automatically by `python:sync`, with the CPU build of ONNX Runtime
+(CoreML on macOS). In auto mode, ONNX drivers use CUDA when the `gpu` extra is
+installed and CoreML on macOS. The Drivers panel shows the active
+hardware/provider for each running driver.
 
 Camera mode selectors list modes that the Python runtime can actually open and
 decode, including MJPG/H264 modes needed by many 720p/30 webcams. Selecting a
 mode is exact: if the camera cannot deliver the chosen resolution/FPS, the
 camera driver errors instead of silently dropping to a lower resolution.
 
-For optional hardware-specific drivers, add extras:
+For NVIDIA GPUs and optional drivers, add extras (see `python/README.md`):
 
 ```bash
+cd python && uv sync --extra gpu --no-group cpu   # CUDA onnxruntime on NVIDIA GPUs
 cd python && uv sync --extra realsense   # Intel RealSense depth camera
-cd python && uv sync --extra speech      # Whisper speech recognition (requires torch)
+cd python && uv sync --extra speech      # Whisper speech recognition
 ```
 
 ## 2. Run dev mode
@@ -84,17 +86,20 @@ git init && git add . && git commit -m "initial"
 
 ## Environment variables
 
-| Variable                   | Effect                                            |
-| -------------------------- | ------------------------------------------------- |
-| `GOSAI_HOST`               | Server bind host (default `127.0.0.1`).           |
-| `GOSAI_PORT`               | Server bind port (default `7777`).                |
-| `GOSAI_PYTHON_DIR`         | Override the Python source/venv directory.        |
-| `GOSAI_BUILTIN_APPS`       | Override the built-in apps discovery root.        |
-| `GOSAI_PYTHON=0`           | Disable the Python bridge entirely.               |
-| `GOSAI_AUTOSTART_SERVER=1` | Force the desktop app to spawn the server itself. |
-| `GOSAI_ACCELERATOR=auto`   | Prefer CUDA on NVIDIA and CoreML/Metal on macOS.  |
-| `GOSAI_ACCELERATOR=cpu`    | Explicit CPU mode for inference drivers.          |
-| `GOSAI_CUDA_DEVICE_ID=0`   | Select the NVIDIA GPU for CUDA inference.         |
+| Variable                   | Effect                                                       |
+| -------------------------- | ------------------------------------------------------------ |
+| `GOSAI_HOST`               | Server bind host (default `127.0.0.1`).                      |
+| `GOSAI_PORT`               | Server bind port (default `7777`).                           |
+| `GOSAI_PYTHON_DIR`         | Override the Python source/venv directory.                   |
+| `GOSAI_BUILTIN_APPS`       | Override the built-in apps discovery root.                   |
+| `GOSAI_PYTHON=0`           | Disable the Python bridge entirely.                          |
+| `GOSAI_AUTOSTART_SERVER=1` | Force the desktop app to spawn the server itself.            |
+| `GOSAI_DASHBOARD_TOKEN`    | Token shared by a server and desktop app started separately. |
+| `GOSAI_ALLOWED_ORIGINS`    | Extra allowed origins, comma-separated.                      |
+| `GOSAI_ALLOWED_HOSTS`      | Extra allowed `Host` names, e.g. a LAN address.              |
+| `GOSAI_ACCELERATOR=auto`   | CUDA on NVIDIA and CoreML on macOS.                          |
+| `GOSAI_ACCELERATOR=cpu`    | Explicit CPU mode for inference drivers.                     |
+| `GOSAI_CUDA_DEVICE_ID=0`   | Select the NVIDIA GPU for CUDA inference.                    |
 
 ## Tests
 

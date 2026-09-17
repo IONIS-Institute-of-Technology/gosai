@@ -7,6 +7,7 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { assertSlug } from '@gosai/shared/slug';
 import type { GosaiPaths } from '../paths.js';
 
 const KEY_PATTERN = /^[a-zA-Z0-9._-]+$/;
@@ -55,7 +56,7 @@ export class AppStorage {
   }
 
   private storageDir(slug: string): string {
-    return join(this.paths.apps, slug, '_data', 'storage');
+    return join(this.paths.apps, assertSlug(slug, 'app slug'), '_data', 'storage');
   }
 
   private keyPath(slug: string, key: string): string {

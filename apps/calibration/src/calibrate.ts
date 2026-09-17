@@ -131,9 +131,7 @@ async function loadTargetCalibration(
   rt: ExperienceRuntimeContext,
   targetAppSlug: string,
 ): Promise<{ definition: CalibrationDefinition; statusKey: string }> {
-  const appsRes = await fetch(`${rt.app.serverBaseUrl}/v1/apps`);
-  if (!appsRes.ok) throw new Error(`Cannot fetch apps list (${appsRes.status})`);
-  const apps = (await appsRes.json()) as { apps: InstalledApp[] };
+  const apps = await rt.app.server.request<{ apps: InstalledApp[] }>('apps:list');
   const target = apps.apps.find((app) => app.manifest.slug === targetAppSlug);
   if (!target) throw new Error(`Calibration target app ${targetAppSlug} is not installed`);
 

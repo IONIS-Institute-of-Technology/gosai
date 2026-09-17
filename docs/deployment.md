@@ -90,7 +90,9 @@ At launch the shell:
    `~/.gosai-runtime/python-<hash>/` with the bundled `uv` - downloading a
    managed CPython 3.12 and installing all base dependencies, which include
    the full CV stack (OpenCV, MediaPipe, ONNX Runtime), so the camera /
-   pose / hand_pose / ball drivers work out of the box. A status window
+   pose / hand_pose / ball drivers work out of the box. On Linux x64 with
+   the NVIDIA driver loaded, it installs the `gpu` extra (CUDA onnxruntime)
+   instead of the CPU build. A status window
    shows progress; this step needs internet access once. The runtime is
    keyed by a hash of `pyproject.toml` + `uv.lock` + extras, so kiosks with
    identical requirements share one installation.

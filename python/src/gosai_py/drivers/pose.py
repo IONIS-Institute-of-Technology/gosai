@@ -7,52 +7,26 @@ and emits `raw_data`.
 MediaPipe removed the legacy ``mp.solutions`` API in 0.10.31; this driver uses
 the current Tasks vision API (``mediapipe.tasks.python.vision``). The model
 bundle (``holistic_landmarker.task``) is downloaded once into ``~/.gosai/models``
-on first launch. The emitted output schema is unchanged so apps stay portable.
+on first launch and checked against its sha256. The emitted output schema is unchanged so apps stay portable.
 """
 
 from __future__ import annotations
 
-import os
 import time
-import urllib.request
-from pathlib import Path
 from typing import Any, ClassVar
 
 from gosai_py.driver import BaseDriver, DriverContext
 from gosai_py.runtime import RuntimeInfo, mediapipe_base_options
+from gosai_py.runtime.models import Model, resolve_model
 
-MODEL_FILENAME = "holistic_landmarker.task"
-MODEL_URL = (
-    "https://storage.googleapis.com/mediapipe-models/holistic_landmarker/"
-    "holistic_landmarker/float16/latest/holistic_landmarker.task"
+MODEL = Model.download(
+    "holistic_landmarker.task",
+    url=(
+        "https://storage.googleapis.com/mediapipe-models/holistic_landmarker/"
+        "holistic_landmarker/float16/1/holistic_landmarker.task"
+    ),
+    sha256="e2dab61191e2dcd0a15f943d8e3ed1dce13c82dfa597b9dd39f562975a50c3f8",
 )
-
-
-def _models_dir() -> Path:
-    override = os.environ.get("GOSAI_HOME")
-    home = Path(override).expanduser().resolve() if override else Path.home() / ".gosai"
-    d = home / "models"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def _ensure_model(log_fn: Any) -> Path | None:
-    """Return the cached model path, downloading the bundle if missing."""
-    path = _models_dir() / MODEL_FILENAME
-    if path.exists() and path.stat().st_size > 0:
-        return path
-    try:
-        log_fn("info", f"pose: downloading {MODEL_FILENAME}")
-        tmp = path.with_suffix(path.suffix + ".part")
-        with urllib.request.urlopen(MODEL_URL, timeout=120) as resp, tmp.open("wb") as fp:
-            while chunk := resp.read(64 * 1024):
-                fp.write(chunk)
-        tmp.replace(path)
-        log_fn("info", f"pose: download complete ({MODEL_FILENAME})")
-        return path
-    except Exception as exc:
-        log_fn("error", f"pose: model download failed: {exc!r}")
-        return None
 
 
 def _visibility(landmark: Any) -> float:
@@ -86,15 +60,12 @@ class PoseDriver(BaseDriver):
         except ImportError as exc:
             raise RuntimeError(f"mediapipe not available: {exc}") from exc
 
-        model_path = _ensure_model(self.log)
-        if model_path is None:
-            raise RuntimeError("pose: model unavailable")
+        model_path = resolve_model(MODEL, self.log)
 
         def create(allow_gpu: bool) -> tuple[Any, RuntimeInfo]:
             base_options, info = mediapipe_base_options(
                 mp.tasks.BaseOptions,
                 model_path=model_path,
-                model_name=MODEL_FILENAME,
                 allow_gpu=allow_gpu,
             )
             options = vision.HolisticLandmarkerOptions(

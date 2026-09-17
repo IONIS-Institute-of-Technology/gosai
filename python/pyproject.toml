@@ -9,32 +9,43 @@ authors = [{ name = "GOSAI" }]
 
 dependencies = [
     "numpy>=2.5.0",
-    "msgpack>=1.2.0",
     "msgspec>=0.21.1",
     "opencv-contrib-python>=5.0.0",
-    "mediapipe>=0.10.35",
-    "pillow>=12.0.0",
-    "onnxruntime>=1.27.0; sys_platform == 'darwin'",
-    "onnxruntime-gpu[cuda,cudnn]>=1.26.0; sys_platform == 'linux' or sys_platform == 'win32'",
+    "mediapipe>=1.0.1",
     "sounddevice>=0.5.0",
-    "soundfile>=0.14.0",
 ]
 
 [project.optional-dependencies]
+# NVIDIA GPUs. Replaces the default `cpu` group: `uv sync --extra gpu --no-group cpu`.
+gpu = [
+    "onnxruntime-gpu[cuda,cudnn]>=1.30.0; sys_platform == 'linux' or sys_platform == 'win32'",
+]
 realsense = [
-    "pyrealsense2>=2.55.0",
+    "pyrealsense2>=2.55.0; sys_platform != 'darwin'",
 ]
 speech = [
-    "faster-whisper>=1.1.0",
-    "torch>=2.13.0",
-    "torchaudio>=2.9.0",
-    "scipy>=1.17.0",
+    "ctranslate2>=4.8.1",
+    "faster-whisper>=1.2.1",
 ]
 [dependency-groups]
+# CPU build of ONNX Runtime, installed by default. macOS builds include CoreML.
+cpu = [
+    "onnxruntime>=1.30.0",
+]
 dev = [
     "ruff>=0.16.8",
     "pytest>=9.1.1",
     "pyright>=1.1.414",
+]
+
+[tool.uv]
+default-groups = ["cpu", "dev"]
+# onnxruntime and onnxruntime-gpu install the same `onnxruntime` module.
+conflicts = [[{ group = "cpu" }, { extra = "gpu" }]]
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
 ]
 
 [project.scripts]

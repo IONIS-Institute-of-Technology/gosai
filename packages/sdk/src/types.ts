@@ -39,6 +39,8 @@ export interface AppContext {
 }
 
 export interface ServerConnection {
+  /** Token sent with HTTP calls such as storage. */
+  readonly authToken?: string;
   connected(): boolean;
   request<T = unknown>(type: string, payload?: unknown): Promise<T>;
   on(event: string, listener: (payload: unknown) => void): () => void;

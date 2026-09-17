@@ -5,7 +5,8 @@ import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    // @gosai/shared ships TypeScript sources, so main bundles the parts it uses.
+    plugins: [externalizeDepsPlugin({ exclude: ['@gosai/shared'] })],
     build: {
       outDir: 'out/main',
       lib: {
@@ -23,7 +24,6 @@ export default defineConfig({
       lib: {
         entry: {
           dashboard: resolve(__dirname, 'src/preload/dashboard.ts'),
-          appHost: resolve(__dirname, 'src/preload/app-host.ts'),
         },
         formats: ['cjs'],
       },

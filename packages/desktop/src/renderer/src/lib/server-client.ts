@@ -31,6 +31,8 @@ const REQUEST_TIMEOUT_MS = 10_000;
 
 export interface ServerClientOptions {
   readonly url: string;
+  /** Sent in the socket URL because browsers can't set WebSocket headers. */
+  readonly token?: string;
   readonly onStatusChange?: (status: ConnectionStatus) => void;
 }
 
@@ -132,7 +134,7 @@ export class ServerClient {
     this.setStatus('connecting');
     let ws: WebSocket;
     try {
-      ws = new WebSocket(this.options.url);
+      ws = new WebSocket(socketUrl(this.options.url, this.options.token));
     } catch (err) {
       console.error('failed to open WebSocket', err);
       this.scheduleReconnect();
@@ -271,6 +273,13 @@ export class ServerClient {
       }
     }
   }
+}
+
+function socketUrl(url: string, token: string | undefined): string {
+  if (!token) return url;
+  const parsed = new URL(url);
+  parsed.searchParams.set('token', token);
+  return parsed.toString();
 }
 
 interface ResponsePayload {

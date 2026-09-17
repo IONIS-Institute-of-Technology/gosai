@@ -1,5 +1,6 @@
 import { join, resolve } from 'node:path';
 import { existsSync, writeFileSync } from 'node:fs';
+import { generateDashboardToken } from '@gosai/shared/auth';
 import { createServer, type ServerOptions } from './server.js';
 import { defaultPaths, type GosaiPaths } from './paths.js';
 
@@ -12,6 +13,15 @@ const builtinAppsDir = resolveBuiltinAppsDir();
 
 const enablePython = process.env.GOSAI_PYTHON !== '0';
 
+// Desktop main passes the token it generated. A standalone server makes its
+// own. The variable stays set because `bun --hot` re-runs this file in the
+// same process; the Python bridge and the installer strip it from the
+// environment of the processes they spawn.
+const providedToken = process.env.GOSAI_DASHBOARD_TOKEN;
+const dashboardToken = providedToken || generateDashboardToken();
+// Keep a generated token across hot reloads too.
+process.env.GOSAI_DASHBOARD_TOKEN = dashboardToken;
+
 const options: ServerOptions = {
   host,
   port,
@@ -19,9 +29,19 @@ const options: ServerOptions = {
   pythonDir,
   ...(builtinAppsDir ? { builtinAppsDir } : {}),
   enablePython,
+  dashboardToken,
+  allowedOrigins: listEnv('GOSAI_ALLOWED_ORIGINS'),
+  allowedHosts: listEnv('GOSAI_ALLOWED_HOSTS'),
 };
 
 const server = await createServer(options);
+
+if (!providedToken) {
+  console.log(
+    `GOSAI_DASHBOARD_TOKEN=${dashboardToken} (generated for this run; ` +
+      'set GOSAI_DASHBOARD_TOKEN to choose one)',
+  );
+}
 
 // Machine-readable readiness signal. GOSAI_PORT=0 asks the OS for a free
 // ephemeral port, so supervisors (the Electron shell, the kiosk CLI) discover
@@ -57,4 +77,11 @@ function resolveBuiltinAppsDir(): string | undefined {
   }
   const guess = resolve(import.meta.dir, '..', '..', '..', 'apps');
   return existsSync(guess) ? guess : undefined;
+}
+
+function listEnv(name: string): string[] {
+  return (process.env[name] ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 }

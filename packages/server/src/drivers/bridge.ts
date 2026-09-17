@@ -138,16 +138,20 @@ export class PythonBridge implements DriverBridge {
       this.ready = { resolve, reject };
     });
 
+    const env: Record<string, string | undefined> = {
+      ...process.env,
+      PYTHONUNBUFFERED: '1',
+      // MediaPipe / TensorFlow write verbose native logs to stderr.
+      GLOG_minloglevel: '2',
+      TF_CPP_MIN_LOG_LEVEL: '2',
+    };
+    // Python drivers must not see the server's secret.
+    delete env.GOSAI_DASHBOARD_TOKEN;
+
     const proc = Bun.spawn({
       cmd: [bridgeBin],
       cwd: this.options.pythonDir,
-      env: {
-        ...process.env,
-        PYTHONUNBUFFERED: '1',
-        // MediaPipe / TensorFlow write verbose native logs to stderr.
-        GLOG_minloglevel: '2',
-        TF_CPP_MIN_LOG_LEVEL: '2',
-      },
+      env,
       stdin: 'pipe',
       stdout: 'pipe',
       stderr: 'pipe',

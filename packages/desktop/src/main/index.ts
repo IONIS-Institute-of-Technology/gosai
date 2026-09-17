@@ -1,7 +1,10 @@
 import { app, BrowserWindow } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
+import { generateDashboardToken } from '@gosai/shared/auth';
 import { registerIpc } from './ipc.js';
+import { installWebContentsGuards } from './security.js';
+import { checkServerToken } from './server-auth.js';
 import { WindowRegistry } from './windows.js';
 import { ServerRunner, shouldAutostartServer } from './server-runner.js';
 import { applyKioskPaths, resolveKioskConfig, runKiosk } from './kiosk.js';
@@ -30,15 +33,22 @@ configureLinuxWindowingBackend();
 const kioskConfig = resolveKioskConfig();
 if (kioskConfig) applyKioskPaths(kioskConfig);
 
-const windows = new WindowRegistry({ rootDir: __dirname });
+// A new token at each launch. GOSAI_DASHBOARD_TOKEN lets `bun run dev` share
+// one token between a separately started server and this app.
+const dashboardToken = process.env.GOSAI_DASHBOARD_TOKEN || generateDashboardToken();
+delete process.env.GOSAI_DASHBOARD_TOKEN;
+
+const windows = new WindowRegistry({ rootDir: __dirname, dashboardToken });
 let serverRunner: ServerRunner | null = null;
+
+installWebContentsGuards((contents) => windows.isAppWindow(contents));
 
 app.whenReady().then(async () => {
   registerIpc({ windows });
 
   if (kioskConfig) {
     try {
-      serverRunner = await runKiosk({ config: kioskConfig, windows });
+      serverRunner = await runKiosk({ config: kioskConfig, windows, dashboardToken });
     } catch (err) {
       console.error(`[gosai-kiosk] failed to start: ${String(err)}`);
       app.exit(1);
@@ -50,6 +60,7 @@ app.whenReady().then(async () => {
     serverRunner = await startEmbeddedServer();
   }
   windows.openDashboard();
+  void checkServerToken(windows.serverBaseUrl, dashboardToken);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -77,7 +88,7 @@ async function startEmbeddedServer(): Promise<ServerRunner> {
     console.error(`[gosai-desktop] python runtime setup failed: ${String(err)}`);
   }
 
-  const runner = new ServerRunner(pythonDir ? { pythonDir } : {});
+  const runner = new ServerRunner({ dashboardToken, ...(pythonDir ? { pythonDir } : {}) });
   runner.start();
   if (runner.isRunning()) {
     try {

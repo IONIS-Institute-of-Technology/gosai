@@ -11,12 +11,15 @@ import {
   type ErrorPayload,
   type MessageEnvelope,
 } from '@gosai/shared/protocol';
+import type { TokenScope } from '@gosai/shared/auth';
 import type { EventBus } from './bus.js';
 import type { ChildLogger } from '../logger/index.js';
+import { canSubscribe, commandDenial } from '../access/policy.js';
 
 export interface CommandContext {
   readonly clientId: string;
   readonly bus: EventBus;
+  readonly scope: TokenScope;
 }
 
 export type CommandHandler = (
@@ -32,6 +35,8 @@ interface ClientState {
 
 export interface ClientData {
   readonly clientId: string;
+  /** Set from the token checked at the `/ws` upgrade. */
+  readonly scope: TokenScope;
 }
 
 export interface WebSocketGatewayOptions {
@@ -119,9 +124,27 @@ export class WebSocketGateway {
       return;
     }
 
+    const scope = socket.data.scope;
+
     if (parsed.type === 'subscribe' || parsed.type === 'unsubscribe') {
-      this.handleSubscription(socket, parsed);
+      const denied = this.handleSubscription(socket, parsed);
+      if (denied.length > 0) {
+        this.log.warn('subscription denied', { clientId: socket.data.clientId, events: denied });
+        this.sendError(socket, parsed.id ?? '', {
+          code: 'FORBIDDEN',
+          message: `Not allowed to subscribe to ${denied.join(', ')}`,
+          details: { denied },
+        });
+        return;
+      }
       this.respondOk(socket, parsed.id ?? '', { ok: true });
+      return;
+    }
+
+    const denial = commandDenial(scope, parsed.type, parsed.payload);
+    if (denial) {
+      this.log.warn('command denied', { clientId: socket.data.clientId, reason: denial });
+      this.sendError(socket, parsed.id ?? '', { code: 'FORBIDDEN', message: denial });
       return;
     }
 
@@ -138,6 +161,7 @@ export class WebSocketGateway {
       const data = await handler(parsed, {
         clientId: socket.data.clientId,
         bus: this.bus,
+        scope,
       });
       this.respondOk(socket, parsed.id ?? '', data);
     } catch (err) {
@@ -158,18 +182,31 @@ export class WebSocketGateway {
     this.clients.clear();
   }
 
+  /**
+   * Applies the request and returns the events the client may not subscribe
+   * to. Allowed events in the same request are still subscribed, because
+   * clients re-send every subscription in one batch after a reconnect.
+   */
   private handleSubscription(
     socket: ServerWebSocket<ClientData>,
     msg: MessageEnvelope<'subscribe' | 'unsubscribe', { events: string[] }>,
-  ): void {
+  ): string[] {
     const client = this.clients.get(socket.data.clientId);
-    if (!client) return;
-    const events = Array.isArray(msg.payload?.events) ? msg.payload.events : [];
+    if (!client) return [];
+    const events = (Array.isArray(msg.payload?.events) ? msg.payload.events : []).filter(
+      (e): e is string => typeof e === 'string',
+    );
     if (msg.type === 'subscribe') {
-      for (const e of events) client.subscriptions.add(e);
+      const denied: string[] = [];
+      for (const e of events) {
+        if (canSubscribe(socket.data.scope, e)) client.subscriptions.add(e);
+        else denied.push(e);
+      }
+      return denied;
     } else {
       for (const e of events) client.subscriptions.delete(e);
     }
+    return [];
   }
 
   private broadcast(event: string, payload: unknown, timestamp: number): void {

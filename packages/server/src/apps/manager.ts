@@ -5,7 +5,7 @@
  * lifecycle errors are caught, surfaced as state transitions, and logged.
  */
 
-import { existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type {
   AppManifest,
@@ -29,6 +29,8 @@ export interface AppManagerOptions {
   readonly bus: EventBus;
   readonly drivers: DriverManager;
   readonly builtinAppsDir?: string;
+  /** Let installs clone `file:` URLs. Only for tests. */
+  readonly allowFileInstalls?: boolean;
 }
 
 export interface StartExperienceOptions {
@@ -46,6 +48,7 @@ export class AppManager {
 
   constructor(private readonly options: AppManagerOptions) {
     this.log = options.logger.child('apps');
+    this.removeLeftoverStaging();
     this.discover();
   }
 
@@ -78,6 +81,7 @@ export class AppManager {
       source,
       logger: this.log,
       paths: this.options.paths,
+      allowFileSources: this.options.allowFileInstalls === true,
     });
     this.ingest(result.app, result.app.installPath, false);
     const record = this.catalogue.get(result.app.manifest.slug);
@@ -210,6 +214,18 @@ export class AppManager {
       }
     }
     await Promise.all(stops);
+  }
+
+  /** Installs interrupted by a crash or restart leave clones in `.staging`. */
+  private removeLeftoverStaging(): void {
+    const staging = join(this.options.paths.apps, '.staging');
+    if (!existsSync(staging)) return;
+    try {
+      rmSync(staging, { recursive: true, force: true });
+      this.log.info('removed leftover install staging directory');
+    } catch (err) {
+      this.log.warn('could not remove install staging directory', { err: String(err) });
+    }
   }
 
   private discoverBuiltin(builtinDir: string): void {

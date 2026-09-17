@@ -5,6 +5,7 @@
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { isValidSlug } from '@gosai/shared/slug';
 import type {
   AppCalibrationSchema,
   AppManifest,
@@ -73,7 +74,7 @@ export function validateManifest(path: string, value: unknown): AppManifest {
   const v = value as Record<string, unknown>;
 
   const slug = requireString(path, v, 'slug');
-  if (!/^[a-z][a-z0-9-]*$/.test(slug)) {
+  if (!isValidSlug(slug)) {
     throw new ManifestError(path, `invalid slug "${slug}"`);
   }
   const name = requireString(path, v, 'name');
