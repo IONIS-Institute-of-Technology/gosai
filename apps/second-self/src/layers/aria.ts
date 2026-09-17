@@ -13,9 +13,12 @@
  * rest rotations on all humanoid bones. Kalidokit rotations therefore apply
  * unchanged (the VRM1 x/z sign flip is only for VRM1-authored models).
  *
- * The WebGL renderer draws into a detached canvas that is copied into the
- * compositor's 2D context, so the avatar sits in the layer z-order below the
- * menu and the sleep veil. The renderer exists only while the layer runs.
+ * The WebGL renderer draws into its own canvas, stacked in the compositor's
+ * container right below the transparent 2D canvas and aligned with the
+ * reference space, so the menu, the overlays and the sleep veil stay on top.
+ * Copying WebGL frames into the 2D canvas instead would read pixels back
+ * every frame wherever Chromium runs 2D canvases in software. The renderer
+ * exists only while the layer runs.
  */
 
 import * as THREE from 'three';
@@ -26,7 +29,13 @@ import * as Kalidokit from 'kalidokit';
 import type { LayerDeps } from '../shared/deps.js';
 import { drawText } from '../shared/draw.js';
 import { DEFAULT_FRAME_HEIGHT, DEFAULT_FRAME_WIDTH } from '../shared/feed.js';
-import { REF_HEIGHT, REF_WIDTH, type Landmark, type Layer } from '../shared/types.js';
+import {
+  REF_HEIGHT,
+  REF_WIDTH,
+  type Landmark,
+  type Layer,
+  type Viewport,
+} from '../shared/types.js';
 
 interface Rotation {
   readonly x: number;
@@ -84,6 +93,28 @@ export function createAriaLayer(deps: LayerDeps): Layer {
   const quaternion = new THREE.Quaternion();
   const position = new THREE.Vector3();
   const drawingSize = new THREE.Vector2();
+  /** The viewport the canvas was last placed at, to skip unchanged style writes. */
+  let placement = '';
+
+  /** Lines the WebGL canvas up with the reference space and sizes its drawing buffer. */
+  function place(target: THREE.WebGLRenderer, viewport: Viewport): void {
+    const { x, y, width, height } = viewport;
+    const key = `${x},${y},${width},${height}`;
+    if (key === placement) return;
+    placement = key;
+    const style = target.domElement.style;
+    style.left = `${x}px`;
+    style.top = `${y}px`;
+    style.width = `${width}px`;
+    style.height = `${height}px`;
+    const dpr = window.devicePixelRatio || 1;
+    const bufferWidth = Math.max(1, Math.round(width * dpr));
+    const bufferHeight = Math.max(1, Math.round(height * dpr));
+    const size = target.getSize(drawingSize);
+    if (size.x !== bufferWidth || size.y !== bufferHeight) {
+      target.setSize(bufferWidth, bufferHeight, false);
+    }
+  }
   const look = { pitch: 0, yaw: 0 };
 
   const face = new LandmarkBuffer();
@@ -263,38 +294,41 @@ export function createAriaLayer(deps: LayerDeps): Layer {
 
     start(): void {
       if (loadFailed) return;
-      renderer = new THREE.WebGLRenderer({
-        canvas: document.createElement('canvas'),
-        alpha: true,
-        antialias: true,
-      });
+      const canvas = document.createElement('canvas');
+      canvas.style.cssText = 'position:absolute;display:block;pointer-events:none;';
+      const { container, canvas: compositor } = deps.surface;
+      container.insertBefore(canvas, compositor);
+      renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
       renderer.setPixelRatio(1);
+      placement = '';
       timer.reset();
       deps.setFaceMesh('raw', true);
     },
 
-    render({ ctx, timestamp }): void {
+    render({ ctx, timestamp, viewport }): void {
       if (!renderer) {
         drawPlaceholder(ctx);
         return;
       }
-      // Render at the device-pixel size the reference space covers on screen.
-      const transform = ctx.getTransform();
-      const width = Math.max(1, Math.round(REF_WIDTH * transform.a));
-      const height = Math.max(1, Math.round(REF_HEIGHT * transform.d));
-      const size = renderer.getSize(drawingSize);
-      if (size.x !== width || size.y !== height) renderer.setSize(width, height, false);
-
+      place(renderer, viewport);
       animate(timestamp);
       timer.update(timestamp);
       vrm?.update(timer.getDelta());
       renderer.render(scene, camera);
-      ctx.drawImage(renderer.domElement, 0, 0, REF_WIDTH, REF_HEIGHT);
+    },
+
+    suspend(): void {
+      if (renderer) renderer.domElement.style.visibility = 'hidden';
+    },
+
+    resume(): void {
+      if (renderer) renderer.domElement.style.visibility = 'visible';
     },
 
     stop(): void {
       if (!renderer) return;
       deps.setFaceMesh('raw', false);
+      renderer.domElement.remove();
       renderer.dispose();
       renderer.forceContextLoss();
       renderer = null;

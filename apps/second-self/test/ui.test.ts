@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { createMirrorFeed } from '../src/shared/feed.js';
 import type { MirroredData } from '../src/shared/types.js';
 import {
+  cssViewport,
   CursorPicker,
   dist,
   drawHoverButton,
@@ -38,6 +39,17 @@ function mirror(hands: { right?: [number, number]; left?: [number, number] }): M
 }
 
 describe('geometry', () => {
+  test('cssViewport converts the fitted reference space to CSS pixels', () => {
+    // A 1080x1920 reference letterboxed into a 2160x1080 backing store at 2x DPR.
+    const fit = { scaleX: 0.5625, scaleY: 0.5625, offsetX: 776.25, offsetY: 0 };
+    expect(cssViewport(fit, { width: 1080, height: 1920 }, 0.5)).toEqual({
+      x: 388.125,
+      y: 0,
+      width: 303.75,
+      height: 540,
+    });
+  });
+
   test('dist', () => {
     expect(dist(0, 0, 3, 4)).toBe(5);
   });

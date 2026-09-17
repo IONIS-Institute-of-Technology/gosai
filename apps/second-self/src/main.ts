@@ -30,6 +30,7 @@ import { SIGN_ACTIONS } from './shared/sign.js';
 import { SleepController } from './shared/sleep.js';
 import { Synth } from './shared/synth.js';
 import { REF_HEIGHT, REF_WIDTH, type FrameContext, type Layer } from './shared/types.js';
+import { cssViewport } from './shared/ui.js';
 
 import { createAriaLayer } from './layers/aria.js';
 import { createBodyLayer } from './layers/body.js';
@@ -47,6 +48,8 @@ import { createShowPingLayer } from './layers/show-ping.js';
 import { createSignGameLayer } from './layers/sign-game.js';
 import { createSignTrainingLayer } from './layers/sign-training.js';
 import { createTheremineLayer } from './layers/theremine.js';
+
+const REFERENCE = { width: REF_WIDTH, height: REF_HEIGHT } as const;
 
 type LayerSpec = Omit<LayerDef, 'create'> & { readonly factory: (deps: LayerDeps) => Layer };
 
@@ -212,7 +215,7 @@ interface State {
 export default defineExperience<State>({
   init(rt): State {
     const surface = createFullscreenCanvas({
-      reference: { width: REF_WIDTH, height: REF_HEIGHT },
+      reference: REFERENCE,
       mode: 'contain',
       signal: rt.signal,
     });
@@ -240,6 +243,7 @@ export default defineExperience<State>({
     let layers: Layers | null = null;
     const deps: LayerDeps = {
       rt,
+      surface: state.surface,
       feed: state.feed,
       synth,
       options,
@@ -284,12 +288,18 @@ export default defineExperience<State>({
     const { surface, session } = state;
     if (!session) return;
     const { ctx, canvas } = surface;
-    surface.fit();
+    const fit = surface.fit();
+    // Transparent, so the avatar's WebGL canvas below shows through; the
+    // container behind both is black.
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = '#000000';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.restore();
+    const viewport = cssViewport(
+      fit,
+      REFERENCE,
+      canvas.width > 0 ? canvas.clientWidth / canvas.width : 1,
+    );
 
     const { layers, sleep } = session;
     sleep.update(frame.timestamp, frame.deltaMs);
@@ -297,7 +307,7 @@ export default defineExperience<State>({
     if (sleep.dormant()) layers.suspend();
     else layers.resume();
 
-    layers.render({ ctx, timestamp: frame.timestamp, deltaMs: frame.deltaMs });
+    layers.render({ ctx, timestamp: frame.timestamp, deltaMs: frame.deltaMs, viewport });
     sleep.render(ctx, frame.timestamp);
   },
 

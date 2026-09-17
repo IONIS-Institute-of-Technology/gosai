@@ -4,9 +4,10 @@
  * geometry helpers.
  */
 
+import type { FitTransform, Size } from '@gosai/sdk';
 import { drawText } from './draw.js';
 import { isValid } from './mirror.js';
-import type { Landmark, MirroredData } from './types.js';
+import type { Landmark, MirroredData, Viewport } from './types.js';
 
 export interface Point {
   readonly x: number;
@@ -18,6 +19,20 @@ export interface Rect {
   readonly y: number;
   readonly w: number;
   readonly h: number;
+}
+
+/**
+ * The CSS-pixel rectangle a reference space covers, from the transform
+ * `FullscreenCanvas.fit()` returned (in backing-store pixels) and the CSS
+ * pixels per backing-store pixel.
+ */
+export function cssViewport(fit: FitTransform, reference: Size, cssPerPixel: number): Viewport {
+  return {
+    x: fit.offsetX * cssPerPixel,
+    y: fit.offsetY * cssPerPixel,
+    width: reference.width * fit.scaleX * cssPerPixel,
+    height: reference.height * fit.scaleY * cssPerPixel,
+  };
 }
 
 export function dist(x1: number, y1: number, x2: number, y2: number): number {

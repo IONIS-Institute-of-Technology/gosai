@@ -4,7 +4,7 @@
  * context (logging, assets, drivers).
  */
 
-import type { ExperienceRuntimeContext } from '@gosai/sdk';
+import type { ExperienceRuntimeContext, FullscreenCanvas } from '@gosai/sdk';
 import type { MirrorFeed } from './feed.js';
 import type { Layers, MenuOptions } from './layers.js';
 import type { Projection } from './projection.js';
@@ -12,6 +12,8 @@ import type { Synth } from './synth.js';
 
 export interface LayerDeps {
   readonly rt: ExperienceRuntimeContext;
+  /** The compositor's canvas. Layers with their own canvas stack it in `surface.container`. */
+  readonly surface: FullscreenCanvas;
   readonly feed: MirrorFeed;
   readonly synth: Synth;
   readonly layers: Layers;

@@ -31,6 +31,16 @@ export interface FrameContext {
   readonly timestamp: number;
   /** Milliseconds since the previous frame, capped by the runtime. */
   readonly deltaMs: number;
+  /** Where the reference space sits in the window, in CSS pixels. */
+  readonly viewport: Viewport;
+}
+
+/** A rectangle in CSS pixels. */
+export interface Viewport {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
 }
 
 /**

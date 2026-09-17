@@ -74,7 +74,7 @@ mic ────────────▶ frequency_analysis (frequency)──
                                                       │
                                    layers ──▶ 1080x1920 portrait canvas
                                    theremine/music ──▶ shared/synth.ts (rt.audio)
-                                   aria ──▶ offscreen WebGL, drawn in z-order
+                                   aria ──▶ WebGL canvas stacked below
 ```
 
 - `src/main.ts`: the compositor. It owns the SDK fullscreen canvas, subscribes
