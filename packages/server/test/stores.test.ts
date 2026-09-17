@@ -1,4 +1,11 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
@@ -240,7 +247,7 @@ describe('legacy app data migration', () => {
     legacyApp(paths, 'builtin-leftover', false);
     const log = new Logger({ logsDir: paths.logs }).child('migration');
 
-    expect(migrateLegacyAppData(paths, log)).toEqual({ moved: 4, conflicts: 0 });
+    expect(migrateLegacyAppData(paths, log)).toEqual({ moved: 4, conflicts: 0, skipped: 0 });
     for (const slug of ['installed', 'builtin-leftover']) {
       expect(readFileSync(join(paths.data, slug, 'storage', 'score.json'), 'utf8')).toBe('3');
       expect(existsSync(join(paths.data, slug, 'device-settings.json'))).toBe(true);
@@ -251,7 +258,7 @@ describe('legacy app data migration', () => {
     expect(existsSync(join(paths.apps, 'installed', 'gosai.app.json'))).toBe(true);
     expect(existsSync(join(paths.apps, 'builtin-leftover'))).toBe(false);
 
-    expect(migrateLegacyAppData(paths, log)).toEqual({ moved: 0, conflicts: 0 });
+    expect(migrateLegacyAppData(paths, log)).toEqual({ moved: 0, conflicts: 0, skipped: 0 });
     const storage = new AppStorage(paths);
     expect(storage.get('installed', 'score')).toEqual({ found: true, value: 3 });
   });
@@ -265,9 +272,55 @@ describe('legacy app data migration', () => {
     expect(migrateLegacyAppData(paths, logger.child('migration'))).toEqual({
       moved: 1,
       conflicts: 1,
+      skipped: 0,
     });
     expect(new AppStorage(paths).get('pool', 'score')).toEqual({ found: true, value: 10 });
     expect(existsSync(join(paths.apps, 'pool', '_data', 'storage', 'score.json'))).toBe(true);
     expect(logger.history().some((entry) => entry.level === 'warn')).toBe(true);
+  });
+
+  test('never follows a symlinked directory out of the app', () => {
+    const paths = tempPaths();
+    const victim = new AppStorage(paths);
+    victim.set('victim', 'secret', 'victim data');
+    const attacker = join(paths.apps, 'attacker');
+    mkdirSync(join(attacker, '_data'), { recursive: true });
+    writeFileSync(join(attacker, 'gosai.app.json'), '{}');
+    symlinkSync(join(paths.data, 'victim', 'storage'), join(attacker, '_data', 'storage'));
+    mkdirSync(join(paths.root, 'elsewhere'));
+    writeFileSync(join(paths.root, 'elsewhere', 'settings.json'), '{"display":{"id":1}}');
+    symlinkSync(join(paths.root, 'elsewhere'), join(attacker, '_config'));
+    const log = new Logger({ logsDir: paths.logs }).child('migration');
+
+    expect(migrateLegacyAppData(paths, log)).toEqual({ moved: 0, conflicts: 0, skipped: 2 });
+    expect(victim.get('victim', 'secret')).toEqual({ found: true, value: 'victim data' });
+    expect(new AppStorage(paths).list('attacker')).toEqual([]);
+    expect(existsSync(join(paths.root, 'elsewhere', 'settings.json'))).toBe(true);
+    expect(existsSync(join(paths.data, 'attacker', 'device-settings.json'))).toBe(false);
+  });
+
+  test('never moves a symlinked file, even one pointing inside the app', () => {
+    const paths = tempPaths();
+    writeFileSync(join(paths.root, 'outside.json'), '"outside"');
+    const storage = join(paths.apps, 'attacker', '_data', 'storage');
+    mkdirSync(storage, { recursive: true });
+    mkdirSync(join(paths.apps, 'attacker', '_config'));
+    writeFileSync(join(paths.apps, 'attacker', 'gosai.app.json'), '{}');
+    symlinkSync(join(paths.root, 'outside.json'), join(storage, 'leak.json'));
+    symlinkSync(join(paths.apps, 'attacker', 'gosai.app.json'), join(storage, 'inner.json'));
+    symlinkSync(
+      join(paths.root, 'outside.json'),
+      join(paths.apps, 'attacker', '_config', 'settings.json'),
+    );
+    writeFileSync(join(storage, 'real.json'), '1');
+    const log = new Logger({ logsDir: paths.logs }).child('migration');
+
+    expect(migrateLegacyAppData(paths, log)).toEqual({ moved: 1, conflicts: 0, skipped: 3 });
+    const moved = new AppStorage(paths);
+    expect(moved.list('attacker')).toEqual(['real']);
+    expect(moved.get('attacker', 'leak')).toEqual({ found: false });
+    expect(existsSync(join(paths.root, 'outside.json'))).toBe(true);
+    // The marker keeps the migration from reporting the same links at every start.
+    expect(migrateLegacyAppData(paths, log)).toEqual({ moved: 0, conflicts: 0, skipped: 0 });
   });
 });
