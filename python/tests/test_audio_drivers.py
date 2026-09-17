@@ -192,6 +192,18 @@ def test_frequency_analysis_finds_the_peak_below_the_cutoff() -> None:
     assert driver.execute("set_window_size", 0) == {"window_blocks": 1}
 
 
+def test_frequency_amplitude_keeps_the_unwindowed_scale() -> None:
+    context = RecordingContext()
+    driver = FrequencyAnalysisDriver(context)
+    hz = 224 * 16_000 / 8192  # centered on an FFT bin of the 8-block window
+    audio = _audio(16_000, 1.0, (hz, 0.2))
+    for block in audio[: 1024 * 8].reshape(8, 1024):
+        driver.on_data("microphone", "audio_stream", {"_block": block.reshape(-1, 1), "samplerate": 16_000})
+
+    # second-self gates on amplitude > 2; a 0.2 sine must stay far above it.
+    assert context.emitted("frequency")[-1]["amplitude"] == pytest.approx(0.2 * 8192 / 2, rel=0.02)
+
+
 class _Segment(SimpleNamespace):
     text: str
 

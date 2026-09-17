@@ -3,6 +3,10 @@
 Subscribes to `microphone.audio_stream` and keeps the last `window_blocks`
 blocks of the first channel. For each block it removes the DC offset, applies
 a Hann window and emits the spectrum below `max_frequency` with its peak.
+
+Magnitudes are unnormalised FFT magnitudes, rescaled by `N / sum(window)` so
+the window doesn't shrink them: a sine of amplitude A filling the N-sample
+window peaks near `A * N / 2`, as it did before the window was added.
 """
 
 from __future__ import annotations
@@ -41,7 +45,8 @@ class WindowSizeResult(msgspec.Struct, kw_only=True):
 def spectrum(samples: np.ndarray, samplerate: float, max_frequency: float) -> tuple[np.ndarray, np.ndarray]:
     """Frequencies and magnitudes below `max_frequency`, after DC removal and a Hann window."""
     centered = samples - samples.mean()
-    magnitudes = np.abs(np.fft.rfft(centered * np.hanning(len(centered))))
+    window = np.hanning(len(centered))
+    magnitudes = np.abs(np.fft.rfft(centered * window)) * (len(window) / window.sum())
     frequencies = np.fft.rfftfreq(len(centered), 1.0 / samplerate)
     below = frequencies < max_frequency
     return frequencies[below], magnitudes[below]
