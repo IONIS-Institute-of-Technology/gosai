@@ -17,7 +17,7 @@ dependencies = [
 [project.optional-dependencies]
 # NVIDIA GPUs. Replaces the default `cpu` group: `uv sync --extra gpu --no-group cpu`.
 gpu = [
-    "onnxruntime-gpu[cuda,cudnn]>=1.26.0; sys_platform == 'linux' or sys_platform == 'win32'",
+    "onnxruntime-gpu[cuda,cudnn]>=1.30.0; sys_platform == 'linux' or sys_platform == 'win32'",
 ]
 realsense = [
     "pyrealsense2>=2.55.0; sys_platform != 'darwin'",
@@ -29,7 +29,7 @@ speech = [
 [dependency-groups]
 # CPU build of ONNX Runtime, installed by default. macOS builds include CoreML.
 cpu = [
-    "onnxruntime>=1.26.0",
+    "onnxruntime>=1.30.0",
 ]
 dev = [
     "ruff>=0.16.8",
