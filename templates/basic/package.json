@@ -6,12 +6,9 @@
   "scripts": {
     "build": "bun build src/main.ts --target=browser --format=esm --outfile dist/main.js --external @gosai/sdk",
     "dev": "bun build src/main.ts --target=browser --format=esm --outfile dist/main.js --external @gosai/sdk --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc"
   },
   "dependencies": {
     "@gosai/sdk": "workspace:*"
-  },
-  "devDependencies": {
-    "typescript": "^5.9.3"
   }
 }

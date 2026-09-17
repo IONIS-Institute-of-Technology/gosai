@@ -9,12 +9,9 @@
     "gosai": "./src/index.ts"
   },
   "scripts": {
-    "build": "tsc -b",
-    "typecheck": "tsc -b",
-    "clean": "rm -rf dist *.tsbuildinfo"
+    "typecheck": "tsc"
   },
   "devDependencies": {
-    "@types/bun": "^1.4.2",
-    "typescript": "^5.9.3"
+    "@types/bun": "^1.4.2"
   }
 }

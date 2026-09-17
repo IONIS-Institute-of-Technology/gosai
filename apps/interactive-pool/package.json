@@ -6,12 +6,9 @@
   "scripts": {
     "build": "bun build src/main.ts src/calibration.ts --target=browser --format=esm --outdir dist --external @gosai/sdk",
     "dev": "bun run build --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc"
   },
   "dependencies": {
     "@gosai/sdk": "workspace:*"
-  },
-  "devDependencies": {
-    "typescript": "^5.9.3"
   }
 }

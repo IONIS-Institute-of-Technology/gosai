@@ -10,8 +10,8 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "start": "electron .",
-    "typecheck": "tsc -b",
-    "clean": "rm -rf out dist release *.tsbuildinfo",
+    "typecheck": "tsc -p tsconfig.node.json && tsc -p tsconfig.web.json",
+    "clean": "rm -rf out dist release",
     "pack": "electron-vite build && electron-builder --dir",
     "dist:mac": "electron-vite build && electron-builder --mac --config electron-builder.config.cjs",
     "dist:linux": "electron-vite build && electron-builder --linux --config electron-builder.config.cjs"
@@ -30,7 +30,6 @@
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "tailwindcss": "^4.3.3",
-    "typescript": "^5.9.3",
     "vite": "^7.3.6"
   }
 }

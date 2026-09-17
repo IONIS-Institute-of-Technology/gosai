@@ -6,7 +6,7 @@
   "scripts": {
     "build": "bun build src/main.ts --target=browser --format=esm --outdir dist --external @gosai/sdk",
     "dev": "bun run build --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc"
   },
   "dependencies": {
     "@gosai/sdk": "workspace:*",
@@ -15,7 +15,6 @@
     "three": "0.185.1"
   },
   "devDependencies": {
-    "@types/three": "0.185.1",
-    "typescript": "^5.9.3"
+    "@types/three": "0.185.1"
   }
 }

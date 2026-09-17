@@ -71,7 +71,7 @@ train future driver models) with the multi-model pipeline in
 
 | Tool       | Min version | Notes                                |
 | ---------- | ----------- | ------------------------------------ |
-| **Bun**    | 1.3         | TypeScript runtime + bundler         |
+| **Bun**    | 1.4.2       | TypeScript runtime + bundler         |
 | **uv**     | 0.5         | Python package + virtual env manager |
 | **Node**   | 22.12       | Electron requires it                 |
 | **Python** | 3.12        | The drivers target 3.12+             |
@@ -100,14 +100,16 @@ To install a new app paste its git URL into the Apps tab of the dashboard.
 
 | Command                    | Purpose                                           |
 | -------------------------- | ------------------------------------------------- |
-| `bun run dev`              | Server + desktop with hot reload                  |
+| `bun run dev`              | Server, SDK runtime and desktop with hot reload   |
 | `bun run dev:server`       | Only the server                                   |
 | `bun run dev:desktop`      | Only the Electron app                             |
 | `bun run build:sdk`        | Build the SDK runtime served at `/sdk-runtime.js` |
 | `bun run build`            | Build every package                               |
-| `bun run build:apps`       | Build the built-in apps + template                |
+| `bun run build:apps`       | Build the built-in apps                           |
 | `bun run build:server-bin` | Compile the server to a single executable         |
 | `bun run typecheck`        | TypeScript check across the workspace             |
+| `bun run test`             | Server tests                                      |
+| `bun run format:check`     | Prettier check across the workspace               |
 | `bun run python:sync`      | `uv sync` for the Python runtime                  |
 | `bun run python:lint`      | `ruff check src` for the Python runtime           |
 | `bun run python:test`      | `pytest` for the Python runtime                   |

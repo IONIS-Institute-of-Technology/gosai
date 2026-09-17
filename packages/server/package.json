@@ -13,16 +13,14 @@
   "scripts": {
     "dev": "bun --hot src/index.ts",
     "start": "bun src/index.ts",
-    "build": "tsc -b && bun build src/index.ts --target=bun --outdir dist --external electron",
-    "typecheck": "tsc -b",
-    "clean": "rm -rf dist *.tsbuildinfo"
+    "typecheck": "tsc",
+    "test": "bun test"
   },
   "dependencies": {
     "@gosai/shared": "workspace:*",
     "hono": "^4.13.8"
   },
   "devDependencies": {
-    "@types/bun": "^1.4.2",
-    "typescript": "^5.9.3"
+    "@types/bun": "^1.4.2"
   }
 }

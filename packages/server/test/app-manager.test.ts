@@ -83,7 +83,7 @@ describe('app manager', () => {
     expect(running[0]?.appSlug).toBe('calibration');
     expect(running[0]?.experienceSlug).toBe('calibrate');
     expect(running[0]?.state).toBe('running');
-    expect('driverBinding' in (running[0] as Record<string, unknown>)).toBe(false);
+    expect(running[0]).not.toHaveProperty('driverBinding');
 
     await manager.stopExperience('calibration', 'calibrate');
 
