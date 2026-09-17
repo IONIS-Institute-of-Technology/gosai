@@ -133,6 +133,7 @@ export class WebSocketGateway {
         this.sendError(socket, parsed.id ?? '', {
           code: 'FORBIDDEN',
           message: `Not allowed to subscribe to ${denied.join(', ')}`,
+          details: { denied },
         });
         return;
       }
@@ -181,7 +182,11 @@ export class WebSocketGateway {
     this.clients.clear();
   }
 
-  /** Applies the request and returns the events the client may not subscribe to. */
+  /**
+   * Applies the request and returns the events the client may not subscribe
+   * to. Allowed events in the same request are still subscribed, because
+   * clients re-send every subscription in one batch after a reconnect.
+   */
   private handleSubscription(
     socket: ServerWebSocket<ClientData>,
     msg: MessageEnvelope<'subscribe' | 'unsubscribe', { events: string[] }>,
@@ -192,9 +197,12 @@ export class WebSocketGateway {
       (e): e is string => typeof e === 'string',
     );
     if (msg.type === 'subscribe') {
-      const denied = events.filter((e) => !canSubscribe(socket.data.scope, e));
-      if (denied.length > 0) return denied;
-      for (const e of events) client.subscriptions.add(e);
+      const denied: string[] = [];
+      for (const e of events) {
+        if (canSubscribe(socket.data.scope, e)) client.subscriptions.add(e);
+        else denied.push(e);
+      }
+      return denied;
     } else {
       for (const e of events) client.subscriptions.delete(e);
     }

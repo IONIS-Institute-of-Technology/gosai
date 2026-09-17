@@ -205,6 +205,7 @@ interface CommandResponse {
 
 async function connect(token: string | null): Promise<{
   request(type: string, payload?: unknown): Promise<CommandResponse>;
+  nextEvent(type: string): Promise<unknown>;
   close(): void;
 }> {
   const url =
@@ -213,6 +214,7 @@ async function connect(token: string | null): Promise<{
       : `${base.replace('http', 'ws')}/ws?token=${encodeURIComponent(token)}`;
   const ws = new WebSocket(url);
   const pending = new Map<string, (res: CommandResponse) => void>();
+  const waiting = new Map<string, (payload: unknown) => void>();
   await new Promise<void>((resolve, reject) => {
     ws.addEventListener('message', (ev) => {
       const msg = JSON.parse(String(ev.data)) as {
@@ -221,6 +223,7 @@ async function connect(token: string | null): Promise<{
       };
       if (msg.type === 'server:welcome') resolve();
       if (msg.type === 'response') pending.get(msg.payload.requestId)?.(msg.payload);
+      else waiting.get(msg.type)?.(msg.payload);
     });
     ws.addEventListener('error', () => reject(new Error('socket error')));
     ws.addEventListener('close', () => reject(new Error('socket closed')));
@@ -232,6 +235,9 @@ async function connect(token: string | null): Promise<{
         pending.set(id, resolve);
         ws.send(JSON.stringify({ v: 1, id, type, payload }));
       });
+    },
+    nextEvent(type) {
+      return new Promise((resolve) => waiting.set(type, resolve));
     },
     close: () => ws.close(),
   };
@@ -271,6 +277,25 @@ describe('WebSocket access', () => {
       await forbidden('subscribe', { events: ['app:*'] });
       await forbidden('subscribe', { events: ['app:other:topic'] });
       await forbidden('subscribe', { events: ['driver:event:other'] });
+
+      // A batch with one denied event still subscribes the allowed ones.
+      const batch = await client.request('subscribe', {
+        events: ['app:pool:batched', 'app:other:batched'],
+      });
+      expect(batch.ok).toBe(false);
+      expect(batch.error?.message).toContain('app:other:batched');
+      expect(batch.error?.message).not.toContain('app:pool:batched');
+      const received = client.nextEvent('app:pool:batched');
+      expect(
+        (
+          await client.request('app:broadcast', {
+            appSlug: 'pool',
+            topic: 'batched',
+            data: { n: 1 },
+          })
+        ).ok,
+      ).toBe(true);
+      expect(await received).toEqual({ n: 1 });
       await forbidden('app:config:get', { appSlug: 'other' });
       await forbidden('app:broadcast', { appSlug: 'other', topic: 't' });
       await forbidden('driver:execute', { driver: 'camera', action: 'x' });
