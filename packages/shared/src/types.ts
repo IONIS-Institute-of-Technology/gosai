@@ -273,7 +273,15 @@ export interface RunningExperience {
   readonly experienceSlug: string;
   readonly state: ExperienceState;
   readonly startedAt: number;
+  /**
+   * `request` when a client asked for this experience, `requirement` when it
+   * only runs because another experience lists it in `required`. The desktop
+   * app opens windows for requested experiences only.
+   */
+  readonly startedAs: ExperienceStart;
 }
+
+export type ExperienceStart = 'request' | 'requirement';
 
 export interface DisplayInfo {
   readonly id: number;

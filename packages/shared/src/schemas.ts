@@ -768,6 +768,7 @@ export const runningExperienceSchema: z.ZodType<RunningExperience> = z.object({
   experienceSlug: z.string(),
   state: z.enum(['idle', 'starting', 'running', 'stopping', 'crashed']),
   startedAt: z.number(),
+  startedAs: z.enum(['request', 'requirement']),
 });
 
 export const performanceSampleSchema: z.ZodType<PerformanceSample> = z.object({

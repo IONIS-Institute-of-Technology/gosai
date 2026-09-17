@@ -44,8 +44,13 @@ class FakeServer {
     return () => this.statusListeners.delete(listener);
   }
 
-  state(appSlug: string, experienceSlug: string, state: RunningExperience['state']): void {
-    const payload: RunningExperience = { appSlug, experienceSlug, state, startedAt: 1 };
+  state(
+    appSlug: string,
+    experienceSlug: string,
+    state: RunningExperience['state'],
+    startedAs: RunningExperience['startedAs'] = 'request',
+  ): void {
+    const payload: RunningExperience = { appSlug, experienceSlug, state, startedAt: 1, startedAs };
     for (const listener of this.listeners.get('experience:state-changed') ?? []) listener(payload);
   }
 
@@ -92,7 +97,7 @@ const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve,
 
 function setup(): { host: FakeHost; controller: ExperienceWindows } {
   const host = new FakeHost();
-  const controller = new ExperienceWindows(host, () => undefined);
+  const controller = new ExperienceWindows(host, { log: () => undefined });
   controller.start();
   return { host, controller };
 }
@@ -181,18 +186,73 @@ describe('ExperienceWindows', () => {
     expect(host.windows).toHaveLength(1);
   });
 
-  test('on connect, opens windows for running experiences and closes stale ones', async () => {
+  test('on connect, opens windows for running experiences and closes the stale ones it opened', async () => {
     const { host } = setup();
-    host.windows.push({ appSlug: 'gone', experienceSlug: 'main', displayId: 1 });
+    host.fake.state('gone', 'main', 'running');
+    await settle();
+    // Windows someone else opened, such as a calibration flow's, stay.
+    host.windows.push({ appSlug: 'calibration', experienceSlug: 'calibrate', displayId: 1 });
     host.fake.running = [
-      { appSlug: 'pool', experienceSlug: 'main', state: 'running', startedAt: 1 },
-      { appSlug: 'mirror', experienceSlug: 'main', state: 'starting', startedAt: 1 },
+      {
+        appSlug: 'pool',
+        experienceSlug: 'main',
+        state: 'running',
+        startedAt: 1,
+        startedAs: 'request',
+      },
+      {
+        appSlug: 'base',
+        experienceSlug: 'bg',
+        state: 'running',
+        startedAt: 1,
+        startedAs: 'requirement',
+      },
+      {
+        appSlug: 'mirror',
+        experienceSlug: 'main',
+        state: 'starting',
+        startedAt: 1,
+        startedAs: 'request',
+      },
     ];
     host.fake.connect();
     await settle();
     await settle();
     expect(host.closed).toEqual(['gone/main']);
-    expect(host.windows.map((w) => w.appSlug)).toEqual(['pool']);
+    expect(host.windows.map((w) => w.appSlug)).toEqual(['calibration', 'pool']);
+  });
+
+  test('leaves experiences that only run as a requirement headless', async () => {
+    const { host } = setup();
+    // Starting `main` with required: ["bg"] starts bg first.
+    host.fake.state('pool', 'bg', 'starting', 'requirement');
+    host.fake.state('pool', 'bg', 'running', 'requirement');
+    host.fake.state('pool', 'main', 'starting');
+    host.fake.state('pool', 'main', 'running');
+    await settle();
+    expect(host.windows.map((w) => w.experienceSlug)).toEqual(['main']);
+
+    // Closing main's window stops main only; bg never had a window.
+    host.fake.state('pool', 'main', 'idle');
+    expect(host.windows).toEqual([]);
+
+    // A client asking for bg itself makes it requested, and it gets a window.
+    host.fake.state('pool', 'bg', 'running', 'request');
+    await settle();
+    expect(host.windows.map((w) => w.experienceSlug)).toEqual(['bg']);
+  });
+
+  test('opens where a custom display resolver says', async () => {
+    const host = new FakeHost();
+    new ExperienceWindows(host, {
+      log: () => undefined,
+      resolveDisplay: () => ({ displayId: 2, fullscreen: false }),
+    }).start();
+    host.fake.state('kiosk', 'main', 'running');
+    await settle();
+    expect(host.windows).toEqual([
+      { appSlug: 'kiosk', experienceSlug: 'main', displayId: 2, fullscreen: false },
+    ]);
   });
 
   test('stop() removes its listeners', () => {
