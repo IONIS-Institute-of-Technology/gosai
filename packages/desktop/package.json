@@ -13,9 +13,10 @@
     "typecheck": "tsc -p tsconfig.node.json && tsc -p tsconfig.web.json",
     "test": "bun test",
     "clean": "rm -rf out dist release",
-    "pack": "electron-vite build && electron-builder --dir",
-    "dist:mac": "electron-vite build && electron-builder --mac --config electron-builder.config.cjs",
-    "dist:linux": "electron-vite build && electron-builder --linux --config electron-builder.config.cjs"
+    "pack": "electron-vite build && bun ../../scripts/prepare-bundle.ts && electron-builder --config electron-builder.config.cjs --publish never --dir",
+    "dist:linux": "electron-vite build && bun ../../scripts/prepare-bundle.ts --target linux-x64 && electron-builder --config electron-builder.config.cjs --publish never --linux",
+    "dist:mac": "electron-vite build && bun ../../scripts/prepare-bundle.ts --target mac-arm64 && electron-builder --config electron-builder.config.cjs --publish never --mac",
+    "dist:win": "electron-vite build && bun ../../scripts/prepare-bundle.ts --target win-x64 && electron-builder --config electron-builder.config.cjs --publish never --win"
   },
   "devDependencies": {
     "@gosai/shared": "workspace:*",
