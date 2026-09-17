@@ -4,7 +4,7 @@
  * bridge is ready so it can re-apply the desired driver state.
  */
 
-import type { ChildLogger } from '../logger/index.js';
+import type { ChildLogger } from '../logger/logger.js';
 import type { DriverBridge } from './bridge.js';
 
 export interface SupervisorTiming {

@@ -1,29 +1,50 @@
 /**
- * Global GOSAI configuration. Persisted as JSON under `paths.config/global.json`.
- * Per-app config lives under `paths.apps/<slug>/config.json` (managed by the app).
+ * Global GOSAI configuration, persisted as JSON under `paths.config/global.json`.
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { CameraSettings, GlobalConfig } from '@gosai/shared';
-import type { EventBus } from '../ipc/index.js';
-import type { ChildLogger } from '../logger/index.js';
+import type { GlobalConfig, GlobalConfigPatch } from '@gosai/shared';
+import { ServerEvents } from '@gosai/shared/events';
+import {
+  DEFAULT_GLOBAL_CONFIG,
+  formatZodError,
+  globalConfigFileSchema,
+} from '@gosai/shared/schemas';
+import type { EventBus } from '../ipc/bus.js';
+import type { ChildLogger } from '../logger/logger.js';
 
 const CONFIG_FILE = 'global.json';
 
-const DEFAULT_CAMERA: CameraSettings = {
-  device: 0,
-  width: 1280,
-  height: 720,
-  fps: 30,
-};
+export interface LoadedConfig {
+  readonly config: GlobalConfig;
+  /** Why the file was ignored, when it was. */
+  readonly problem?: string;
+}
 
-const DEFAULT_CONFIG: GlobalConfig = {
-  displayId: null,
-  serverPort: 7777,
-  autoStartApps: [],
-  camera: DEFAULT_CAMERA,
-};
+/** Reads `global.json`, filling in defaults. A corrupt file yields the defaults. */
+export function loadGlobalConfig(configDir: string): LoadedConfig {
+  const path = join(configDir, CONFIG_FILE);
+  if (!existsSync(path)) return { config: DEFAULT_GLOBAL_CONFIG };
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, 'utf8'));
+  } catch (err) {
+    return { config: DEFAULT_GLOBAL_CONFIG, problem: `invalid JSON: ${String(err)}` };
+  }
+  const parsed = globalConfigFileSchema.safeParse(raw);
+  if (!parsed.success) {
+    return { config: DEFAULT_GLOBAL_CONFIG, problem: formatZodError(parsed.error) };
+  }
+  return { config: parsed.data };
+}
+
+/** Writes JSON through a temporary file so a crash never leaves half a file. */
+export function writeJsonAtomic(path: string, value: unknown): void {
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  renameSync(tmp, path);
+}
 
 export class ConfigStore {
   private state: GlobalConfig;
@@ -35,57 +56,34 @@ export class ConfigStore {
     private readonly log: ChildLogger,
   ) {
     this.path = join(configDir, CONFIG_FILE);
-    this.state = this.load();
+    const loaded = loadGlobalConfig(configDir);
+    if (loaded.problem) {
+      log.warn('global config is invalid, using defaults until it is saved again', {
+        path: this.path,
+        problem: loaded.problem,
+      });
+    }
+    this.state = loaded.config;
   }
 
   get(): GlobalConfig {
     return this.state;
   }
 
-  update(patch: Partial<GlobalConfig>): GlobalConfig {
+  update(patch: GlobalConfigPatch): GlobalConfig {
     const next: GlobalConfig = {
-      ...this.state,
-      ...patch,
-      autoStartApps:
-        patch.autoStartApps !== undefined ? [...patch.autoStartApps] : this.state.autoStartApps,
-      camera:
-        patch.camera !== undefined ? { ...this.state.camera, ...patch.camera } : this.state.camera,
+      displayId: patch.displayId !== undefined ? patch.displayId : this.state.displayId,
+      serverPort: patch.serverPort ?? this.state.serverPort,
+      autoStartApps: patch.autoStartApps ? [...patch.autoStartApps] : this.state.autoStartApps,
+      camera: patch.camera ? { ...this.state.camera, ...patch.camera } : this.state.camera,
     };
     this.state = next;
-    this.persist();
-    this.bus.emit('server:config-changed', next, 'config');
-    return next;
-  }
-
-  private load(): GlobalConfig {
-    if (!existsSync(this.path)) {
-      this.state = DEFAULT_CONFIG;
-      try {
-        writeFileSync(this.path, JSON.stringify(DEFAULT_CONFIG, null, 2), 'utf8');
-      } catch (err) {
-        this.log.warn('could not persist default config', { err: String(err) });
-      }
-      return DEFAULT_CONFIG;
-    }
     try {
-      const raw = JSON.parse(readFileSync(this.path, 'utf8')) as Partial<GlobalConfig>;
-      return {
-        ...DEFAULT_CONFIG,
-        ...raw,
-        autoStartApps: raw.autoStartApps ?? DEFAULT_CONFIG.autoStartApps,
-        camera: { ...DEFAULT_CAMERA, ...raw.camera },
-      };
-    } catch (err) {
-      this.log.warn('config file is corrupt, falling back to defaults', { err: String(err) });
-      return DEFAULT_CONFIG;
-    }
-  }
-
-  private persist(): void {
-    try {
-      writeFileSync(this.path, JSON.stringify(this.state, null, 2), 'utf8');
+      writeJsonAtomic(this.path, next);
     } catch (err) {
       this.log.error('failed to persist config', { err: String(err) });
     }
+    this.bus.emit(ServerEvents.ConfigChanged, next, 'config');
+    return next;
   }
 }

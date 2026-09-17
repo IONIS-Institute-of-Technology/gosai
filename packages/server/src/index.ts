@@ -1,17 +1,23 @@
-import { join, resolve } from 'node:path';
-import { existsSync, writeFileSync } from 'node:fs';
+/**
+ * Server entry point. Reads the environment, works out where the Python
+ * project, the built-in apps and the SDK bundle live, and starts the server.
+ * Every path the server uses is resolved here.
+ */
+
+import { dirname, join, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
 import { generateDashboardToken } from '@gosai/shared/auth';
-import { createServer, type ServerOptions } from './server.js';
-import { defaultPaths, type GosaiPaths } from './paths.js';
+import { loadGlobalConfig } from './config/config.js';
+import { defaultPaths } from './paths.js';
+import { createServer } from './server.js';
 
-const port = Number.parseInt(process.env.GOSAI_PORT ?? '7777', 10);
+const paths = defaultPaths();
+const layout = installLayout();
+
 const host = process.env.GOSAI_HOST ?? '127.0.0.1';
-
-const paths: GosaiPaths = defaultPaths();
-const pythonDir = resolvePythonDir();
-const builtinAppsDir = resolveBuiltinAppsDir();
-
-const enablePython = process.env.GOSAI_PYTHON !== '0';
+const port = process.env.GOSAI_PORT
+  ? Number.parseInt(process.env.GOSAI_PORT, 10)
+  : loadGlobalConfig(paths.config).config.serverPort;
 
 // Desktop main passes the token it generated. A standalone server makes its
 // own. The variable stays set because `bun --hot` re-runs this file in the
@@ -19,22 +25,22 @@ const enablePython = process.env.GOSAI_PYTHON !== '0';
 // environment of the processes they spawn.
 const providedToken = process.env.GOSAI_DASHBOARD_TOKEN;
 const dashboardToken = providedToken || generateDashboardToken();
-// Keep a generated token across hot reloads too.
 process.env.GOSAI_DASHBOARD_TOKEN = dashboardToken;
 
-const options: ServerOptions = {
+const builtinAppsDir = envPath('GOSAI_BUILTIN_APPS') ?? layout.builtinApps;
+
+const server = await createServer({
   host,
   port,
   paths,
-  pythonDir,
-  ...(builtinAppsDir ? { builtinAppsDir } : {}),
-  enablePython,
+  pythonDir: envPath('GOSAI_PYTHON_DIR') ?? layout.python,
+  ...(existsSync(builtinAppsDir) ? { builtinAppsDir } : {}),
+  sdkRuntimePath: envPath('GOSAI_SDK_RUNTIME') ?? layout.sdkRuntime,
+  enablePython: process.env.GOSAI_PYTHON !== '0',
   dashboardToken,
   allowedOrigins: listEnv('GOSAI_ALLOWED_ORIGINS'),
   allowedHosts: listEnv('GOSAI_ALLOWED_HOSTS'),
-};
-
-const server = await createServer(options);
+});
 
 if (!providedToken) {
   console.log(
@@ -44,39 +50,53 @@ if (!providedToken) {
 }
 
 // Machine-readable readiness signal. GOSAI_PORT=0 asks the OS for a free
-// ephemeral port, so supervisors (the Electron shell, the kiosk CLI) discover
-// the actual port from this stdout line or from server-info.json.
+// ephemeral port, so supervisors (the Electron shell) read the actual port
+// from this line.
 console.log(`GOSAI_READY ${JSON.stringify({ port: server.port, host, pid: process.pid })}`);
-try {
-  writeFileSync(
-    join(paths.root, 'server-info.json'),
-    JSON.stringify({ port: server.port, host, pid: process.pid, startedAt: Date.now() }, null, 2),
-  );
-} catch {
-  // Non-fatal: the stdout line above is the primary channel.
-}
 
-const shutdown = async (signal: string): Promise<void> => {
+const shutdown = async (): Promise<void> => {
   await server.stop();
   process.exit(0);
-  void signal;
 };
 
-process.on('SIGINT', () => void shutdown('SIGINT'));
-process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown());
+process.on('SIGTERM', () => void shutdown());
 
-function resolvePythonDir(): string {
-  if (process.env.GOSAI_PYTHON_DIR) return resolve(process.env.GOSAI_PYTHON_DIR);
-  return resolve(import.meta.dir, '..', '..', '..', 'python');
+interface InstallLayout {
+  readonly python: string;
+  readonly builtinApps: string;
+  readonly sdkRuntime: string;
 }
 
-function resolveBuiltinAppsDir(): string | undefined {
-  if (process.env.GOSAI_BUILTIN_APPS) {
-    const path = resolve(process.env.GOSAI_BUILTIN_APPS);
-    return existsSync(path) ? path : undefined;
+/**
+ * Default locations. From source they are in the repository. A binary built
+ * with `bun build --compile` has no source tree (`import.meta.dir` points into
+ * the embedded filesystem), so they are found next to the binary instead:
+ * packaged apps put it at `<resources>/server/gosai-server`, beside
+ * `<resources>/python`, `<resources>/apps` and `<resources>/sdk`.
+ */
+function installLayout(): InstallLayout {
+  const compiled =
+    import.meta.dir.startsWith('/$bunfs') || /^[A-Z]:\\~BUN\\/i.test(import.meta.dir);
+  if (compiled) {
+    const resources = dirname(dirname(process.execPath));
+    return {
+      python: join(resources, 'python'),
+      builtinApps: join(resources, 'apps'),
+      sdkRuntime: join(resources, 'sdk', 'browser.js'),
+    };
   }
-  const guess = resolve(import.meta.dir, '..', '..', '..', 'apps');
-  return existsSync(guess) ? guess : undefined;
+  const repo = resolve(import.meta.dir, '..', '..', '..');
+  return {
+    python: join(repo, 'python'),
+    builtinApps: join(repo, 'apps'),
+    sdkRuntime: join(repo, 'packages', 'sdk', 'dist', 'browser.js'),
+  };
+}
+
+function envPath(name: string): string | undefined {
+  const value = process.env[name];
+  return value ? resolve(value) : undefined;
 }
 
 function listEnv(name: string): string[] {

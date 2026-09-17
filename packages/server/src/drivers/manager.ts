@@ -39,8 +39,8 @@ import type {
 } from '@gosai/shared';
 import { ServerEvents } from '@gosai/shared/events';
 import type { BridgeInstanceList } from '@gosai/shared/protocol';
-import type { EventBus } from '../ipc/index.js';
-import type { ChildLogger, Logger } from '../logger/index.js';
+import type { EventBus } from '../ipc/bus.js';
+import type { ChildLogger, Logger } from '../logger/logger.js';
 import {
   PythonBridge,
   type BridgeHandlers,
@@ -81,7 +81,7 @@ export interface DriverManagerOptions {
 }
 
 /** Default binding used when a request does not carry one (diagnostics). */
-export const SYSTEM_BINDING = 'system';
+export { SYSTEM_BINDING } from '@gosai/shared/commands';
 
 // Starting may download or load a model; actions may run inference.
 const START_TIMEOUT_MS = 5 * 60_000;
