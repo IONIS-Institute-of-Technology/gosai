@@ -103,7 +103,8 @@ A starter app lives in [`templates/basic`](../../templates/basic).
 usually `^` and the version you build against. GOSAI serves one SDK version to
 app windows; it refuses to install an app whose range excludes that version and
 lists an installed one as invalid, with the reason, in the dashboard. While the
-SDK is `0.x`, `^0.1.0` means `>=0.1.0 <0.2.0`.
+SDK is `0.x`, `^0.1.0` means `>=0.1.0 <0.2.0`. A prerelease SDK counts as the
+release it leads to: `0.2.0-rc.0` satisfies `^0.2.0`.
 
 `requirements` drives the per-app device pickers in the dashboard. Device
 choices are applied to your drivers automatically: `rt.drivers.on('camera', ...)`
