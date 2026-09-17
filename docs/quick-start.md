@@ -10,7 +10,7 @@ git clone https://github.com/gosai/gosai ~/Repos/gosai
 cd ~/Repos/gosai
 bun install
 bun run python:sync                # builds python/.venv with uv
-bun run build:sdk                  # builds /sdk-runtime.js for app-host windows
+bun run build:sdk                  # builds the SDK bundle served to app windows
 bun run build:apps                 # builds built-in app entry bundles
 ```
 

@@ -7,7 +7,7 @@ The GOSAI desktop app ships as a self-contained installer that bundles:
 - The Python source tree under `Contents/Resources/python/`. The packaged
   app creates `.venv` on first run via `uv sync`.
 - The built-in apps under `Contents/Resources/apps/`.
-- The SDK runtime bundle served to app-host windows at `/sdk-runtime.js`.
+- The SDK bundle served to app windows under `/sdk/`.
 
 ## Producing a macOS DMG
 
