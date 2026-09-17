@@ -193,6 +193,8 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
     if (!isValidSlug(body.appSlug) || !body.experienceSlug) {
       return c.json({ error: 'appSlug and experienceSlug are required' }, 400);
     }
+    const denial = commandDenial(c.get('scope'), 'experience:stop', body);
+    if (denial) return c.json({ error: denial }, 403);
     try {
       await apps.stopExperience(body.appSlug, body.experienceSlug);
       return c.json({ ok: true });

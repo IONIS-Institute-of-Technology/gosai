@@ -150,6 +150,23 @@ describe('HTTP access', () => {
     }
   });
 
+  test("app tokens can't start or stop another app's experiences over HTTP", async () => {
+    for (const action of ['start', 'stop']) {
+      const res = await fetch(`${base}/v1/experiences/${action}`, {
+        method: 'POST',
+        headers: { ...bearer(POOL_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({ appSlug: 'other', experienceSlug: 'main' }),
+      });
+      expect(res.status).toBe(403);
+    }
+    const own = await fetch(`${base}/v1/experiences/stop`, {
+      method: 'POST',
+      headers: { ...bearer(POOL_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({ appSlug: 'pool', experienceSlug: 'main' }),
+    });
+    expect(own.status).toBe(200);
+  });
+
   test('rejects invalid slugs in routes', async () => {
     const res = await fetch(`${base}/v1/apps/Bad_Slug/storage/key`, { headers: bearer(SECRET) });
     expect(res.status).toBe(400);
@@ -258,6 +275,8 @@ describe('WebSocket access', () => {
       await forbidden('app:broadcast', { appSlug: 'other', topic: 't' });
       await forbidden('driver:execute', { driver: 'camera', action: 'x' });
       await forbidden('driver:execute', { driver: 'camera', action: 'x', binding: 'other' });
+      await forbidden('experience:start', { appSlug: 'other', experienceSlug: 'main' });
+      await forbidden('experience:stop', { appSlug: 'other', experienceSlug: 'main' });
 
       expect((await client.request('subscribe', { events: ['app:pool:topic'] })).ok).toBe(true);
       expect((await client.request('subscribe', { events: ['server:log'] })).ok).toBe(true);

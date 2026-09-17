@@ -91,6 +91,16 @@ describe('command policy', () => {
         driverBinding: 'other',
       }),
     ).not.toBeNull();
+    expect(
+      commandDenial(POOL, 'experience:start', { appSlug: 'other', experienceSlug: 'x' }),
+    ).not.toBeNull();
+    expect(
+      commandDenial(POOL, 'experience:stop', { appSlug: 'pool', experienceSlug: 'x' }),
+    ).toBeNull();
+    expect(
+      commandDenial(POOL, 'experience:stop', { appSlug: 'other', experienceSlug: 'x' }),
+    ).not.toBeNull();
+    expect(commandDenial(POOL, 'experience:stop', {})).not.toBeNull();
   });
 
   test("apps may not use wildcards or other apps' topics", () => {

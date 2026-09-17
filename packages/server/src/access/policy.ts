@@ -14,19 +14,27 @@ const DASHBOARD_ONLY_COMMANDS: ReadonlySet<string> = new Set([
   'config:set',
 ]);
 
+interface AppField {
+  readonly field: string;
+  readonly optional: boolean;
+}
+
+const required = (field: string): AppField => ({ field, optional: false });
+
 /**
- * Payload fields that name the app whose resources a command touches. A
+ * Payload fields that name the apps whose resources a command touches. A
  * missing driver `binding` means the `system` binding, which apps can't use.
  */
-const APP_SCOPED_FIELDS: Readonly<Record<string, { field: string; optional: boolean }>> = {
-  'app:config:get': { field: 'appSlug', optional: false },
-  'app:config:set': { field: 'appSlug', optional: false },
-  'app:broadcast': { field: 'appSlug', optional: false },
-  'driver:get-data': { field: 'binding', optional: false },
-  'driver:execute': { field: 'binding', optional: false },
-  'driver:subscribe': { field: 'binding', optional: false },
-  'driver:unsubscribe': { field: 'binding', optional: false },
-  'experience:start': { field: 'driverBinding', optional: true },
+const APP_SCOPED_FIELDS: Readonly<Record<string, readonly AppField[]>> = {
+  'app:config:get': [required('appSlug')],
+  'app:config:set': [required('appSlug')],
+  'app:broadcast': [required('appSlug')],
+  'driver:get-data': [required('binding')],
+  'driver:execute': [required('binding')],
+  'driver:subscribe': [required('binding')],
+  'driver:unsubscribe': [required('binding')],
+  'experience:start': [required('appSlug'), { field: 'driverBinding', optional: true }],
+  'experience:stop': [required('appSlug')],
 };
 
 const DRIVER_EVENT_PREFIX = 'driver:event:';
@@ -41,15 +49,14 @@ export function commandDenial(scope: TokenScope, command: string, payload: unkno
   if (scope.kind === 'dashboard') return null;
   if (DASHBOARD_ONLY_COMMANDS.has(command)) return `${command} requires the dashboard token`;
 
-  const scoped = APP_SCOPED_FIELDS[command];
-  if (!scoped) return null;
-  const value =
-    payload && typeof payload === 'object'
-      ? (payload as Record<string, unknown>)[scoped.field]
-      : undefined;
-  if (value === undefined && scoped.optional) return null;
-  if (typeof value === 'string' && canAccessApp(scope, value)) return null;
-  return `${command} with ${scoped.field}=${JSON.stringify(value ?? null)} is outside the token's apps`;
+  const values = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
+  for (const { field, optional } of APP_SCOPED_FIELDS[command] ?? []) {
+    const value = values[field];
+    if (value === undefined && optional) continue;
+    if (typeof value === 'string' && canAccessApp(scope, value)) continue;
+    return `${command} with ${field}=${JSON.stringify(value ?? null)} is outside the token's apps`;
+  }
+  return null;
 }
 
 /**
