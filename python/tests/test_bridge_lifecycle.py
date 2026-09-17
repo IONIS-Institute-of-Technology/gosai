@@ -515,9 +515,9 @@ def test_queued_subscriptions_keep_order_and_drop_the_oldest_when_full(
 
         source.emit("value", 0)
         deadline = time.monotonic() + 5.0
-        while bridge._instances[("app", "audio_consumer")].driver._subscriptions[
-            ("source", "value")
-        ]._queue and time.monotonic() < deadline:
+        worker = bridge._instances[("app", "audio_consumer")].driver._subscriptions[("source", "value")]
+        assert isinstance(worker, BoundedQueueWorker)
+        while worker._queue and time.monotonic() < deadline:
             time.sleep(0.01)
         for value in range(1, 6):
             source.emit("value", value)
