@@ -38,7 +38,7 @@ describe('app hostnames', () => {
 });
 
 describe('appOriginDenial', () => {
-  const app = { kind: 'app', appSlug: 'pool', slugs: ['pool', 'other'] } as const;
+  const app = { kind: 'app', appSlug: 'pool', driverBinding: 'other', target: 'other' } as const;
   const request = (headers: Record<string, string>): Request => {
     const req = new Request('http://127.0.0.1:7777/v1/info');
     req.headers.delete('host');
@@ -53,7 +53,7 @@ describe('appOriginDenial', () => {
 
   test("requires the origin's own app token", () => {
     expect(appOriginDenial(request({ host: 'pool.localhost:7777' }), app)).toBeNull();
-    // Granted extra slugs don't make a token usable from those apps' origins.
+    // A binding or target doesn't make a token usable from that app's origin.
     expect(appOriginDenial(request({ host: 'other.localhost:7777' }), app)).toContain('other');
     expect(
       appOriginDenial(request({ host: 'pool.localhost:7777' }), { kind: 'dashboard' }),

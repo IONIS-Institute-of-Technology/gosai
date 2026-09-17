@@ -11,10 +11,21 @@
 import { z } from 'zod';
 import { isConnectSource } from './app-origin.js';
 import { isValidSettingKey } from './app-settings.js';
+import {
+  BUILTIN_CALIBRATION_KINDS,
+  CALIBRATION_KIND_PATTERN,
+  CALIBRATION_PROFILE_VERSION,
+  isBuiltinCalibrationKind,
+  type AppCalibrationSchema,
+  type BuiltinCalibrationKind,
+  type CalibrationProfile,
+  type CalibrationProfileInput,
+  type CameraProjectorSurfaceCalibration,
+  type CameraProjectorSurfaceOptions,
+} from './calibration.js';
 import { CAPABILITY_INFO, isCapability, type Capability } from './capabilities.js';
 import { isReservedSlug, isValidSlug, SLUG_PATTERN } from './slug.js';
 import type {
-  AppCalibrationSchema,
   AppDeviceSettings,
   AppDeviceSettingsPatch,
   AppManifest,
@@ -114,16 +125,135 @@ const requirementsSchema = z.strictObject({
   speaker: z.boolean().optional(),
 }) satisfies z.ZodType<AppRequirements>;
 
+// ── Calibration ────────────────────────────────────────────────────────────
+
+const finite = z.number().refine(Number.isFinite, 'must be a finite number');
+const positive = finite.refine((value) => value > 0, 'must be positive');
+
+const calibrationPointSchema = z.object({ x: finite, y: finite });
+const calibrationQuadSchema = z.tuple([
+  calibrationPointSchema,
+  calibrationPointSchema,
+  calibrationPointSchema,
+  calibrationPointSchema,
+]);
+const calibrationSizeSchema = z.object({ width: positive, height: positive });
+/** A 3x3 matrix flattened row by row. */
+const matrixSchema = z.array(finite).length(9);
+
+export const calibrationKindSchema = z
+  .string()
+  .regex(CALIBRATION_KIND_PATTERN, `must match ${CALIBRATION_KIND_PATTERN.source}`);
+
+const stepCopySchema = z.strictObject({
+  title: z.string().optional(),
+  help: z.string().optional(),
+});
+
+export const cameraProjectorSurfaceOptionsSchema = z.strictObject({
+  surfaceSize: z.strictObject({ width: positive, height: positive }).optional(),
+  cornerLabels: z.tuple([z.string(), z.string(), z.string(), z.string()]).optional(),
+  stepCopy: z
+    .strictObject({
+      markers: stepCopySchema.optional(),
+      'surface-corners': stepCopySchema.optional(),
+      compute: stepCopySchema.optional(),
+      preview: stepCopySchema.optional(),
+    })
+    .optional(),
+  projectorMessages: z
+    .strictObject({
+      surfaceCorners: z.string().optional(),
+      compute: z.string().optional(),
+      done: z.string().optional(),
+      cancelled: z.string().optional(),
+    })
+    .optional(),
+}) satisfies z.ZodType<CameraProjectorSurfaceOptions>;
+
+export const cameraProjectorSurfaceCalibrationSchema = z.object({
+  homography: matrixSchema,
+  homographyInverse: matrixSchema,
+  homographySurface: matrixSchema.nullable(),
+  homographySurfaceInverse: matrixSchema.nullable(),
+  focusQuad: calibrationQuadSchema.nullable(),
+  surfaceQuadDisplay: calibrationQuadSchema.nullable(),
+  surfaceSize: calibrationSizeSchema,
+  frameSize: calibrationSizeSchema.nullable(),
+}) satisfies z.ZodType<CameraProjectorSurfaceCalibration>;
+
+/** Options and profile data of each built-in kind. */
+export const builtinCalibrationSchemas = {
+  'camera-projector-surface': {
+    options: cameraProjectorSurfaceOptionsSchema,
+    data: cameraProjectorSurfaceCalibrationSchema,
+  },
+} satisfies Record<BuiltinCalibrationKind, { options: z.ZodType; data: z.ZodType }>;
+
 const calibrationSchema = z
   .strictObject({
-    required: z.boolean(),
-    entry: appPathSchema.optional(),
-    statusKey: storageKeySchema.optional(),
+    kind: calibrationKindSchema.describe(
+      `What the calibration produces: ${BUILTIN_CALIBRATION_KINDS.join(', ')}, or any kind an \`experience\` handles.`,
+    ),
+    required: z.boolean().default(false).describe('The app must be calibrated before it starts.'),
+    options: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe('Settings of the calibration flow, checked for built-in kinds.'),
+    experience: slugSchema
+      .optional()
+      .describe("One of the app's experiences that runs a custom calibration flow."),
   })
-  .refine((c) => !c.required || c.entry !== undefined, {
-    message: '`entry` is required when `required` is true',
-    path: ['entry'],
+  .superRefine((calibration, ctx) => {
+    if (!isBuiltinCalibrationKind(calibration.kind)) {
+      if (calibration.experience === undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `"${calibration.kind}" is not a built-in kind (${BUILTIN_CALIBRATION_KINDS.join(', ')}), so \`experience\` must name the experience that runs it`,
+          path: ['experience'],
+        });
+      }
+      return;
+    }
+    const options = builtinCalibrationSchemas[calibration.kind].options.safeParse(
+      calibration.options ?? {},
+    );
+    for (const issue of options.error?.issues ?? []) {
+      ctx.addIssue({ code: 'custom', message: issue.message, path: ['options', ...issue.path] });
+    }
   }) satisfies z.ZodType<AppCalibrationSchema>;
+
+/** What `calibration:save` accepts. Built-in kinds' data is checked against the manifest. */
+export const calibrationProfileInputSchema = z.strictObject({
+  kind: calibrationKindSchema,
+  data: z.unknown(),
+}) satisfies z.ZodType<CalibrationProfileInput>;
+
+export const calibrationProfileSchema = z.object({
+  version: z.literal(CALIBRATION_PROFILE_VERSION),
+  kind: calibrationKindSchema,
+  savedAt: z.number(),
+  data: z.unknown(),
+}) satisfies z.ZodType<CalibrationProfile>;
+
+/**
+ * Checks profile data: against the kind's schema for built-in kinds, as any
+ * JSON value for custom ones. Returns the parsed data or an error message.
+ */
+export function parseCalibrationData(
+  kind: string,
+  data: unknown,
+): { success: true; data: unknown } | { success: false; error: string } {
+  if (!isBuiltinCalibrationKind(kind)) {
+    return data === undefined
+      ? { success: false, error: 'data is missing' }
+      : { success: true, data };
+  }
+  const result = builtinCalibrationSchemas[kind].data.safeParse(data);
+  return result.success
+    ? { success: true, data: result.data }
+    : { success: false, error: formatZodError(result.error) };
+}
 
 const settingKeySchema = z
   .string()
@@ -278,7 +408,9 @@ export const appManifestSchema = z
     requirements: requirementsSchema
       .optional()
       .describe('Device kinds the app uses, for the per-app device pickers.'),
-    calibration: calibrationSchema.optional(),
+    calibration: calibrationSchema
+      .optional()
+      .describe('How the app is calibrated, when it needs calibration.'),
     settings: settingsSchema
       .optional()
       .describe('Settings the dashboard edits, stored as one object in app storage.'),
@@ -314,6 +446,14 @@ export const appManifestSchema = z
       });
     }
     checkRefs(manifest.startup, ['startup']);
+    const calibrationExperience = manifest.calibration?.experience;
+    if (calibrationExperience !== undefined && !known.has(calibrationExperience)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `"${calibrationExperience}" does not match any experience slug`,
+        path: ['calibration', 'experience'],
+      });
+    }
     manifest.experiences.forEach((experience, index) => {
       checkRefs(experience.allowed, ['experiences', index, 'allowed']);
       checkRefs(experience.required, ['experiences', index, 'required']);

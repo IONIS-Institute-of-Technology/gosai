@@ -310,5 +310,10 @@ function requestIdOf(json: unknown): string {
 }
 
 function describeScope(scope: TokenScope): string {
-  return scope.kind === 'dashboard' ? 'dashboard' : `app ${scope.slugs.join('+')}`;
+  if (scope.kind === 'dashboard') return 'dashboard';
+  const extras = [
+    scope.driverBinding && `binding ${scope.driverBinding}`,
+    scope.target && `for ${scope.target}`,
+  ].filter(Boolean);
+  return extras.length > 0 ? `app ${scope.appSlug} (${extras.join(', ')})` : `app ${scope.appSlug}`;
 }

@@ -231,58 +231,92 @@ describe('validateManifest', () => {
     }
   });
 
-  test('parses required calibration metadata', () => {
-    const m = validateManifest(PATH, {
-      slug: 'c',
-      name: 'C',
-      version: '0.1.0',
-      experiences: [{ slug: 'a', name: 'A', entry: './a.ts' }],
-      calibration: {
+  describe('calibration', () => {
+    const withCalibration = (calibration: unknown, extra: Record<string, unknown> = {}) =>
+      validateManifest(PATH, {
+        slug: 'c',
+        name: 'C',
+        version: '0.1.0',
+        experiences: [
+          { slug: 'a', name: 'A', entry: './a.ts' },
+          { slug: 'setup', name: 'Setup', entry: './setup.ts' },
+        ],
+        calibration,
+        ...extra,
+      });
+
+    test('parses a built-in kind with its options', () => {
+      const m = withCalibration({
+        kind: 'camera-projector-surface',
         required: true,
-        entry: 'dist/calibration.js',
-        statusKey: 'calibration_status',
-      },
+        options: {
+          surfaceSize: { width: 1920, height: 1080 },
+          cornerLabels: ['A', 'B', 'C', 'D'],
+          stepCopy: { 'surface-corners': { title: 'Corners' } },
+          projectorMessages: { compute: 'computing' },
+        },
+      });
+      expect(m.calibration).toEqual({
+        kind: 'camera-projector-surface',
+        required: true,
+        options: {
+          surfaceSize: { width: 1920, height: 1080 },
+          cornerLabels: ['A', 'B', 'C', 'D'],
+          stepCopy: { 'surface-corners': { title: 'Corners' } },
+          projectorMessages: { compute: 'computing' },
+        },
+      });
     });
-    expect(m.calibration).toEqual({
-      required: true,
-      entry: 'dist/calibration.js',
-      statusKey: 'calibration_status',
+
+    test('`required` defaults to false', () => {
+      expect(withCalibration({ kind: 'camera-projector-surface' }).calibration).toEqual({
+        kind: 'camera-projector-surface',
+        required: false,
+      });
     });
-  });
 
-  test('parses calibration disabled without an entry', () => {
-    const m = validateManifest(PATH, {
-      slug: 'c',
-      name: 'C',
-      version: '0.1.0',
-      experiences: [{ slug: 'a', name: 'A', entry: './a.ts' }],
-      calibration: { required: false },
+    test("checks a built-in kind's options", () => {
+      expect(() =>
+        withCalibration({ kind: 'camera-projector-surface', options: { cornerLabels: ['A'] } }),
+      ).toThrow(/calibration\.options\.cornerLabels/);
+      expect(() =>
+        withCalibration({ kind: 'camera-projector-surface', options: { stepCopy: { x: {} } } }),
+      ).toThrow(/calibration\.options\.stepCopy/);
     });
-    expect(m.calibration).toEqual({ required: false });
-  });
 
-  test('rejects required calibration without an entry', () => {
-    expect(() =>
-      validateManifest(PATH, {
-        slug: 'c',
-        name: 'C',
-        version: '0.1.0',
-        experiences: [{ slug: 'a', name: 'A', entry: './a.ts' }],
-        calibration: { required: true },
-      }),
-    ).toThrow(ManifestError);
-  });
+    test('a custom kind needs an experience of the app, and keeps its options as they are', () => {
+      expect(() => withCalibration({ kind: 'acme-depth-grid' })).toThrow(/calibration\.experience/);
+      expect(() => withCalibration({ kind: 'acme-depth-grid', experience: 'missing' })).toThrow(
+        /"missing" does not match any experience slug/,
+      );
+      const m = withCalibration({
+        kind: 'acme-depth-grid',
+        experience: 'setup',
+        options: { anything: [1, 2] },
+      });
+      expect(m.calibration).toEqual({
+        kind: 'acme-depth-grid',
+        required: false,
+        experience: 'setup',
+        options: { anything: [1, 2] },
+      });
+      // A built-in kind can run a custom flow too.
+      expect(
+        withCalibration({ kind: 'camera-projector-surface', experience: 'setup' }).calibration
+          ?.experience,
+      ).toBe('setup');
+    });
 
-  test('rejects calibration without a boolean required flag', () => {
-    expect(() =>
-      validateManifest(PATH, {
-        slug: 'c',
-        name: 'C',
-        version: '0.1.0',
-        experiences: [{ slug: 'a', name: 'A', entry: './a.ts' }],
-        calibration: { entry: 'dist/calibration.js' },
-      }),
-    ).toThrow(ManifestError);
+    test('rejects the old entry-module shape and bad kinds', () => {
+      expect(() => withCalibration({ required: true, entry: 'dist/calibration.js' })).toThrow(
+        ManifestError,
+      );
+      expect(() => withCalibration({ required: false })).toThrow(ManifestError);
+      expect(() => withCalibration({ kind: 'Camera Surface' })).toThrow(ManifestError);
+      expect(() => withCalibration({ kind: 'camera-projector-surface', required: 'yes' })).toThrow(
+        ManifestError,
+      );
+    });
   });
 
   const base = {

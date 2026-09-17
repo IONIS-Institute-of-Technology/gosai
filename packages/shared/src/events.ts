@@ -72,6 +72,9 @@ export const ClientCommands = {
   StorageSet: 'storage:set',
   StorageRemove: 'storage:remove',
   StorageList: 'storage:list',
+
+  CalibrationGet: 'calibration:get',
+  CalibrationSave: 'calibration:save',
 } as const;
 
 /** Events with a fixed name. */
