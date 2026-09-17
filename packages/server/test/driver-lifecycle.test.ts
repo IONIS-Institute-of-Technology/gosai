@@ -37,6 +37,13 @@ class StubBridge implements DriverBridge {
   readonly instances = new Map<string, string>();
   readonly subscriptions = new Set<string>();
   readonly failStart = new Map<string, string>();
+  /** Start requests for these drivers wait until the promise resolves. */
+  readonly startGates = new Map<string, Promise<void>>();
+  /** Remaining stop attempts that time out, per driver. */
+  readonly stopFailures = new Map<string, number>();
+  catalogueGate: Promise<void> | null = null;
+  startDelayMs = 0;
+  private exitSignal = Promise.withResolvers<never>();
 
   constructor(readonly handlers: BridgeHandlers) {}
 
@@ -45,6 +52,9 @@ class StubBridge implements DriverBridge {
   }
 
   async start(): Promise<void> {
+    if (this.startDelayMs > 0) await new Promise((r) => setTimeout(r, this.startDelayMs));
+    this.exitSignal = Promise.withResolvers<never>();
+    this.exitSignal.promise.catch(() => undefined);
     this.running = true;
     this.hung = false;
     this.starts += 1;
@@ -67,12 +77,18 @@ class StubBridge implements DriverBridge {
   async request<T = unknown>(req: BridgeRequestSansId): Promise<T> {
     if (!this.running) throw new Error('Python bridge is not running');
     this.requests.push({ ...req });
-    return this.respond(req) as T;
+    return (await this.respond(req)) as T;
   }
 
-  private respond(req: BridgeRequestSansId): unknown {
+  /** Wait for `gate`, failing like a real pending request if the bridge exits first. */
+  private async until(gate: Promise<void> | null | undefined): Promise<void> {
+    if (gate) await Promise.race([gate, this.exitSignal.promise]);
+  }
+
+  private async respond(req: BridgeRequestSansId): Promise<unknown> {
     switch (req.type) {
       case 'list-drivers':
+        await this.until(this.catalogueGate);
         return { drivers: MANIFEST };
       case 'list-instances':
         return { instances: [] };
@@ -86,8 +102,13 @@ class StubBridge implements DriverBridge {
         }
         if (this.instances.get(key) === 'running') return { state: 'running' };
         this.handlers.onDriverState(req.instance, req.driver, 'starting');
+        this.instances.set(key, 'starting');
+        await this.until(this.startGates.get(req.driver));
         const failure = this.failStart.get(req.driver);
-        if (failure) throw new Error(failure);
+        if (failure) {
+          this.instances.delete(key);
+          throw new Error(failure);
+        }
         this.instances.set(key, 'running');
         this.handlers.onDriverState(req.instance, req.driver, 'running');
         return { state: 'running' };
@@ -96,6 +117,13 @@ class StubBridge implements DriverBridge {
         const key = `${req.instance}::${req.driver}`;
         if (!this.instances.has(key)) return { state: 'available' };
         this.handlers.onDriverState(req.instance, req.driver, 'stopping');
+        const failures = this.stopFailures.get(req.driver) ?? 0;
+        if (failures > 0) {
+          this.stopFailures.set(req.driver, failures - 1);
+          this.instances.set(key, 'errored');
+          this.handlers.onDriverState(req.instance, req.driver, 'errored');
+          throw new Error(`driver '${req.driver}' did not stop within 5s`);
+        }
         this.instances.delete(key);
         for (const sub of this.subscriptions) {
           if (sub.startsWith(`${key}::`)) this.subscriptions.delete(sub);
@@ -116,6 +144,7 @@ class StubBridge implements DriverBridge {
 
   private exit(code: number): void {
     this.running = false;
+    this.exitSignal.reject(new Error('Bridge process exited'));
     this.instances.clear();
     this.subscriptions.clear();
     this.handlers.onExit(code, null);
@@ -139,6 +168,7 @@ async function startManager(
   options: {
     getDriverConfig?: (binding: string, driver: string) => Record<string, unknown> | undefined;
     pingIntervalMs?: number;
+    initialBackoffMs?: number;
   } = {},
 ): Promise<Harness> {
   const bus = new EventBus();
@@ -152,8 +182,9 @@ async function startManager(
       bridge = new StubBridge(handlers);
       return bridge;
     },
+    stopRetry: { initialMs: 50, maxMs: 1_000 },
     supervisorTiming: {
-      initialBackoffMs: 1,
+      initialBackoffMs: options.initialBackoffMs ?? 1,
       pingIntervalMs: options.pingIntervalMs ?? 60_000,
       pingTimeoutMs: 5,
       maxMissedPings: 2,
@@ -371,7 +402,101 @@ describe('driver failures', () => {
   });
 });
 
+describe('concurrency', () => {
+  test('a slow start does not hold up leases on other instances', async () => {
+    const { manager, bridge } = await startManager();
+    const gate = Promise.withResolvers<void>();
+    bridge.startGates.set('unrelated', gate.promise);
+
+    let slowDone = false;
+    const slow = manager.subscribe('appB', 'unrelated', 'tick', 'b').then(() => {
+      slowDone = true;
+    });
+    await manager.subscribe('appA', 'calibration', 'homography', 'a');
+
+    expect(slowDone).toBe(false);
+    expect(manager.isInstanceRunning('appA', 'calibration')).toBe(true);
+    expect(manager.getDriver('unrelated')?.state).toBe('starting');
+
+    gate.resolve();
+    await slow;
+    expect(manager.isInstanceRunning('appB', 'unrelated')).toBe(true);
+  });
+
+  test('a dependency still starts before its dependent when both are requested at once', async () => {
+    const { manager, bridge } = await startManager();
+    const gate = Promise.withResolvers<void>();
+    bridge.startGates.set('camera', gate.promise);
+
+    const both = Promise.all([
+      manager.subscribe('appA', 'calibration', '*', 'a'),
+      manager.subscribe('appA', 'camera', 'color', 'b'),
+    ]);
+    await waitFor(() => bridge.requests.some((r) => r.type === 'start-driver'));
+    expect(lifecycle(bridge, 'start-driver')).toEqual(['appA/camera']);
+
+    gate.resolve();
+    await both;
+    expect(lifecycle(bridge, 'start-driver')).toEqual(['appA/camera', 'appA/calibration']);
+  });
+
+  test('a stop that timed out is retried with backoff, not on every change', async () => {
+    const { manager, bridge } = await startManager();
+    await manager.subscribe('appA', 'camera', 'color', 'a');
+    bridge.stopFailures.set('camera', 2);
+
+    await manager.unsubscribe('appA', 'camera', 'color', 'a');
+    expect(manager.getDriver('camera')?.state).toBe('errored');
+    expect(lifecycle(bridge, 'stop-driver')).toEqual(['appA/camera']);
+
+    // Unrelated lease changes do not retry the stop right away.
+    await manager.subscribe('appB', 'unrelated', 'tick', 'b');
+    await manager.unsubscribe('appB', 'unrelated', 'tick', 'b');
+    expect(lifecycle(bridge, 'stop-driver')).toEqual(['appA/camera', 'appB/unrelated']);
+
+    await waitFor(() => !bridge.instances.has('appA::camera'));
+    const cameraStops = lifecycle(bridge, 'stop-driver').filter((s) => s === 'appA/camera');
+    expect(cameraStops).toHaveLength(3);
+    expect(manager.getDriver('camera')?.state).toBe('available');
+  });
+});
+
 describe('bridge restarts', () => {
+  test('a subscribe during a restart waits for the new bridge', async () => {
+    const { manager, bridge } = await startManager({ initialBackoffMs: 30 });
+    bridge.crash();
+
+    await manager.subscribe('appA', 'camera', 'color', 'viewer');
+
+    expect(bridge.starts).toBe(2);
+    expect(bridge.subscriptions).toEqual(new Set(['appA::camera::color']));
+  });
+
+  test('stopping during startup rejects the pending catalogue request at once', async () => {
+    const bus = new EventBus();
+    let bridge: StubBridge | undefined;
+    const manager = new DriverManager({
+      pythonDir: '/dev/null',
+      logger: new Logger({ logsDir }),
+      bus,
+      createBridge: (handlers) => {
+        bridge = new StubBridge(handlers);
+        bridge.catalogueGate = new Promise(() => undefined);
+        return bridge;
+      },
+    });
+    const starting = manager.start();
+    await waitFor(() => bridge?.requests.some((r) => r.type === 'list-drivers') ?? false);
+
+    const started = Date.now();
+    await manager.stop();
+    await expect(starting).rejects.toThrow('Bridge process exited');
+    expect(Date.now() - started).toBeLessThan(1_000);
+    await expect(manager.subscribe('appA', 'camera', '*', 'a')).rejects.toThrow(
+      'Python bridge is not running',
+    );
+  });
+
   test('leases are re-applied after the bridge crashes', async () => {
     const { manager, bridge, bus } = await startManager();
     await manager.subscribe('appA', 'calibration', 'homography', 'wizard');

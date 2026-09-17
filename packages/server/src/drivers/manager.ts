@@ -18,9 +18,12 @@
  * remembering the instance it resolved to. A client that subscribes twice holds
  * two leases. Leases are the desired state; the bridge only reports what
  * actually runs. The reconciler compares the two and sends start, stop,
- * subscribe and unsubscribe requests until they match. Dependencies start
- * first and stop last, in the dependent's instance namespace. When the bridge
- * restarts, the reconciler applies every lease again.
+ * subscribe and unsubscribe requests until they match. Each instance has at
+ * most one operation in flight, and operations on independent instances run
+ * concurrently, so a slow model load only delays the leases that need it.
+ * Dependencies start first and stop last, in the dependent's instance
+ * namespace. When the bridge restarts, the reconciler applies every lease
+ * again.
  *
  * Driver events fan out to `driver:event:<binding>` for every binding holding a
  * lease on that event, so each app only receives its own stream.
@@ -71,6 +74,10 @@ export interface DriverManagerOptions {
   /** Builds the bridge. Defaults to the Python bridge in `pythonDir`. */
   readonly createBridge?: DriverBridgeFactory;
   readonly supervisorTiming?: Partial<SupervisorTiming>;
+  /** How long `subscribe` waits for a starting or restarting bridge. */
+  readonly bridgeReadyWaitMs?: number;
+  /** Backoff between attempts to stop an instance whose stop timed out. */
+  readonly stopRetry?: { readonly initialMs: number; readonly maxMs: number };
 }
 
 /** Default binding used when a request does not carry one (diagnostics). */
@@ -81,6 +88,21 @@ const START_TIMEOUT_MS = 5 * 60_000;
 const EXECUTE_TIMEOUT_MS = 2 * 60_000;
 // The bridge answers list-drivers once it has imported every driver module.
 const CATALOGUE_TIMEOUT_MS = 2 * 60_000;
+const DEFAULT_BRIDGE_READY_WAIT_MS = 60_000;
+const DEFAULT_STOP_RETRY = { initialMs: 5_000, maxMs: 5 * 60_000 };
+
+type Operation = 'start' | 'stop' | 'sync';
+
+interface StopRetry {
+  readonly at: number;
+  readonly delayMs: number;
+  readonly timer: ReturnType<typeof setTimeout>;
+}
+
+interface ReadyWaiter {
+  readonly resolve: () => void;
+  readonly reject: (err: Error) => void;
+}
 
 interface Lease {
   readonly id: number;
@@ -140,9 +162,17 @@ export class DriverManager {
   private readonly bridgeSubscriptions = new Map<string, Subscription>();
   /** Last start failure per instance key. Only a new lease retries it. */
   private readonly startErrors = new Map<string, Error>();
+  /** Subscription keys whose last subscribe or unsubscribe failed. Retried on the next lease change. */
+  private readonly failedSubscriptions = new Set<string>();
+  /** The one operation running per instance key. */
+  private readonly inFlight = new Map<string, Promise<void>>();
+  private readonly stopRetries = new Map<string, StopRetry>();
+  private readonly readyWaiters = new Set<ReadyWaiter>();
   private bridgeReady = false;
-  private reconciling: Promise<void> | null = null;
-  private reconcileRequested = false;
+  /** Between `start()` and `stop()`. */
+  private active = false;
+  /** Bumped whenever the bridge goes down, so late replies are ignored. */
+  private generation = 0;
 
   constructor(private readonly options: DriverManagerOptions) {
     this.log = options.logger.child('drivers');
@@ -194,10 +224,13 @@ export class DriverManager {
   /** Start the bridge. If the first attempt fails, it keeps retrying in the background. */
   async start(): Promise<void> {
     this.log.info('starting python bridge');
+    this.active = true;
     await this.supervisor.start();
   }
 
   async stop(): Promise<void> {
+    this.active = false;
+    this.rejectReadyWaiters(new Error('Python bridge is not running'));
     await this.supervisor.stop();
     this.handleBridgeDown();
   }
@@ -243,20 +276,34 @@ export class DriverManager {
 
   /**
    * Take a lease on `driver.event` for `client` and wait until the driver runs.
-   * Rejects, and drops the lease, when the driver or a dependency fails to start.
+   * Waits for a bridge that is starting or restarting. Rejects, and drops the
+   * lease, when the driver or a dependency fails to start.
    */
   async subscribe(binding: string, driver: string, event: string, client: string): Promise<void> {
+    const deadline = Date.now() + (this.options.bridgeReadyWaitMs ?? DEFAULT_BRIDGE_READY_WAIT_MS);
+    await this.waitForBridge(deadline);
     this.requireDriver(driver);
-    if (!this.bridgeReady) throw new Error('Python bridge is not running');
     const instance = this.instanceFor(binding, driver);
     const lease = this.addLease({ client, binding, instance, driver, event });
-    // A new lease is an explicit request, so earlier start failures get another try.
-    for (const name of this.closure(driver)) this.startErrors.delete(instanceKey(instance, name));
-    await this.scheduleReconcile();
+    const keys = this.closure(driver).map((name) => instanceKey(instance, name));
+    // A new lease is an explicit request, so earlier failures get another try.
+    for (const key of keys) this.startErrors.delete(key);
+    this.failedSubscriptions.delete(subscriptionKey(lease));
+    for (;;) {
+      await this.settle(keys);
+      if (this.bridgeReady) break;
+      // The bridge went down while the driver was starting; wait for the restart.
+      try {
+        await this.waitForBridge(deadline);
+      } catch (err) {
+        this.removeLease(lease);
+        throw err;
+      }
+    }
     const failure = this.leaseFailure(lease);
     if (failure) {
       this.removeLease(lease);
-      await this.scheduleReconcile();
+      await this.settle(keys);
       throw failure;
     }
   }
@@ -275,8 +322,7 @@ export class DriverManager {
       }
     }
     if (!match) return;
-    this.removeLease(match);
-    await this.scheduleReconcile();
+    await this.release([match]);
   }
 
   /** Release every lease `client` holds so idle drivers can stop. */
@@ -287,8 +333,17 @@ export class DriverManager {
       subscriber: client,
       drivers: owned.map((lease) => lease.driver),
     });
-    for (const lease of owned) this.removeLease(lease);
-    await this.scheduleReconcile();
+    await this.release(owned);
+  }
+
+  private async release(leases: readonly Lease[]): Promise<void> {
+    const keys = new Set<string>();
+    for (const lease of leases) {
+      this.removeLease(lease);
+      this.failedSubscriptions.delete(subscriptionKey(lease));
+      for (const name of this.closure(lease.driver)) keys.add(instanceKey(lease.instance, name));
+    }
+    await this.settle(Array.from(keys));
   }
 
   async getData(binding: string, driver: string, event: string): Promise<unknown> {
@@ -359,6 +414,36 @@ export class DriverManager {
     if (byInstance?.size === 0) this.leasesByInstance.delete(key);
   }
 
+  private waitForBridge(deadline: number): Promise<void> {
+    if (this.bridgeReady) return Promise.resolve();
+    if (!this.active) return Promise.reject(new Error('Python bridge is not running'));
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(
+        () => {
+          this.readyWaiters.delete(waiter);
+          reject(new Error('Python bridge did not become ready in time'));
+        },
+        Math.max(deadline - Date.now(), 0),
+      );
+      const waiter: ReadyWaiter = {
+        resolve: () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        reject: (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      };
+      this.readyWaiters.add(waiter);
+    });
+  }
+
+  private rejectReadyWaiters(err: Error): void {
+    for (const waiter of this.readyWaiters) waiter.reject(err);
+    this.readyWaiters.clear();
+  }
+
   private leaseFailure(lease: Lease): Error | null {
     if (!this.leases.has(lease.id)) return null;
     if (!this.bridgeReady) return new Error('Python bridge is not running');
@@ -395,92 +480,150 @@ export class DriverManager {
     if (this.leases.size > 0) {
       this.log.info('re-applying driver leases', { leases: this.leases.size });
     }
-    await this.scheduleReconcile();
+    for (const waiter of this.readyWaiters) waiter.resolve();
+    this.readyWaiters.clear();
+    this.kick();
   }
 
   private handleBridgeDown(): void {
+    this.generation += 1;
     this.bridgeReady = false;
     this.actual.clear();
     this.bridgeSubscriptions.clear();
     this.startErrors.clear();
+    this.failedSubscriptions.clear();
+    for (const retry of this.stopRetries.values()) clearTimeout(retry.timer);
+    this.stopRetries.clear();
     this.broadcastList();
   }
 
-  private scheduleReconcile(): Promise<void> {
-    this.reconcileRequested = true;
-    this.reconciling ??= this.runReconcile();
-    return this.reconciling;
-  }
-
-  private async runReconcile(): Promise<void> {
-    try {
-      while (this.reconcileRequested) {
-        this.reconcileRequested = false;
-        try {
-          await this.reconcileOnce();
-        } catch (err) {
-          this.log.error('driver reconciliation failed', { err: String(err) });
-        }
-      }
-    } finally {
-      this.reconciling = null;
-    }
-  }
-
-  private async reconcileOnce(): Promise<void> {
-    if (!this.bridgeReady || !this.bridge.isRunning()) return;
+  /** Start an operation for every instance that needs one and has none running. */
+  private kick(): void {
+    if (!this.bridgeReady) return;
     const desired = this.desiredInstances();
-    const desiredSubscriptions = new Map<string, Subscription>();
-    for (const lease of this.leases.values()) {
-      desiredSubscriptions.set(subscriptionKey(lease), lease);
-    }
-
-    const unwanted = Array.from(this.actual.entries())
-      .filter(([key]) => !desired.has(key))
-      .map(([, record]) => record);
-    for (const record of this.dependentsFirst(unwanted)) {
-      await this.stopInstance(record);
-    }
     for (const key of this.startErrors.keys()) {
       if (!desired.has(key)) this.startErrors.delete(key);
     }
-
-    for (const [key, sub] of this.bridgeSubscriptions) {
-      if (desiredSubscriptions.has(key)) continue;
-      try {
-        await this.bridge.request({ type: 'unsubscribe', ...pickSubscription(sub) });
-        this.bridgeSubscriptions.delete(key);
-      } catch (err) {
-        this.log.warn('driver unsubscribe failed', { ...pickSubscription(sub), err: String(err) });
-      }
+    const keys = new Set([...desired.keys(), ...this.actual.keys()]);
+    for (const sub of this.bridgeSubscriptions.values())
+      keys.add(instanceKey(sub.instance, sub.driver));
+    for (const key of keys) {
+      if (this.inFlight.has(key)) continue;
+      const operation = this.planFor(key, desired);
+      if (!operation) continue;
+      const done = this.runOperation(key, operation, desired.get(key))
+        .catch((err: unknown) => {
+          this.log.error('driver operation failed', { key, operation, err: String(err) });
+        })
+        .finally(() => {
+          this.inFlight.delete(key);
+          this.broadcastList();
+          this.kick();
+        });
+      this.inFlight.set(key, done);
     }
-
-    // `desired` lists dependencies before their dependents.
-    for (const [key, want] of desired) {
-      if (this.startErrors.has(key) || this.actual.has(key)) continue;
-      const entry = this.catalogue.get(want.driver);
-      if (!entry) continue;
-      const blocked = entry.dependencies.some(
-        (dep) => this.actual.get(instanceKey(want.instance, dep))?.state !== 'running',
-      );
-      if (!blocked) await this.startInstance(want);
-    }
-
-    for (const [key, sub] of desiredSubscriptions) {
-      if (this.bridgeSubscriptions.has(key)) continue;
-      if (this.actual.get(instanceKey(sub.instance, sub.driver))?.state !== 'running') continue;
-      try {
-        await this.bridge.request({ type: 'subscribe', ...pickSubscription(sub) });
-        this.bridgeSubscriptions.set(key, pickSubscription(sub));
-      } catch (err) {
-        this.log.warn('driver subscribe failed', { ...pickSubscription(sub), err: String(err) });
-      }
-    }
-
-    this.broadcastList();
   }
 
-  private async startInstance(want: DesiredInstance): Promise<void> {
+  /** Kick, then wait until no operation is running on `keys`. */
+  private async settle(keys: readonly string[]): Promise<void> {
+    for (;;) {
+      this.kick();
+      const pending = keys.flatMap((key) => {
+        const op = this.inFlight.get(key);
+        return op ? [op] : [];
+      });
+      if (pending.length === 0) return;
+      await Promise.race(pending);
+    }
+  }
+
+  private planFor(key: string, desired: ReadonlyMap<string, DesiredInstance>): Operation | null {
+    const want = desired.get(key);
+    const record = this.actual.get(key);
+    if (record && (!want || record.state === 'errored')) {
+      // Starting and stopping resolve on their own; the bridge reports the result.
+      if (record.state === 'starting' || record.state === 'stopping') return null;
+      if (this.hasPresentDependents(record)) return null;
+      const retry = this.stopRetries.get(key);
+      if (retry && retry.at > Date.now()) return null;
+      return 'stop';
+    }
+    if (want && !record) {
+      if (this.startErrors.has(key)) return null;
+      const entry = this.catalogue.get(want.driver);
+      if (!entry) return null;
+      const depsRunning = entry.dependencies.every(
+        (dep) => this.actual.get(instanceKey(want.instance, dep))?.state === 'running',
+      );
+      return depsRunning ? 'start' : null;
+    }
+    if (record?.state === 'running' && this.subscriptionChanges(key).length > 0) return 'sync';
+    return null;
+  }
+
+  private async runOperation(
+    key: string,
+    operation: Operation,
+    want: DesiredInstance | undefined,
+  ): Promise<void> {
+    const generation = this.generation;
+    if (operation === 'start' && want) {
+      await this.startInstance(want, generation);
+    } else if (operation === 'stop') {
+      const record = this.actual.get(key);
+      if (record) await this.stopInstance(record, generation);
+    } else if (operation === 'sync') {
+      await this.syncSubscriptions(key, generation);
+    }
+  }
+
+  private hasPresentDependents(record: InstanceRecord): boolean {
+    for (const other of this.actual.values()) {
+      if (other.instance !== record.instance) continue;
+      if (this.catalogue.get(other.driver)?.dependencies.includes(record.driver)) return true;
+    }
+    return false;
+  }
+
+  /** Subscriptions to add (`true`) or remove (`false`) for one instance. */
+  private subscriptionChanges(key: string): Array<[Subscription, boolean]> {
+    const changes: Array<[Subscription, boolean]> = [];
+    const wanted = new Map<string, Subscription>();
+    for (const lease of this.leasesByInstance.get(key) ?? []) {
+      wanted.set(subscriptionKey(lease), pickSubscription(lease));
+    }
+    for (const [subKey, sub] of wanted) {
+      if (!this.bridgeSubscriptions.has(subKey) && !this.failedSubscriptions.has(subKey)) {
+        changes.push([sub, true]);
+      }
+    }
+    for (const [subKey, sub] of this.bridgeSubscriptions) {
+      if (instanceKey(sub.instance, sub.driver) !== key || wanted.has(subKey)) continue;
+      if (!this.failedSubscriptions.has(subKey)) changes.push([sub, false]);
+    }
+    return changes;
+  }
+
+  private async syncSubscriptions(key: string, generation: number): Promise<void> {
+    for (const [sub, add] of this.subscriptionChanges(key)) {
+      const subKey = subscriptionKey(sub);
+      try {
+        await this.bridge.request({ type: add ? 'subscribe' : 'unsubscribe', ...sub });
+        if (generation !== this.generation) return;
+        if (add) this.bridgeSubscriptions.set(subKey, sub);
+        else this.bridgeSubscriptions.delete(subKey);
+      } catch (err) {
+        if (generation !== this.generation) return;
+        this.failedSubscriptions.add(subKey);
+        this.log.warn(`driver ${add ? 'subscribe' : 'unsubscribe'} failed`, {
+          ...sub,
+          err: String(err),
+        });
+      }
+    }
+  }
+
+  private async startInstance(want: DesiredInstance, generation: number): Promise<void> {
     const { instance, driver } = want;
     const key = instanceKey(instance, driver);
     this.setActualState(instance, driver, 'starting');
@@ -491,10 +634,11 @@ export class DriverManager {
         { type: 'start-driver', instance, driver, ...(config ? { config } : {}) },
         { timeoutMs: START_TIMEOUT_MS },
       );
+      if (generation !== this.generation) return;
       this.setActualState(instance, driver, 'running');
       this.log.info('driver started', { driver, instance });
     } catch (err) {
-      if (!this.bridge.isRunning()) return;
+      if (generation !== this.generation) return;
       this.dropActual(key);
       const message = err instanceof Error ? err.message : String(err);
       this.startErrors.set(key, new Error(`driver ${driver} failed to start: ${message}`));
@@ -503,43 +647,40 @@ export class DriverManager {
     this.broadcastDriver(driver);
   }
 
-  private async stopInstance(record: InstanceRecord): Promise<void> {
+  private async stopInstance(record: InstanceRecord, generation: number): Promise<void> {
     const { instance, driver } = record;
+    const key = instanceKey(instance, driver);
     this.setActualState(instance, driver, 'stopping');
     this.broadcastDriver(driver);
     try {
       await this.bridge.request({ type: 'stop-driver', instance, driver });
-      this.dropActual(instanceKey(instance, driver));
+      if (generation !== this.generation) return;
+      this.dropActual(key);
+      const retry = this.stopRetries.get(key);
+      if (retry) clearTimeout(retry.timer);
+      this.stopRetries.delete(key);
       this.log.info('driver stopped', { driver, instance });
     } catch (err) {
-      if (!this.bridge.isRunning()) return;
-      const current = this.actual.get(instanceKey(instance, driver));
+      if (generation !== this.generation) return;
+      const current = this.actual.get(key);
       if (current?.state === 'stopping') current.state = 'errored';
-      this.log.warn('driver did not stop', { driver, instance, err: String(err) });
+      const policy = this.options.stopRetry ?? DEFAULT_STOP_RETRY;
+      const previous = this.stopRetries.get(key);
+      const delayMs = previous ? Math.min(previous.delayMs * 2, policy.maxMs) : policy.initialMs;
+      if (previous) clearTimeout(previous.timer);
+      this.stopRetries.set(key, {
+        at: Date.now() + delayMs,
+        delayMs,
+        timer: setTimeout(() => this.kick(), delayMs),
+      });
+      this.log.warn('driver did not stop; retrying later', {
+        driver,
+        instance,
+        retryInMs: delayMs,
+        err: String(err),
+      });
     }
     this.broadcastDriver(driver);
-  }
-
-  /** Order records so a driver comes before the drivers it depends on. */
-  private dependentsFirst(records: readonly InstanceRecord[]): InstanceRecord[] {
-    const remaining = new Map(records.map((r) => [instanceKey(r.instance, r.driver), r]));
-    const ordered: InstanceRecord[] = [];
-    while (remaining.size > 0) {
-      const needed = new Set<string>();
-      for (const record of remaining.values()) {
-        for (const dep of this.catalogue.get(record.driver)?.dependencies ?? []) {
-          needed.add(instanceKey(record.instance, dep));
-        }
-      }
-      const leaves = Array.from(remaining.entries()).filter(([key]) => !needed.has(key));
-      // A dependency cycle has no leaves; stop the rest in any order.
-      const batch = leaves.length > 0 ? leaves : Array.from(remaining.entries());
-      for (const [key, record] of batch) {
-        ordered.push(record);
-        remaining.delete(key);
-      }
-    }
-    return ordered;
   }
 
   /** Every instance the leases need, dependencies before dependents. */
@@ -624,9 +765,7 @@ export class DriverManager {
     this.broadcastDriver(driver);
     this.broadcastList();
     // Something started that nobody wants any more, e.g. after a start timed out.
-    if (normalized === 'running' && !this.desiredInstances().has(key)) {
-      void this.scheduleReconcile();
-    }
+    if (normalized === 'running' && !this.desiredInstances().has(key)) this.kick();
   }
 
   private setActualState(

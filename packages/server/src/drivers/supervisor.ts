@@ -83,6 +83,9 @@ export class BridgeSupervisor {
     this.state = 'stopped';
     this.clearRestartTimer();
     this.stopPinging();
+    // Stop the process first so a start waiting on ready or on the catalogue
+    // fails right away instead of running to its timeout.
+    await this.options.bridge.stop();
     await this.starting?.catch(() => undefined);
     await this.options.bridge.stop();
   }
