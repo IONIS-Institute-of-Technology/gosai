@@ -14,11 +14,13 @@ const builtinAppsDir = resolveBuiltinAppsDir();
 const enablePython = process.env.GOSAI_PYTHON !== '0';
 
 // Desktop main passes the token it generated. A standalone server makes its
-// own. Remove it from the environment so child processes (the Python bridge,
-// app build scripts) never inherit it.
+// own. The variable stays set because `bun --hot` re-runs this file in the
+// same process; the Python bridge and the installer strip it from the
+// environment of the processes they spawn.
 const providedToken = process.env.GOSAI_DASHBOARD_TOKEN;
 const dashboardToken = providedToken || generateDashboardToken();
-delete process.env.GOSAI_DASHBOARD_TOKEN;
+// Keep a generated token across hot reloads too.
+process.env.GOSAI_DASHBOARD_TOKEN = dashboardToken;
 
 const options: ServerOptions = {
   host,
