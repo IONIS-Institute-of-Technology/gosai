@@ -43,10 +43,39 @@ export function readLaunchParams(href: string): LaunchParams {
   };
 }
 
-/** Boots the page. Never rejects; failures are shown in the window. */
-export async function bootAppHost(): Promise<void> {
-  document.documentElement.style.background = '#000';
+/** What the page script touches in the browser. Swappable for tests. */
+export interface AppHostEnvironment {
+  readonly location: Pick<Location, 'href' | 'hostname' | 'host' | 'origin'>;
+  /** Receives `gosaiHost` and `pagehide` listeners. */
+  readonly window: EventTarget;
+  readonly sessionStorage: Pick<Storage, 'getItem' | 'setItem'>;
+  replaceUrl(url: string): void;
+  fetch(url: string, init: RequestInit): Promise<Response>;
+  importModule(url: string): Promise<{ default?: unknown }>;
+  runExperience: typeof runExperience;
+  setTitle(title: string): void;
+  showError(title: string, error: unknown): void;
+}
 
+export function browserAppHostEnvironment(): AppHostEnvironment {
+  document.documentElement.style.background = '#000';
+  return {
+    location,
+    window,
+    sessionStorage,
+    replaceUrl: (url) => history.replaceState(history.state, '', url),
+    fetch: (url, init) => fetch(url, init),
+    importModule: (url) => import(/* @vite-ignore */ url) as Promise<{ default?: unknown }>,
+    runExperience,
+    setTitle: (title) => void (document.title = title),
+    showError,
+  };
+}
+
+/** Boots the page. Never rejects; failures are shown in the window. */
+export async function bootAppHost(
+  env: AppHostEnvironment = browserAppHostEnvironment(),
+): Promise<void> {
   const controller = new AbortController();
   let handle: RuntimeHandle | null = null;
   let starting: Promise<void> = Promise.resolve();
@@ -58,61 +87,61 @@ export async function bootAppHost(): Promise<void> {
       await handle?.stop();
     },
   };
-  Object.defineProperty(window, 'gosaiHost', { value: Object.freeze(control) });
-  window.addEventListener('pagehide', () => void control.stop(), { once: true });
+  Object.defineProperty(env.window, 'gosaiHost', { value: Object.freeze(control) });
+  env.window.addEventListener('pagehide', () => void control.stop(), { once: true });
 
   starting = (async () => {
-    const appSlug = appSlugFromHostname(location.hostname);
-    if (!appSlug) throw new Error(`${location.host} is not a GOSAI app origin`);
+    const appSlug = appSlugFromHostname(env.location.hostname);
+    if (!appSlug) throw new Error(`${env.location.host} is not a GOSAI app origin`);
 
-    const launch = readLaunchParams(location.href);
+    const launch = readLaunchParams(env.location.href);
     if (launch.token !== null) {
       // Keep the token for reloads, but out of the URL and the history.
-      sessionStorage.setItem(TOKEN_STORAGE_KEY, launch.token);
-      history.replaceState(history.state, '', launch.cleanUrl);
+      env.sessionStorage.setItem(TOKEN_STORAGE_KEY, launch.token);
+      env.replaceUrl(launch.cleanUrl);
     }
-    const token = launch.token ?? sessionStorage.getItem(TOKEN_STORAGE_KEY);
+    const token = launch.token ?? env.sessionStorage.getItem(TOKEN_STORAGE_KEY);
 
-    const manifest = await fetchManifest(controller.signal);
+    const manifest = await fetchManifest(env, controller.signal);
     const experienceSlug =
       launch.params.experience ?? manifest.default ?? manifest.experiences[0]?.slug;
     const experience = manifest.experiences.find((e) => e.slug === experienceSlug);
     if (!experience) {
       throw new Error(`${manifest.name} has no experience "${experienceSlug ?? ''}"`);
     }
-    document.title = `${experience.name} - ${manifest.name}`;
+    env.setTitle(`${experience.name} - ${manifest.name}`);
 
-    const entryUrl = new URL(`/v1/apps/${appSlug}/static/${experience.entry}`, location.origin);
-    const module = (await import(/* @vite-ignore */ entryUrl.href)) as { default?: unknown };
-    const definition = module.default;
+    const entryUrl = new URL(`/v1/apps/${appSlug}/static/${experience.entry}`, env.location.origin);
+    const definition = (await env.importModule(entryUrl.href)).default;
     if (!isExperienceDefinition(definition)) {
       throw new Error(`${experience.entry} does not default-export defineExperience(...)`);
     }
     if (controller.signal.aborted) return;
 
     const driverBinding = launch.params.driverBinding;
-    handle = await runExperience(definition, {
+    handle = await env.runExperience(definition, {
       appSlug,
       experienceSlug: experience.slug,
       manifest,
-      serverBaseUrl: location.origin,
+      serverBaseUrl: env.location.origin,
       params: launch.params,
       signal: controller.signal,
       ...(token ? { authToken: token } : {}),
       ...(driverBinding ? { driverBinding } : {}),
-      onFatalError: (err) => showError('The experience stopped after repeated render errors', err),
+      onFatalError: (err) =>
+        env.showError('The experience stopped after repeated render errors', err),
     });
   })();
 
   try {
     await starting;
   } catch (err) {
-    if (!controller.signal.aborted) showError('The experience failed to start', err);
+    if (!controller.signal.aborted) env.showError('The experience failed to start', err);
   }
 }
 
-async function fetchManifest(signal: AbortSignal): Promise<AppManifest> {
-  const res = await fetch('/gosai.app.json', { signal });
+async function fetchManifest(env: AppHostEnvironment, signal: AbortSignal): Promise<AppManifest> {
+  const res = await env.fetch('/gosai.app.json', { signal });
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { error?: string } | null;
     throw new Error(body?.error ?? `could not load the app manifest (HTTP ${res.status})`);

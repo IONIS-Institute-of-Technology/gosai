@@ -18,9 +18,9 @@ export type {
   RuntimeOptions,
 } from './runtime.js';
 
-export { bootAppHost, readLaunchParams } from './app-host-page.js';
+export { bootAppHost, browserAppHostEnvironment, readLaunchParams } from './app-host-page.js';
 export { appHostname, appSlugFromHostname } from '@gosai/shared/app-origin';
-export type { AppHostControl, LaunchParams } from './app-host-page.js';
+export type { AppHostControl, AppHostEnvironment, LaunchParams } from './app-host-page.js';
 
 export { ServerClient } from './connection.js';
 export type { ConnectionStatus, ServerClientOptions } from './connection.js';
