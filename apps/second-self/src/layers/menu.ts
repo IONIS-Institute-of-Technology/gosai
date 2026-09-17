@@ -236,7 +236,7 @@ export function createMenuLayer(deps: LayerDeps): Layer {
       }
 
       // Forget dwell counters for rows that disappeared.
-      for (const key of [...dwell.keys()]) {
+      for (const key of dwell.keys()) {
         if (!seen.has(key)) dwell.delete(key);
       }
     },

@@ -108,6 +108,7 @@ To install a new app paste its git URL into the Apps tab of the dashboard.
 | `bun run build:apps`       | Build the built-in apps                           |
 | `bun run build:server-bin` | Compile the server to a single executable         |
 | `bun run typecheck`        | TypeScript check across the workspace             |
+| `bun run lint`             | oxlint across the workspace                       |
 | `bun run test`             | Server tests                                      |
 | `bun run format:check`     | Prettier check across the workspace               |
 | `bun run python:sync`      | `uv sync` for the Python runtime                  |

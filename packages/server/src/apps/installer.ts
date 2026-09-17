@@ -89,7 +89,7 @@ export async function uninstallApp(slug: string, paths: GosaiPaths): Promise<voi
   rmSync(target, { recursive: true, force: true });
 }
 
-export function linkBuiltinApp(sourcePath: string, paths: GosaiPaths): DiscoveredApp {
+export function linkBuiltinApp(sourcePath: string): DiscoveredApp {
   const manifestPath = join(sourcePath, 'gosai.app.json');
   if (!existsSync(manifestPath)) {
     throw new Error(`Built-in app at ${sourcePath} has no gosai.app.json`);
@@ -100,7 +100,6 @@ export function linkBuiltinApp(sourcePath: string, paths: GosaiPaths): Discovere
     installPath: sourcePath,
     manifestPath,
   };
-  void paths;
 }
 
 async function runGitClone(source: string, dest: string): Promise<void> {

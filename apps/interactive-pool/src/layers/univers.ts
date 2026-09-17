@@ -78,9 +78,10 @@ interface SolarSystem {
 export function createUniversLayer(feed: PoolFeed): Layer {
   let dots: Dot[] = [];
   let stars: Star[] = [];
-  const systems: (SolarSystem | null)[] = new Array(MAX_SOLAR_SYSTEMS).fill(null);
-  const prevPositions: Array<{ x: number; y: number } | null> = new Array(MAX_SOLAR_SYSTEMS).fill(
-    null,
+  const systems: (SolarSystem | null)[] = Array.from({ length: MAX_SOLAR_SYSTEMS }, () => null);
+  const prevPositions: Array<{ x: number; y: number } | null> = Array.from(
+    { length: MAX_SOLAR_SYSTEMS },
+    () => null,
   );
 
   function init(): void {
