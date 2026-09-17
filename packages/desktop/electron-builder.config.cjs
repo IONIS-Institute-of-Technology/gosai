@@ -102,6 +102,10 @@ module.exports = {
   mac: {
     category: 'public.app-category.developer-tools',
     target: [{ target: 'dmg', arch: ['arm64'] }],
+    // Ad-hoc signature: Apple Silicon refuses unsigned code, and an unsigned
+    // download shows as "damaged". Notarization needs a real identity, see
+    // docs/deployment.md.
+    identity: '-',
     hardenedRuntime: false,
     gatekeeperAssess: false,
   },

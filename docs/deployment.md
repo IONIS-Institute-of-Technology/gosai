@@ -52,14 +52,29 @@ Outputs:
 - `packages/desktop/release/GOSAI-<version>-mac-arm64.dmg`
 - `packages/desktop/release/GOSAI-<version>-win-x64.exe`
 
-> The default config disables hardened runtime and code signing so the
-> output is unsigned. For a notarised build, set
-> `CSC_LINK`/`CSC_KEY_PASSWORD` and `APPLE_ID`/`APPLE_APP_SPECIFIC_PASSWORD`
-> environment variables and toggle `hardenedRuntime: true` in
-> `packages/desktop/electron-builder.config.cjs`.
-
 The runtime user only needs `git` on `PATH` to install apps from the
 dashboard. uv and Python come with the package.
+
+### macOS signing
+
+The DMG is signed ad hoc (`mac.identity: '-'`) without a hardened runtime.
+It is not notarized, so macOS quarantines it when downloaded and Gatekeeper
+refuses to open it. After copying GOSAI to Applications, clear the
+quarantine flag once:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/GOSAI.app
+```
+
+A notarized build needs a Developer ID certificate (`CSC_LINK` and
+`CSC_KEY_PASSWORD`, replacing `identity: '-'`), notarization credentials
+(`APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID`), and
+`hardenedRuntime: true`. Under a hardened runtime the bun-compiled
+`resources/server/gosai-server` needs the
+`com.apple.security.cs.allow-jit` and
+`com.apple.security.cs.allow-unsigned-executable-memory` entitlements, in
+`entitlements` and `entitlementsInherit` (it is a child process), or it
+fails to start.
 
 ## First-run behaviour
 
