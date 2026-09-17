@@ -26,7 +26,9 @@ interface RecordedRequest {
 const TICK_SCHEMA: DriverSchema = {
   $schema: 'https://json-schema.org/draft/2020-12/schema',
   config: null,
-  events: { tick: { description: 'A tick.', stream: false, payload: { $ref: '#/$defs/Tick' } } },
+  events: {
+    tick: { description: 'A tick.', delivery: 'ordered', payload: { $ref: '#/$defs/Tick' } },
+  },
   actions: {},
   $defs: { Tick: { type: 'object', properties: { count: { type: 'integer' } } } },
 };

@@ -9,12 +9,18 @@ its `list-drivers` reply:
       "schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "config": <schema> | null,
-        "events": {<event>: {"description": str, "stream": bool, "payload": <schema>}},
+        "events": {<event>: {"description": str, "delivery": "latest" | "buffered" | "ordered",
+                             "queue_size": int (buffered only), "payload": <schema>}},
         "actions": {<action>: {"description": str, "params": <schema> | null,
                                "result": <schema>, "requires_instance": bool}},
         "$defs": {<name>: <schema>}
       }
     }
+
+`delivery` says how the bridge sends an event to Node when Node reads slowly:
+`latest` keeps only the newest value (`stream_events`), `buffered` keeps up to
+`queue_size` values and drops the oldest (`buffered_events`), and `ordered`
+sends every value.
 
 `$ref`s point at `#/$defs/<name>` inside the same `schema` object. `params` is
 null when the action takes no data. Events and actions declared without types
@@ -64,7 +70,7 @@ def driver_schema(cls: type[BaseDriver]) -> dict[str, Any]:
         "events": {
             name: {
                 "description": events[name].description if isinstance(events, Mapping) else "",
-                "stream": name in cls.stream_events,
+                **_delivery(cls, name),
                 "payload": schema,
             }
             for name, schema in zip(events, event_schemas, strict=True)
@@ -82,6 +88,14 @@ def driver_schema(cls: type[BaseDriver]) -> dict[str, Any]:
         },
         "$defs": defs,
     }
+
+
+def _delivery(cls: type[BaseDriver], event: str) -> dict[str, Any]:
+    if event in cls.stream_events:
+        return {"delivery": "latest"}
+    if event in cls.buffered_events:
+        return {"delivery": "buffered", "queue_size": cls.buffered_events[event]}
+    return {"delivery": "ordered"}
 
 
 def describe_driver(cls: type[BaseDriver], *, with_schema: bool = True) -> dict[str, Any]:

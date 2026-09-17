@@ -24,6 +24,7 @@ def _builtin() -> list[type[BaseDriver]]:
 def test_builtin_drivers_describe_every_event_and_action(cls: type[BaseDriver]) -> None:
     assert isinstance(cls.events, Mapping), "events must map names to Event"
     assert set(cls.stream_events) <= set(cls.events)
+    assert set(cls.buffered_events) <= set(cls.events)
     specs = cls.action_specs()
     assert list(specs) == list(cls.actions), "every action must be an @action method"
     for spec in specs.values():
@@ -50,7 +51,7 @@ def test_schema_shape() -> None:
         "events": {
             "tick": {
                 "description": "Every half second, with a running count.",
-                "stream": False,
+                "delivery": "ordered",
                 "payload": {"$ref": "#/$defs/TickPayload"},
             }
         },
@@ -143,7 +144,7 @@ def test_actions_decode_params_and_encode_results() -> None:
 
 def test_undeclared_types_get_empty_schemas() -> None:
     schema = schemas.driver_schema(Legacy)
-    assert schema["events"]["ping"] == {"description": "", "stream": False, "payload": {}}
+    assert schema["events"]["ping"] == {"description": "", "delivery": "ordered", "payload": {}}
     assert schema["actions"]["poke"]["params"] == {}
 
 
@@ -206,3 +207,17 @@ def test_a_driver_without_a_schema_still_lists(make_bridge: BridgeFactory) -> No
     assert drivers["undescribable"]["actions"] == ["take"]
     assert drivers["legacy"]["schema"] is not None
     collector.wait_for(lambda m: m.get("type") == "log" and "cannot describe undescribable" in m["message"])
+
+
+def test_event_delivery_matches_the_bridge() -> None:
+    from gosai_py.drivers.camera import CameraDriver
+    from gosai_py.drivers.microphone import MicrophoneDriver
+
+    camera_events = schemas.driver_schema(CameraDriver)["events"]
+    microphone_events = schemas.driver_schema(MicrophoneDriver)["events"]
+
+    assert camera_events["color"]["delivery"] == "latest"
+    assert camera_events["frame_size"]["delivery"] == "ordered"
+    assert "queue_size" not in camera_events["frame_size"]
+    assert microphone_events["audio_stream"]["delivery"] == "buffered"
+    assert microphone_events["audio_stream"]["queue_size"] == 64

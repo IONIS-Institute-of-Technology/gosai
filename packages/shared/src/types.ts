@@ -43,7 +43,16 @@ export interface DriverSchema {
   readonly events: Readonly<
     Record<
       string,
-      { readonly description: string; readonly stream: boolean; readonly payload: JsonSchema }
+      {
+        readonly description: string;
+        /**
+         * How the bridge sends the event when Node reads slowly: only the newest
+         * value, up to `queue_size` values dropping the oldest, or every value.
+         */
+        readonly delivery: 'latest' | 'buffered' | 'ordered';
+        readonly queue_size?: number;
+        readonly payload: JsonSchema;
+      }
     >
   >;
   readonly actions: Readonly<
