@@ -23,25 +23,33 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
-from gosai_py.driver import BaseDriver, DriverContext
+import msgspec
+
+from gosai_py.driver import BaseDriver, Event
 
 Point = tuple[float, float]
 
 
-class HandSignDriver(BaseDriver):
-    name: ClassVar[str] = "hand_sign"
-    description: ClassVar[str] = "Hand gesture classification (geometric)."
-    events: ClassVar[tuple[str, ...]] = ("sign",)
-    stream_events: ClassVar[tuple[str, ...]] = ("sign",)
-    actions: ClassVar[tuple[str, ...]] = ()
-    dependencies: ClassVar[tuple[str, ...]] = ("hand_pose",)
-    subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("hand_pose", "raw_data"),)
-    loop_interval_s: ClassVar[float | None] = None
+class SignPayload(msgspec.Struct, kw_only=True):
+    """One `[label, confidence]` pair per hand, in `hand_pose` order."""
 
-    def __init__(self, context: DriverContext) -> None:
-        super().__init__(context)
+    sign: list[tuple[str, float]]
+    ts: float
+
+
+class HandSignDriver(BaseDriver):
+    name = "hand_sign"
+    description = "Hand gesture classification (geometric)."
+    events: ClassVar[Mapping[str, Event]] = {
+        "sign": Event(SignPayload, "Gesture of each hand in the latest hand_pose frame."),
+    }
+    stream_events = ("sign",)
+    dependencies = ("hand_pose",)
+    subscribed = (("hand_pose", "raw_data"),)
+    loop_interval_s = None
 
     def on_data(self, driver: str, event: str, data: Any) -> None:
         if not isinstance(data, dict):
@@ -49,13 +57,12 @@ class HandSignDriver(BaseDriver):
         hands = data.get("hands_landmarks") or []
         if not isinstance(hands, list):
             return
-        results: list[list[Any]] = []
+        results: list[tuple[str, float]] = []
         for hand in hands:
             if not isinstance(hand, list) or len(hand) < 21:
-                results.append(["UNKNOWN", 0.0])
+                results.append(("UNKNOWN", 0.0))
                 continue
-            label, score = _classify_hand([(float(p[0]), float(p[1])) for p in hand])
-            results.append([label, score])
+            results.append(_classify_hand([(float(p[0]), float(p[1])) for p in hand]))
         self.emit("sign", {"sign": results, "ts": time.time()})
 
 

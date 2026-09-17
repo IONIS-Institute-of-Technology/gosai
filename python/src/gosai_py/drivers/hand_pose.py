@@ -1,40 +1,38 @@
 """Hand-pose driver.
 
-Subscribes to `camera.frame` and runs MediaPipe Hands on each frame. Emits a
-`raw_data` event with normalized landmarks and handedness, matching the
-schema of the legacy driver.
+Runs the MediaPipe Tasks `HandLandmarker` on `camera.frame` and emits
+`raw_data`:
 
-Payload:
-```json
-{
-  "hands_landmarks": [[[x, y], ... 21]],   // normalized [0..1] over surface
-  "hands_handedness": [[index, "Left"|"Right", score], ...]
-}
-```
+    {"hands_landmarks": [[[x, y], ... 21]], "hands_handedness": [[index, "Left"|"Right", score]]}
 
-By default, the landmarks emitted are normalised over the *camera* frame.
-When a camera->surface homography is configured via ``set_homography``
-(typically by the app on startup, using the matrix produced by the
-``calibration`` driver), the driver instead emits landmarks normalised over
-the **surface reference space** (canvas / projector display, by default
-1920x1080). This is what apps need so hand positions line up with the
-physical surface regardless of how the camera is angled.
+Landmarks are normalised to 0..1 over the camera frame. Once `set_homography`
+receives a camera->surface matrix (from the `calibration` driver), they are
+warped and normalised over the surface instead (`set_surface_size`, 1920x1080
+by default), so hands line up with the physical surface whatever the camera
+angle. The warp denormalises with `set_frame_size` when given, else with the
+size of each frame.
 
-Implementation notes
---------------------
-MediaPipe 0.10+ on macOS arm64 ships only the new "Tasks" API; the legacy
-`mp.solutions.hands` submodule is no longer included in the wheel. This
-driver uses `mediapipe.tasks.vision.HandLandmarker` and downloads the
-`hand_landmarker.task` model file into `~/.gosai/models/` on first use.
+The `hand_landmarker.task` model is downloaded into `~/.gosai/models` on first
+use.
 """
 
 from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
-from gosai_py.driver import BaseDriver, DriverContext
+import cv2
+import mediapipe as mp
+import msgspec
+import numpy as np
+from mediapipe.tasks.python import BaseOptions, vision
+
+from gosai_py.driver import BaseDriver, DriverContext, Event, action
+from gosai_py.frames import capture_timing, clamp_window, contiguous, flip_and_crop, latency_ms
+from gosai_py.geometry import homography
+from gosai_py.payloads import FlipResult, Matrix3x3, Size, SizeResult, WindowResult
 from gosai_py.runtime import mediapipe_base_options
 from gosai_py.runtime.models import Model, resolve_model
 
@@ -48,77 +46,60 @@ MODEL = Model.download(
 )
 
 
+class HandPosePayload(msgspec.Struct, kw_only=True):
+    hands_landmarks: list[list[list[float]]]
+    hands_handedness: list[tuple[int, str, float]]
+    ts: float
+    capture_ts: float
+    inference_ms: float
+    frame_age_ms: float
+    latency_ms: float
+
+
+class HomographyResult(msgspec.Struct, kw_only=True):
+    ok: bool = True
+    cleared: bool = False
+
+
 class HandPoseDriver(BaseDriver):
-    name: ClassVar[str] = "hand_pose"
-    description: ClassVar[str] = "Hand landmark detection (MediaPipe Hands)."
-    events: ClassVar[tuple[str, ...]] = ("raw_data",)
-    stream_events: ClassVar[tuple[str, ...]] = ("raw_data",)
-    actions: ClassVar[tuple[str, ...]] = (
-        "set_flip",
-        "set_window",
-        "set_homography",
-        "set_frame_size",
-        "set_surface_size",
-    )
-    dependencies: ClassVar[tuple[str, ...]] = ("camera",)
-    subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("camera", "frame"),)
-    loop_interval_s: ClassVar[float | None] = None
+    name = "hand_pose"
+    description = "Hand landmark detection (MediaPipe Hands)."
+    events: ClassVar[Mapping[str, Event]] = {
+        "raw_data": Event(HandPosePayload, "Hand landmarks for the latest camera frame."),
+    }
+    stream_events = ("raw_data",)
+    dependencies = ("camera",)
+    subscribed = (("camera", "frame"),)
+    loop_interval_s = None
 
     def __init__(self, context: DriverContext) -> None:
         super().__init__(context)
         self._detector_lock = threading.Lock()
         self._detector: Any = None
-        self._mp_image_cls: Any = None
-        self._mp_image_format: Any = None
-        self._mp_uses_rgba = False
+        self._uses_rgba = False
         self._flip = False
         self._window = 1.0
-        self._last_inference_ms = 0.0
-        # Camera->surface homography (numpy 3x3, float64) and the dimensions
-        # used to denormalise camera-frame landmarks before the warp and to
-        # renormalise the warped points before emitting. ``None`` until set.
-        self._homography: Any = None
-        # Camera frame size used at calibration time. Falls back to the live
-        # frame size when unset.
+        self._homography: homography.Matrix | None = None
+        # Pinned camera frame size for the warp; None follows the live frames.
         self._frame_size: tuple[int, int] | None = None
-        # Surface (output reference) size that landmarks are normalised to
-        # when the homography is active.
         self._surface_size: tuple[int, int] = (1920, 1080)
         self._last_ts_ms = 0
 
     def pre_run(self) -> None:
-        try:
-            import mediapipe as mp  # type: ignore[import-not-found]
-            from mediapipe.tasks import python as mp_python  # type: ignore[import-not-found]
-            from mediapipe.tasks.python import vision as mp_vision  # type: ignore[import-not-found]
-        except ImportError as exc:
-            raise RuntimeError(f"mediapipe not available: {exc}") from exc
-
         model_path = resolve_model(MODEL, self.log)
-
-        try:
-            base_options, info = mediapipe_base_options(
-                mp_python.BaseOptions,
-                model_path=model_path,
-            )
-            options = mp_vision.HandLandmarkerOptions(
-                base_options=base_options,
-                num_hands=2,
-                min_hand_detection_confidence=0.5,
-                min_hand_presence_confidence=0.5,
-                min_tracking_confidence=0.5,
-                running_mode=mp_vision.RunningMode.VIDEO,
-            )
-            self._detector = mp_vision.HandLandmarker.create_from_options(options)
-            self._mp_image_cls = mp.Image
-            self._mp_uses_rgba = info.get("provider") == "GPUDelegate"
-            self._mp_image_format = mp.ImageFormat.SRGBA if self._mp_uses_rgba else mp.ImageFormat.SRGB
-            self.set_runtime_info(info)
-            self.log("info", "MediaPipe HandLandmarker initialised")
-        except Exception as exc:
-            self.log("error", f"hand_pose: failed to create detector: {exc!r}")
-            self._detector = None
-            raise
+        base_options, info = mediapipe_base_options(BaseOptions, model_path=model_path)
+        options = vision.HandLandmarkerOptions(
+            base_options=base_options,
+            num_hands=2,
+            min_hand_detection_confidence=0.5,
+            min_hand_presence_confidence=0.5,
+            min_tracking_confidence=0.5,
+            running_mode=vision.RunningMode.VIDEO,
+        )
+        self._detector = vision.HandLandmarker.create_from_options(options)
+        self._uses_rgba = info.get("provider") == "GPUDelegate"
+        self.set_runtime_info(info)
+        self.log("info", "MediaPipe HandLandmarker initialised")
 
     def cleanup(self) -> None:
         # Drop the detector without calling close(). MediaPipe's native
@@ -127,60 +108,33 @@ class HandPoseDriver(BaseDriver):
         with self._detector_lock:
             self._detector = None
 
-    def execute(self, action: str, data: Any) -> Any:
-        if action == "set_flip":
-            self._flip = bool(data)
-            return {"flip": self._flip}
-        if action == "set_window":
-            self._window = max(min(float(data), 1.0), 0.05)
-            return {"window": self._window}
-        if action == "set_homography":
-            return self._set_homography(data)
-        if action == "set_frame_size":
-            return self._set_frame_size(data)
-        if action == "set_surface_size":
-            return self._set_surface_size(data)
-        return super().execute(action, data)
+    @action("Mirror frames horizontally before detection.")
+    def set_flip(self, flip: bool) -> FlipResult:
+        self._flip = flip
+        return FlipResult(flip=flip)
 
-    def _set_homography(self, data: Any) -> dict[str, Any]:
-        if data is None:
+    @action("Detect only in a centered horizontal fraction of the frame (0.05 to 1).")
+    def set_window(self, window: float) -> WindowResult:
+        self._window = clamp_window(window)
+        return WindowResult(window=self._window)
+
+    @action("Set the camera->surface homography (9 values, row-major), or null to clear it.")
+    def set_homography(self, matrix: Matrix3x3 | None) -> HomographyResult:
+        if matrix is None:
             self._homography = None
-            return {"ok": True, "cleared": True}
-        if not isinstance(data, list) or len(data) != 9:
-            raise ValueError("homography must be a length-9 list")
-        import numpy as np  # type: ignore[import-not-found]
+            return HomographyResult(cleared=True)
+        self._homography = homography.to_matrix(matrix)
+        return HomographyResult()
 
-        try:
-            self._homography = np.asarray(data, dtype=np.float64).reshape(3, 3)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"invalid matrix: {exc}") from exc
-        return {"ok": True}
+    @action("Pin the camera frame size the homography was computed for.")
+    def set_frame_size(self, size: Size) -> SizeResult:
+        self._frame_size = (size.width, size.height)
+        return SizeResult(width=size.width, height=size.height)
 
-    def _set_frame_size(self, data: Any) -> dict[str, Any]:
-        if not isinstance(data, dict):
-            raise ValueError("frame_size must be { width, height }")
-        try:
-            w = int(data["width"])
-            h = int(data["height"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError(f"frame_size requires width/height: {exc}") from exc
-        if w <= 0 or h <= 0:
-            raise ValueError("frame_size must be positive")
-        self._frame_size = (w, h)
-        return {"ok": True, "width": w, "height": h}
-
-    def _set_surface_size(self, data: Any) -> dict[str, Any]:
-        if not isinstance(data, dict):
-            raise ValueError("surface_size must be { width, height }")
-        try:
-            w = int(data["width"])
-            h = int(data["height"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError(f"surface_size requires width/height: {exc}") from exc
-        if w <= 0 or h <= 0:
-            raise ValueError("surface_size must be positive")
-        self._surface_size = (w, h)
-        return {"ok": True, "width": w, "height": h}
+    @action("Set the surface size warped landmarks are normalised over.")
+    def set_surface_size(self, size: Size) -> SizeResult:
+        self._surface_size = (size.width, size.height)
+        return SizeResult(width=size.width, height=size.height)
 
     def on_data(self, driver: str, event: str, data: Any) -> None:
         if self.stop_requested() or not isinstance(data, dict):
@@ -192,160 +146,61 @@ class HandPoseDriver(BaseDriver):
         frame = data.get("_frame")
         if frame is None:
             raise RuntimeError("hand_pose requires camera.frame payload with _frame")
-        try:
-            import cv2  # type: ignore[import-not-found]
-            import numpy as np  # type: ignore[import-not-found]
-        except ImportError as exc:
-            self.log("error", f"opencv/numpy required: {exc}")
-            return
 
-        # Preserve the *original* camera frame dimensions before any flip /
-        # crop so the homography can correctly denormalise landmarks. The
-        # configured ``_frame_size`` overrides this when the caller wants to
-        # pin a specific resolution.
         cam_h, cam_w = frame.shape[:2]
-        if self._frame_size is None:
-            self._frame_size = (cam_w, cam_h)
-
         start = time.perf_counter()
-        img = cv2.cvtColor(
-            frame,
-            cv2.COLOR_BGR2RGBA if self._mp_uses_rgba else cv2.COLOR_BGR2RGB,
+        cropped, x0 = flip_and_crop(frame, self._flip, self._window)
+        img = contiguous(
+            cv2.cvtColor(cropped, cv2.COLOR_BGR2RGBA if self._uses_rgba else cv2.COLOR_BGR2RGB)
         )
-        if self._flip:
-            img = cv2.flip(img, 1)
-
-        # Window crop centred horizontally (legacy behaviour).
-        if self._window < 1.0:
-            w = img.shape[1]
-            half = self._window / 2.0
-            x0 = int((0.5 - half) * w)
-            x1 = int((0.5 + half) * w)
-            img = img[:, x0:x1]
-
-        # MediaPipe Tasks needs a contiguous image. The macOS GPU delegate
-        # requires SRGBA; CPU accepts SRGB.
-        # `detect_for_video` API expects monotonically increasing timestamps
-        # in milliseconds.
-        if not img.flags["C_CONTIGUOUS"]:
-            img = np.ascontiguousarray(img)
-
-        mp_image = self._mp_image_cls(image_format=self._mp_image_format, data=img)
-        capture_ts = data.get("capture_ts")
-        capture_ts_f = float(capture_ts) if isinstance(capture_ts, int | float) else time.time()
-        frame_age_ms = (time.time() - capture_ts_f) * 1000.0
+        image_format = mp.ImageFormat.SRGBA if self._uses_rgba else mp.ImageFormat.SRGB
+        mp_image = mp.Image(image_format=image_format, data=img)
+        capture_ts, frame_age_ms = capture_timing(data)
         self.record("frame_age_ms", frame_age_ms)
 
-        ts_ms = max(self._last_ts_ms + 1, int(capture_ts_f * 1000))
+        # VIDEO mode requires strictly increasing timestamps (ms).
+        ts_ms = max(self._last_ts_ms + 1, int(capture_ts * 1000))
         self._last_ts_ms = ts_ms
-        try:
-            with self._detector_lock:
-                if self._detector is None or self.stop_requested():
-                    return
-                result = detector.detect_for_video(mp_image, ts_ms)
-        except Exception as exc:
-            self.log("warn", f"hand_pose: detect failed: {exc!r}")
-            return
+        with self._detector_lock:
+            if self._detector is None or self.stop_requested():
+                return
+            result = detector.detect_for_video(mp_image, ts_ms)
 
-        # Convert cropped-frame normalised landmarks (MediaPipe output) back
-        # into ORIGINAL camera-frame normalised coordinates. The horizontal
-        # window crop scales x by ``window`` and shifts by ``offset_x``.
-        offset_x = (1.0 - self._window) / 2.0
-        cam_hands: list[list[tuple[float, float]]] = []
-        for hand in result.hand_landmarks:
-            cam_hands.append([
-                (float(lm.x) * self._window + offset_x, float(lm.y))
-                for lm in hand
-            ])
-
-        # Optionally warp every landmark through the camera->surface
-        # homography. Without a homography we keep the legacy behaviour and
-        # emit camera-normalised coords.
-        hands_landmarks = self._warp_hands(cam_hands, cam_w, cam_h)
-
-        hands_handedness: list[list[Any]] = []
-        for idx, hand in enumerate(result.handedness):
-            if not hand:
-                continue
-            top = hand[0]
-            hands_handedness.append(
-                [
-                    int(getattr(top, "index", idx)),
-                    str(top.category_name),
-                    float(top.score),
-                ]
-            )
+        # MediaPipe normalises over the crop; move back to the full frame.
+        crop_w = cropped.shape[1]
+        hands = [
+            np.array([[(x0 + lm.x * crop_w) / cam_w, lm.y] for lm in hand], dtype=np.float64)
+            for hand in result.hand_landmarks
+        ]
+        hands_handedness = [
+            (int(getattr(hand[0], "index", idx)), str(hand[0].category_name), float(hand[0].score))
+            for idx, hand in enumerate(result.handedness)
+            if hand
+        ]
 
         elapsed_ms = (time.perf_counter() - start) * 1000.0
-        self._last_inference_ms = elapsed_ms
         self.record("inference_ms", elapsed_ms)
-
         self.emit(
             "raw_data",
             {
-                "hands_landmarks": hands_landmarks,
+                "hands_landmarks": [hand.tolist() for hand in self._warp(hands, cam_w, cam_h)],
                 "hands_handedness": hands_handedness,
                 "ts": time.time(),
-                "capture_ts": capture_ts_f,
+                "capture_ts": capture_ts,
                 "inference_ms": elapsed_ms,
                 "frame_age_ms": frame_age_ms,
-                "latency_ms": (time.time() - capture_ts_f) * 1000.0,
+                "latency_ms": latency_ms(capture_ts),
             },
         )
 
-    def _warp_hands(
-        self,
-        cam_hands: list[list[tuple[float, float]]],
-        cam_w: int,
-        cam_h: int,
-    ) -> list[list[list[float]]]:
-        """Optionally apply the camera->surface homography to every landmark.
-
-        - If no homography is set, returns landmarks unchanged (still
-          normalised over the camera frame).
-        - Otherwise: denormalise to camera pixels using ``_frame_size`` if
-          configured (else the live frame size), apply the 3x3 perspective
-          transform, and renormalise to ``_surface_size`` so consumers can
-          continue treating values as 0..1 over their reference space.
-        """
-        if not cam_hands:
-            return []
-        if self._homography is None:
-            return [[[x, y] for (x, y) in hand] for hand in cam_hands]
-        try:
-            import cv2  # type: ignore[import-not-found]
-            import numpy as np  # type: ignore[import-not-found]
-        except ImportError as exc:
-            self.log("warn", f"hand_pose: numpy/cv2 unavailable, skipping warp: {exc}")
-            return [[[x, y] for (x, y) in hand] for hand in cam_hands]
-
-        fw, fh = self._frame_size if self._frame_size else (cam_w, cam_h)
-        sw, sh = self._surface_size
-
-        # Flatten to a single (N, 1, 2) array for cv2.perspectiveTransform,
-        # then split back by hand at the end.
-        sizes = [len(hand) for hand in cam_hands]
-        flat_px: list[list[float]] = []
-        for hand in cam_hands:
-            for x, y in hand:
-                flat_px.append([x * fw, y * fh])
-        if not flat_px:
-            return [[[x, y] for (x, y) in hand] for hand in cam_hands]
-
-        arr = np.array(flat_px, dtype=np.float64).reshape(-1, 1, 2)
-        try:
-            warped = cv2.perspectiveTransform(arr, self._homography).reshape(-1, 2)
-        except cv2.error as exc:
-            self.log("warn", f"hand_pose: perspectiveTransform failed: {exc!r}")
-            return [[[x, y] for (x, y) in hand] for hand in cam_hands]
-
-        out: list[list[list[float]]] = []
-        cursor = 0
-        for n in sizes:
-            hand_out: list[list[float]] = []
-            for i in range(n):
-                px = warped[cursor + i]
-                hand_out.append([float(px[0]) / sw, float(px[1]) / sh])
-            out.append(hand_out)
-            cursor += n
-        return out
+    def _warp(self, hands: list[np.ndarray], cam_w: int, cam_h: int) -> list[np.ndarray]:
+        """Warp normalised camera landmarks into normalised surface coordinates."""
+        matrix = self._homography
+        if matrix is None or not hands:
+            return hands
+        frame_w, frame_h = self._frame_size or (cam_w, cam_h)
+        surface = np.array(self._surface_size, dtype=np.float64)
+        return [
+            homography.warp_points(matrix, hand * (frame_w, frame_h)) / surface if len(hand) else hand
+            for hand in hands
+        ]
