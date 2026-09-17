@@ -41,6 +41,7 @@ from functools import cache
 from typing import Any
 
 import msgspec
+import msgspec.inspect
 
 from gosai_py.driver import BaseDriver
 from gosai_py.drivers import builtin_driver_classes
@@ -66,6 +67,8 @@ def driver_schema(cls: type[BaseDriver]) -> dict[str, Any]:
     event_schemas = rest[: len(event_payloads)]
     param_schemas = rest[len(event_payloads) : len(event_payloads) + len(params)]
     result_schemas = rest[len(event_payloads) + len(params) :]
+    shared = _referenced_defs([config_schema, *event_schemas, *param_schemas], defs)
+    _require_defaulted_result_fields(results, defs, shared)
     return {
         "$schema": JSON_SCHEMA_DIALECT,
         "config": config_schema if cls.config_type is not None else None,
@@ -90,6 +93,80 @@ def driver_schema(cls: type[BaseDriver]) -> dict[str, Any]:
         },
         "$defs": defs,
     }
+
+
+def _referenced_defs(schemas: list[Any], defs: dict[str, Any]) -> set[str]:
+    """Names of the `$defs` that `schemas` reference, directly or through other defs."""
+    found: set[str] = set()
+    pending: list[Any] = list(schemas)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/$defs/"):
+                name = ref.removeprefix("#/$defs/")
+                if name not in found and name in defs:
+                    found.add(name)
+                    pending.append(defs[name])
+            pending.extend(node.values())
+        elif isinstance(node, list):
+            pending.extend(node)
+    return found
+
+
+def _require_defaulted_result_fields(
+    results: list[Any], defs: dict[str, Any], shared: set[str]
+) -> None:
+    """List struct fields with defaults as required in result-only `$defs`.
+
+    Action results are encoded with `msgspec.to_builtins`, which writes fields
+    that have defaults, so a result always carries them. The same struct used
+    by the config, a param or an event keeps them optional, because callers
+    may leave them out there. Structs with `omit_defaults` and fields without
+    any default (such as `UNSET` ones) stay optional too.
+    """
+    for info in _struct_types(results):
+        name = info.cls.__name__
+        definition = defs.get(name)
+        if (
+            definition is None
+            or name in shared
+            or definition.get("title") != name
+            or info.array_like
+            or info.cls.__struct_config__.omit_defaults
+            or "properties" not in definition
+        ):
+            continue
+        always = {
+            field.encode_name
+            for field in info.fields
+            if field.required
+            or field.default is not msgspec.NODEFAULT
+            or field.default_factory is not msgspec.NODEFAULT
+        }
+        required = set(definition.get("required", ())) | always
+        definition["required"] = [key for key in definition["properties"] if key in required]
+
+
+def _struct_types(types: list[Any]) -> list[msgspec.inspect.StructType]:
+    """Every Struct type in `types`, including nested ones, once each."""
+    found: dict[type, msgspec.inspect.StructType] = {}
+    pending: list[Any] = list(msgspec.inspect.multi_type_info(types))
+    while pending:
+        node = pending.pop()
+        if isinstance(node, msgspec.inspect.StructType):
+            if node.cls in found:
+                continue
+            found[node.cls] = node
+            pending.extend(field.type for field in node.fields)
+        elif isinstance(node, msgspec.inspect.Type):
+            for attr in node.__struct_fields__:
+                value = getattr(node, attr)
+                if isinstance(value, msgspec.inspect.Type):
+                    pending.append(value)
+                elif isinstance(value, tuple):
+                    pending.extend(v for v in value if isinstance(v, msgspec.inspect.Type))
+    return list(found.values())
 
 
 def _delivery(cls: type[BaseDriver], event: str) -> dict[str, Any]:

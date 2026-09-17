@@ -306,7 +306,7 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
 
   function solveFailed(error: string): void {
     void deps.rt.drivers
-      .execute('pose_to_mirror', 'clear_calibration_samples', {})
+      .execute('pose_to_mirror', 'clear_calibration_samples')
       .catch(() => undefined);
     message = '';
     fit = null;
@@ -341,7 +341,7 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
 
   function restartRun(): void {
     void deps.rt.drivers
-      .execute('pose_to_mirror', 'clear_calibration_samples', {})
+      .execute('pose_to_mirror', 'clear_calibration_samples')
       .catch(() => undefined);
     const keep = message;
     reset();
@@ -413,7 +413,7 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
       saved = false;
       targetShownAt = performance.now();
       void deps.rt.drivers
-        .execute('pose_to_mirror', 'clear_calibration_samples', {})
+        .execute('pose_to_mirror', 'clear_calibration_samples')
         .catch(() => undefined);
     },
 

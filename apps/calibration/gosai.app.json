@@ -3,6 +3,7 @@
   "slug": "calibration",
   "name": "Calibration",
   "version": "0.1.0",
+  "sdk": "^0.1.0",
   "description": "Runs the built-in calibration kinds, such as camera-projector-surface, for the app declaring them, in a control and a projector window.",
   "author": "GOSAI",
   "default": "calibrate",

@@ -1,4 +1,6 @@
 import type { AppManifest } from '@gosai/shared';
+import type { ConnectionStatus } from '@gosai/shared/client';
+import type { WelcomePayload } from '@gosai/shared/protocol';
 import type { FrameScheduler, RuntimeOptions } from '../src/runtime.js';
 import type { ServerConnection } from '../src/types.js';
 
@@ -17,7 +19,8 @@ type Resource = { acquire(): Promise<void>; release(): Promise<void> };
 export class FakeServer {
   readonly requests: SentRequest[] = [];
   readonly authToken = undefined;
-  readonly serverInfo = null;
+  serverInfo: WelcomePayload | null = null;
+  private readonly statusListeners = new Set<(status: ConnectionStatus) => void>();
   private readonly holds = new Map<string, { count: number; resource: Resource }>();
   private readonly errorListeners = new Set<(error: unknown, context: string) => void>();
   readonly listeners = new Map<string, Set<(payload: unknown) => void>>();
@@ -44,8 +47,15 @@ export class FakeServer {
     return () => set.delete(listener);
   }
 
-  onStatus(): () => void {
-    return () => undefined;
+  onStatus(listener: (status: ConnectionStatus) => void): () => void {
+    this.statusListeners.add(listener);
+    return () => this.statusListeners.delete(listener);
+  }
+
+  /** Simulates a reconnect that the server welcomed with `welcome`. */
+  reconnect(welcome: WelcomePayload): void {
+    this.serverInfo = welcome;
+    for (const listener of this.statusListeners) listener('connected');
   }
 
   onError(listener: (error: unknown, context: string) => void): () => void {

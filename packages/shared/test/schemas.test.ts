@@ -184,3 +184,31 @@ describe('manifest network origins', () => {
     }
   });
 });
+
+describe('manifest sdk range', () => {
+  const manifest = (sdk: string): unknown => ({
+    slug: 'app',
+    name: 'App',
+    version: '1.0.0',
+    sdk,
+    experiences: [{ slug: 'main', name: 'Main', entry: 'main.js' }],
+  });
+
+  test('accepts npm-style semver ranges', () => {
+    for (const sdk of ['^0.1.0', '~0.1', '0.1.x', '*', '>=0.1.0 <1', '^0.1.0 || ^0.2.0', '1.0.0']) {
+      expect({ sdk, ok: appManifestSchema.safeParse(manifest(sdk)).success }).toEqual({
+        sdk,
+        ok: true,
+      });
+    }
+  });
+
+  test('rejects strings that are not ranges', () => {
+    for (const sdk of ['', 'latest', 'workspace:*', 'file:../sdk', '^0.1.0 or later', '1.2.3.4']) {
+      expect({ sdk, ok: appManifestSchema.safeParse(manifest(sdk)).success }).toEqual({
+        sdk,
+        ok: false,
+      });
+    }
+  });
+});

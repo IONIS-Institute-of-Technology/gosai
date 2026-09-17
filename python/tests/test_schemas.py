@@ -234,3 +234,54 @@ def test_documented_input_conversions() -> None:
         driver.execute("set_level", None)
     with pytest.raises(msgspec.ValidationError, match=r"Expected `str \| null`, got `object`"):
         InterpolateDriver(None).execute("reset", {"name": "p"})  # type: ignore[arg-type]
+
+
+class Shared(msgspec.Struct, kw_only=True):
+    level: int = 1
+
+
+class Report(msgspec.Struct, kw_only=True):
+    ok: bool = True
+    note: str | None = None
+    extra: int | msgspec.UnsetType = msgspec.UNSET
+    shared: Shared
+    tags: list[str] = msgspec.field(default_factory=list)
+
+
+class Sparse(msgspec.Struct, kw_only=True, omit_defaults=True):
+    hint: str = ""
+
+
+class Reporting(BaseDriver):
+    name = "reporting"
+    loop_interval_s = None
+
+    @action("Takes and returns a shared struct.")
+    def echo(self, value: Shared) -> Shared:
+        return value
+
+    @action("Returns a report.")
+    def report(self) -> Report:
+        return Report(shared=Shared())
+
+    @action("Returns a sparse struct.")
+    def sparse(self) -> Sparse:
+        return Sparse()
+
+
+def test_result_structs_list_defaulted_fields_as_required() -> None:
+    defs = schemas.driver_schema(Reporting)["$defs"]
+
+    # Results always carry fields with defaults.
+    assert defs["Report"]["required"] == ["ok", "note", "shared", "tags"]
+    assert Reporting(None).execute("report", None) == {  # type: ignore[arg-type]
+        "ok": True,
+        "note": None,
+        "shared": {"level": 1},
+        "tags": [],
+    }
+    # A struct params also use keeps its defaults optional, and so do UNSET
+    # fields and structs that omit defaults.
+    assert defs["Shared"]["required"] == []
+    assert "extra" not in defs["Report"]["required"]
+    assert defs["Sparse"]["required"] == []

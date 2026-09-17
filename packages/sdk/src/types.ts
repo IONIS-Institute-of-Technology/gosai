@@ -10,6 +10,15 @@ import type {
   RunningExperience,
 } from '@gosai/shared';
 import type { ServerClient } from '@gosai/shared/client';
+import type {
+  DriverAction,
+  DriverActionArgs,
+  DriverActionResult,
+  DriverEvent,
+  DriverEventData,
+  DriverName,
+  KnownDriverName,
+} from './driver-types.js';
 
 export type {
   AppDeviceSettings,
@@ -125,13 +134,45 @@ export interface AppConfigClient {
   onChange(listener: (settings: AppDeviceSettings) => void): () => void;
 }
 
+/**
+ * Driver events and actions. Data is typed for the drivers in
+ * `DriverRegistry` and `unknown` for any other driver.
+ */
 export interface DriverClient {
-  /** Subscribe to a specific event from a driver. */
-  on(driver: string, event: string, listener: (data: unknown) => void): DriverSubscription;
-  /** Get the most recently emitted value for a driver event. */
-  get<T = unknown>(driver: string, event: string): Promise<T>;
-  /** Execute an action exposed by a driver and return its result. */
-  execute<T = unknown>(driver: string, action: string, data?: unknown): Promise<T>;
+  /** Subscribe to an event of a driver, or to all of them with `'*'`. */
+  on<D extends DriverName, E extends DriverEvent<D> | '*'>(
+    driver: D,
+    event: E,
+    listener: (data: DriverEventData<D, E>) => void,
+  ): DriverSubscription;
+  /** The most recent value of a driver event, or `null` before the first one. */
+  get<D extends DriverName, E extends DriverEvent<D>>(
+    driver: D,
+    event: E,
+  ): Promise<DriverEventData<D, E> | null>;
+  /**
+   * @deprecated Casts the value of a driver the SDK doesn't know. Generate
+   * its types with `gosai-sdk gen-driver-types` instead.
+   */
+  get<T, D extends string = string>(
+    driver: D extends KnownDriverName ? never : D,
+    event: string,
+  ): Promise<T>;
+  /** Run a driver action and return its result. */
+  execute<D extends DriverName, A extends DriverAction<D>>(
+    driver: D,
+    action: A,
+    ...params: DriverActionArgs<D, A>
+  ): Promise<DriverActionResult<D, A>>;
+  /**
+   * @deprecated Casts the result of a driver the SDK doesn't know. Generate
+   * its types with `gosai-sdk gen-driver-types` instead.
+   */
+  execute<T, D extends string = string>(
+    driver: D extends KnownDriverName ? never : D,
+    action: string,
+    data?: unknown,
+  ): Promise<T>;
 }
 
 export interface StorageClient {

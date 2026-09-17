@@ -1,4 +1,13 @@
 import { driverEventName } from '@gosai/shared/events';
+import type {
+  DriverAction,
+  DriverActionArgs,
+  DriverActionResult,
+  DriverEvent,
+  DriverEventData,
+  DriverName,
+  KnownDriverName,
+} from './driver-types.js';
 import type { DriverClient, DriverSubscription, ServerConnection } from './types.js';
 
 /**
@@ -17,7 +26,11 @@ export class DriverClientImpl implements DriverClient {
     private readonly binding: string,
   ) {}
 
-  on(driver: string, event: string, listener: (data: unknown) => void): DriverSubscription {
+  on<D extends DriverName, E extends DriverEvent<D> | '*'>(
+    driver: D,
+    event: E,
+    listener: (data: DriverEventData<D, E>) => void,
+  ): DriverSubscription {
     const target = { driver, event, binding: this.binding };
     const held = this.server.retain(`driver:${this.binding}:${driver}:${event}`, {
       acquire: async () => {
@@ -30,7 +43,7 @@ export class DriverClientImpl implements DriverClient {
     const off = this.server.on(driverEventName(this.binding), (payload) => {
       if (payload.driver !== driver) return;
       if (event !== '*' && payload.event !== event) return;
-      listener(payload.data);
+      listener(payload.data as DriverEventData<D, E>);
     });
 
     let active = true;
@@ -45,20 +58,41 @@ export class DriverClientImpl implements DriverClient {
     };
   }
 
-  async get<T = unknown>(driver: string, event: string): Promise<T> {
-    return (await this.server.request('driver:get-data', {
+  get<D extends DriverName, E extends DriverEvent<D>>(
+    driver: D,
+    event: E,
+  ): Promise<DriverEventData<D, E> | null>;
+  /** @deprecated See {@link DriverClient.get}. */
+  get<T, D extends string = string>(
+    driver: D extends KnownDriverName ? never : D,
+    event: string,
+  ): Promise<T>;
+  async get(driver: string, event: string): Promise<unknown> {
+    const data = await this.server.request('driver:get-data', {
       driver,
       event,
       binding: this.binding,
-    })) as T;
+    });
+    return data ?? null;
   }
 
-  async execute<T = unknown>(driver: string, action: string, data?: unknown): Promise<T> {
-    return (await this.server.request('driver:execute', {
+  execute<D extends DriverName, A extends DriverAction<D>>(
+    driver: D,
+    action: A,
+    ...params: DriverActionArgs<D, A>
+  ): Promise<DriverActionResult<D, A>>;
+  /** @deprecated See {@link DriverClient.execute}. */
+  execute<T, D extends string = string>(
+    driver: D extends KnownDriverName ? never : D,
+    action: string,
+    data?: unknown,
+  ): Promise<T>;
+  async execute(driver: string, action: string, data?: unknown): Promise<unknown> {
+    return await this.server.request('driver:execute', {
       driver,
       action,
       data,
       binding: this.binding,
-    })) as T;
+    });
   }
 }

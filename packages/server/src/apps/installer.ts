@@ -14,6 +14,7 @@ import { assertSlug } from '@gosai/shared/slug';
 import type { ChildLogger } from '../logger/logger.js';
 import type { GosaiPaths } from '../paths.js';
 import { MANIFEST_FILE, parseManifest, type DiscoveredApp } from './manifest.js';
+import { SDK_VERSION, sdkIncompatibility } from './sdk-version.js';
 
 export interface InstallTimeouts {
   readonly gitMs: number;
@@ -33,6 +34,8 @@ export interface InstallOptions {
   readonly timeouts?: Partial<InstallTimeouts>;
   /** Runs once the manifest is read, before the build. Throw to refuse the app. */
   readonly checkManifest?: (manifest: AppManifest) => void;
+  /** SDK version the app's `sdk` range must include. Defaults to the one this server serves. */
+  readonly sdkVersion?: string;
 }
 
 export interface InstallResult {
@@ -110,6 +113,11 @@ export async function installApp(options: InstallOptions): Promise<InstallResult
     const manifest = parseManifest(manifestPath, (warning) =>
       logger.warn(`manifest warning: ${warning}`),
     );
+    const incompatible = sdkIncompatibility(manifest, options.sdkVersion);
+    if (incompatible) throw new Error(incompatible);
+    if (manifest.sdk === undefined) {
+      logger.warn(`manifest has no \`sdk\` range; add one such as "^${SDK_VERSION}"`);
+    }
     const slug = assertSlug(options.slugOverride ?? manifest.slug, 'app slug');
     if (busySlugs.has(slug)) {
       throw new Error(`App ${slug} is already being installed or uninstalled`);
@@ -205,44 +213,41 @@ interface JsInstallOptions {
   readonly timeoutMs: number;
 }
 
+/**
+ * Installs the app's runtime `dependencies`, which its build may bundle.
+ * `devDependencies`, such as `@gosai/sdk` and TypeScript for editors and type
+ * checking, are skipped: the build keeps the SDK external. A committed bun
+ * lockfile is honoured.
+ */
 async function maybeInstallJsDeps(opts: JsInstallOptions): Promise<void> {
   const packageJsonPath = join(opts.appPath, 'package.json');
   if (!existsSync(packageJsonPath)) return;
 
-  // If the app's only declared dependency is `@gosai/sdk` (provided at runtime
-  // by GOSAI), we can skip the install step entirely - bun would otherwise
-  // fail because `workspace:*` references can't resolve outside the monorepo.
-  let parsed: { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+  let parsed: { dependencies?: Record<string, string> };
   try {
     parsed = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
   } catch (err) {
     opts.logger.warn('invalid package.json, skipping install', { err: String(err) });
     return;
   }
-  const deps = { ...parsed.dependencies, ...parsed.devDependencies };
-  const externalDeps = Object.keys(deps).filter((k) => k !== '@gosai/sdk');
-  if (externalDeps.length === 0) {
-    opts.logger.info('no non-SDK dependencies declared, skipping bun install');
+  const count = Object.keys(parsed.dependencies ?? {}).length;
+  if (count === 0) {
+    opts.logger.info('no runtime dependencies declared, skipping bun install');
     return;
   }
 
-  opts.logger.info('installing app dependencies via bun', { count: externalDeps.length });
-  const result = await runStep({
+  const cmd = ['bun', 'install', '--production'];
+  if (['bun.lock', 'bun.lockb'].some((file) => existsSync(join(opts.appPath, file)))) {
+    cmd.push('--frozen-lockfile');
+  }
+  opts.logger.info('installing app dependencies via bun', { count, command: cmd.join(' ') });
+  await runChecked({
     label: 'bun install',
-    cmd: ['bun', 'install'],
+    cmd,
     cwd: opts.appPath,
     timeoutMs: opts.timeoutMs,
     logger: opts.logger,
   });
-  if (result.code === 0) return;
-  const output = result.tail.join('\n');
-  // Don't hard-fail if the SDK workspace alias is missing; the build step
-  // marks it as `--external` so it doesn't need to be present.
-  if (output.includes('@gosai/sdk') && output.includes('workspace')) {
-    opts.logger.warn('bun install warned about @gosai/sdk workspace ref; continuing');
-    return;
-  }
-  throw stepError('bun install', result);
 }
 
 async function maybeRunBuild(opts: JsInstallOptions): Promise<void> {

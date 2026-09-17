@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { mintAppToken } from '@gosai/shared/auth';
+import { SDK_VERSION } from '../src/apps/sdk-version.js';
 import { createServer, type GosaiServer } from '../src/server.js';
 
 const SECRET = 'test-dashboard-token';
@@ -537,9 +538,10 @@ describe('app origins', () => {
     const hash = new Bun.CryptoHasher('sha256').update(importMap).digest('base64');
     expect(directives(csp).get('script-src')).toContain(`'sha256-${hash}'`);
     expect(JSON.parse(importMap).imports).toEqual({
-      '@gosai/sdk': '/sdk/index.js',
-      '@gosai/sdk/': '/sdk/',
+      '@gosai/sdk': `/sdk/${SDK_VERSION}/index.js`,
+      '@gosai/sdk/': `/sdk/${SDK_VERSION}/`,
     });
+    expect(html).toContain(`<script type="module" src="/sdk/${SDK_VERSION}/app-host.js">`);
     expect(res.headers.get('referrer-policy')).toBe('no-referrer');
   });
 
@@ -568,7 +570,11 @@ describe('app origins', () => {
     const policy = (await fetch(`${base}/`, { headers: { host: appHost('pool') } })).headers.get(
       'content-security-policy',
     );
-    for (const path of ['/v1/apps/pool/static/dist/main.js', '/sdk/index.js', '/gosai.app.json']) {
+    for (const path of [
+      '/v1/apps/pool/static/dist/main.js',
+      `/sdk/${SDK_VERSION}/index.js`,
+      '/gosai.app.json',
+    ]) {
       const res = await fetch(`${base}${path}`, { headers: { host: appHost('pool') } });
       expect(res.status).toBe(200);
       expect(res.headers.get('content-security-policy')).toBe(policy);
@@ -612,17 +618,29 @@ describe('app origins', () => {
     }
   });
 
-  test('serves SDK bundle files, with or without the .js extension', async () => {
-    const index = await fetch(`${base}/sdk/index.js`);
+  test('serves SDK bundle files under its version, with or without the .js extension', async () => {
+    const sdk = `${base}/sdk/${SDK_VERSION}`;
+    const index = await fetch(`${sdk}/index.js`);
     expect(index.status).toBe(200);
     expect(index.headers.get('content-type')).toContain('javascript');
-    expect(await (await fetch(`${base}/sdk/host`)).text()).toContain('host');
+    expect(await (await fetch(`${sdk}/host`)).text()).toContain('host');
     for (const path of ['secret.txt', '..%2Fserver.ts', 'missing.js']) {
-      expect((await fetch(`${base}/sdk/${path}`)).status).toBe(404);
+      expect((await fetch(`${sdk}/${path}`)).status).toBe(404);
     }
-    const legacy = await fetch(`${base}/sdk-runtime.js`, { redirect: 'manual' });
-    expect(legacy.status).toBe(308);
-    expect(legacy.headers.get('location')).toBe('/sdk/index.js');
+    const otherVersion = await fetch(`${base}/sdk/0.0.0-other/index.js`);
+    expect(otherVersion.status).toBe(404);
+    expect(((await otherVersion.json()) as { error: string }).error).toContain(SDK_VERSION);
+  });
+
+  test('redirects unversioned SDK URLs to the versioned ones', async () => {
+    for (const [path, location] of [
+      ['/sdk-runtime.js', `/sdk/${SDK_VERSION}/index.js`],
+      ['/sdk/host.js', `/sdk/${SDK_VERSION}/host.js`],
+    ]) {
+      const res = await fetch(`${base}${path}`, { redirect: 'manual' });
+      expect(res.status).toBe(308);
+      expect(res.headers.get('location')).toBe(location!);
+    }
   });
 
   test("app origins may call the server with their own app's token only", async () => {

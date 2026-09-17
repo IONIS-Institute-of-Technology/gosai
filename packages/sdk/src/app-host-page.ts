@@ -11,6 +11,7 @@
 
 import type { AppManifest } from '@gosai/shared';
 import { appSlugFromHostname } from '@gosai/shared/app-origin';
+import { ProtocolVersionError } from './protocol-check.js';
 import { runExperience, type RuntimeHandle } from './runtime.js';
 import type { ExperienceDefinition } from './types.js';
 
@@ -129,7 +130,12 @@ export async function bootAppHost(
       ...(token ? { authToken: token } : {}),
       ...(driverBinding ? { driverBinding } : {}),
       onFatalError: (err) =>
-        env.showError('The experience stopped after repeated render errors', err),
+        env.showError(
+          err instanceof ProtocolVersionError
+            ? 'The GOSAI server no longer matches this SDK'
+            : 'The experience stopped after repeated render errors',
+          err,
+        ),
     });
   })();
 

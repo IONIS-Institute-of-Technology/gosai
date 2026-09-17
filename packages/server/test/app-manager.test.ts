@@ -321,6 +321,39 @@ describe('app manager lifecycle', () => {
     expect(create(builtin).grantedCapabilities('pool')).toEqual(['devices:read']);
   });
 
+  test('an invalid installed app that shadows a built-in one stays listed and uninstalls', async () => {
+    const { paths, create } = setup();
+    const builtin = join(paths.root, 'builtin');
+    manifestApp(builtin, chain);
+    manifestApp(paths.apps, { ...chain, sdk: '^99.0.0' });
+    const manager = create(builtin);
+
+    // The built-in app keeps working; the installed one is listed with the reason.
+    expect(manager.getApp('pool')?.builtin).toBe(true);
+    expect(manager.listInvalidApps()).toEqual([
+      { slug: 'pool', builtin: false, error: expect.stringContaining('needs @gosai/sdk ^99.0.0') },
+    ]);
+
+    expect(await manager.uninstall('pool')).toBe(false);
+    expect(existsSync(join(paths.apps, 'pool'))).toBe(false);
+    expect(manager.listInvalidApps()).toEqual([]);
+    expect(manager.getApp('pool')?.builtin).toBe(true);
+    await expect(manager.uninstall('pool')).rejects.toThrow('Cannot uninstall built-in app pool');
+  });
+
+  test('uninstalling an installed app that shadows a built-in one brings the built-in back', async () => {
+    const { paths, create } = setup();
+    const builtin = join(paths.root, 'builtin');
+    manifestApp(builtin, { ...chain, name: 'Shipped pool' });
+    manifestApp(paths.apps, { ...chain, name: 'Installed pool' });
+    const manager = create(builtin);
+    expect(manager.getApp('pool')).toMatchObject({ builtin: false });
+
+    await manager.uninstall('pool');
+    expect(manager.getApp('pool')).toMatchObject({ builtin: true });
+    expect(manager.getManifest('pool')?.name).toBe('Shipped pool');
+  });
+
   test('lists apps with an invalid manifest and can still uninstall them', async () => {
     const { paths } = setup();
     manifestApp(paths.apps, { ...chain, slug: 'broken', experiences: [] });

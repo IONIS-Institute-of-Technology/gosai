@@ -28,6 +28,7 @@ import {
 } from './manifest.js';
 import { installApp, uninstallApp } from './installer.js';
 import { gitOrigin, InstallRecords } from './install-records.js';
+import { SDK_VERSION } from './sdk-version.js';
 
 export interface AppManagerOptions {
   readonly paths: GosaiPaths;
@@ -37,6 +38,8 @@ export interface AppManagerOptions {
   readonly builtinAppsDir?: string;
   /** Let installs clone `file:` URLs. Only for tests. */
   readonly allowFileInstalls?: boolean;
+  /** SDK version app `sdk` ranges are checked against. Defaults to the one the server serves. */
+  readonly sdkVersion?: string;
 }
 
 export interface InstallOptions {
@@ -86,6 +89,10 @@ export class AppManager {
   private readonly records: InstallRecords;
   private readonly invalid = new Map<string, InvalidAppRecord>();
 
+  private get sdkVersion(): string {
+    return this.options.sdkVersion ?? SDK_VERSION;
+  }
+
   constructor(private readonly options: AppManagerOptions) {
     this.log = options.logger.child('apps');
     this.records = new InstallRecords(options.paths, this.log);
@@ -97,20 +104,20 @@ export class AppManager {
     this.catalogue.clear();
     this.invalid.clear();
     if (this.options.builtinAppsDir) {
-      const builtin = discoverApps(this.options.builtinAppsDir, this.log);
+      const builtin = discoverApps(this.options.builtinAppsDir, this.log, this.sdkVersion);
       for (const found of builtin.apps) this.ingest(found, true);
       for (const app of builtin.invalid) this.invalid.set(app.slug, { ...app, builtin: true });
     }
     // An installed app replaces a built-in one with the same slug.
-    const installed = discoverApps(this.options.paths.apps, this.log);
+    const installed = discoverApps(this.options.paths.apps, this.log, this.sdkVersion);
     for (const found of installed.apps) {
       this.ingest(found, false);
       this.invalid.delete(found.manifest.slug);
       this.recordLegacyInstall(found);
     }
-    for (const app of installed.invalid) {
-      if (!this.catalogue.has(app.slug)) this.invalid.set(app.slug, { ...app, builtin: false });
-    }
+    // An invalid installed app stays listed, so it can be uninstalled, even
+    // when a built-in app with the same slug keeps running in its place.
+    for (const app of installed.invalid) this.invalid.set(app.slug, { ...app, builtin: false });
     this.broadcastList();
   }
 
@@ -180,6 +187,7 @@ export class AppManager {
       logger: this.log,
       paths: this.options.paths,
       allowFileSources: this.options.allowFileInstalls === true,
+      sdkVersion: this.sdkVersion,
       checkManifest: (manifest) => {
         if (!options.reuseData) this.checkLeftoverData(manifest.slug, trimmed);
       },
@@ -210,22 +218,42 @@ export class AppManager {
 
   /**
    * Removes the app's checkout. Its data stays unless `deleteData` is set.
-   * Works on an app whose manifest no longer parses too.
+   * Works on an app whose manifest no longer parses too, and on an installed
+   * app that shadows a built-in one; the built-in app takes its place again.
    */
   async uninstall(slug: string, options: { deleteData?: boolean } = {}): Promise<boolean> {
     const record = this.catalogue.get(slug);
-    const invalid = this.invalid.get(slug);
-    if (!record && invalid && !invalid.builtin) {
+    const installedPath = join(this.options.paths.apps, slug);
+    if (record && !record.builtin) {
+      await this.stopAllExperiencesFor(slug);
       await uninstallApp(slug, this.options.paths);
+      this.catalogue.delete(slug);
       this.invalid.delete(slug);
+      this.restoreBuiltin(slug);
       return this.finishUninstall(slug, options);
     }
-    if (!record) throw new Error(`App ${slug} not installed`);
-    if (record.builtin) throw new Error(`Cannot uninstall built-in app ${slug}`);
-    await this.stopAllExperiencesFor(slug);
+    const installedCheckout = existsSync(installedPath) && record?.installPath !== installedPath;
+    if (!installedCheckout) {
+      throw new Error(
+        record ? `Cannot uninstall built-in app ${slug}` : `App ${slug} not installed`,
+      );
+    }
+    // An installed directory that didn't load, next to a running built-in app
+    // or on its own.
     await uninstallApp(slug, this.options.paths);
-    this.catalogue.delete(slug);
+    this.invalid.delete(slug);
+    if (!record) this.restoreBuiltin(slug);
     return this.finishUninstall(slug, options);
+  }
+
+  /** Lists the built-in app with this slug again, after an installed one that shadowed it left. */
+  private restoreBuiltin(slug: string): void {
+    if (!this.options.builtinAppsDir) return;
+    const builtin = discoverApps(this.options.builtinAppsDir, this.log, this.sdkVersion);
+    const found = builtin.apps.find((app) => app.manifest.slug === slug);
+    if (found) this.ingest(found, true);
+    const invalid = builtin.invalid.find((app) => app.slug === slug);
+    if (invalid) this.invalid.set(slug, { ...invalid, builtin: true });
   }
 
   private finishUninstall(slug: string, options: { deleteData?: boolean }): boolean {

@@ -18,6 +18,7 @@
     "test:install": "GOSAI_E2E_INSTALL=1 bun test/phase7-e2e.ts"
   },
   "dependencies": {
+    "@gosai/sdk": "workspace:*",
     "@gosai/shared": "workspace:*",
     "hono": "^4.13.8"
   },

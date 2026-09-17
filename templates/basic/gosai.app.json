@@ -1,8 +1,9 @@
 {
-  "$schema": "../../packages/shared/schemas/gosai.app.schema.json",
+  "$schema": "./node_modules/@gosai/sdk/dist/gosai.app.schema.json",
   "slug": "hello-gosai",
   "name": "Hello GOSAI",
   "version": "0.1.0",
+  "sdk": "^0.1.0",
   "description": "Minimal GOSAI app: a canvas, a driver subscription, storage and settings.",
   "author": "GOSAI",
   "default": "main",

@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import type { AppManifest } from '@gosai/shared';
 import { parseAppManifest } from '@gosai/shared/schemas';
 import type { ChildLogger } from '../logger/logger.js';
+import { SDK_VERSION, sdkIncompatibility } from './sdk-version.js';
 
 export const MANIFEST_FILE = 'gosai.app.json';
 
@@ -34,10 +35,14 @@ export class ManifestError extends Error {
   }
 }
 
-/** Every app directory in `dir`, split into valid and invalid manifests. */
+/**
+ * Every app directory in `dir`, split into valid and invalid manifests. An
+ * app whose `sdk` range excludes `sdkVersion` counts as invalid.
+ */
 export function discoverApps(
   dir: string,
   log: ChildLogger,
+  sdkVersion: string = SDK_VERSION,
 ): { apps: DiscoveredApp[]; invalid: InvalidApp[] } {
   const out: DiscoveredApp[] = [];
   const invalid: InvalidApp[] = [];
@@ -56,6 +61,8 @@ export function discoverApps(
       const manifest = parseManifest(manifestPath, (warning) =>
         log.warn(`manifest warning: ${warning}`, { path: manifestPath }),
       );
+      const incompatible = sdkIncompatibility(manifest, sdkVersion);
+      if (incompatible) throw new ManifestError(manifestPath, incompatible);
       out.push({ manifest, installPath: appDir });
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);

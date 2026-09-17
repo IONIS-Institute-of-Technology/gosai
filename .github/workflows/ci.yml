@@ -30,6 +30,43 @@ jobs:
       - run: bun run typecheck
       - run: bun run test
 
+  sdk-package:
+    name: SDK package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          lfs: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - run: bun install --frozen-lockfile
+      # Packs @gosai/sdk with bun pm pack and builds templates/basic against the
+      # tarball outside the workspace.
+      - run: bun run sdk:check-package
+
+  driver-types:
+    name: Driver types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          lfs: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: '3.12'
+          enable-cache: true
+          cache-dependency-glob: python/uv.lock
+      - run: bun install --frozen-lockfile
+      - run: uv sync --locked
+        working-directory: python
+      # Fails when packages/sdk/src/drivers.generated.ts or docs/drivers.md
+      # differ from what the Python driver schemas produce.
+      - run: bun run drivers:types:check
+
   python:
     name: Python (${{ matrix.name }})
     strategy:
