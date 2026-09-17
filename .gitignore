@@ -42,10 +42,6 @@ gosai-data/
 .env.local
 .env.*.local
 
-# Lockfiles to keep (uncomment to ignore)
-# bun.lock
-# python/uv.lock
-
 # Temp
 *.tmp
 .cache/

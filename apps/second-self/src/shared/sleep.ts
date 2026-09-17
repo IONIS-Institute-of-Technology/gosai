@@ -275,10 +275,7 @@ export class SleepController {
     const lw = body_world_pose[LEFT_SHOULDER];
     const rw = body_world_pose[RIGHT_SHOULDER];
     if (!lp || !rp || !lw || !rw || lp.length < 2 || rp.length < 2) return null;
-    if (
-      landmarkVisibility(lp) < MIN_SHOULDER_VIS ||
-      landmarkVisibility(rp) < MIN_SHOULDER_VIS
-    ) {
+    if (landmarkVisibility(lp) < MIN_SHOULDER_VIS || landmarkVisibility(rp) < MIN_SHOULDER_VIS) {
       return null;
     }
     const px = Math.hypot(lp[0]! - rp[0]!, lp[1]! - rp[1]!);
