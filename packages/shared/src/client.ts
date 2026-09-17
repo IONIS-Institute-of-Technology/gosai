@@ -50,6 +50,8 @@ export interface ServerClientOptions {
   readonly url: string;
   /** Sent as `?token=` because browsers can't set headers on a WebSocket. */
   readonly token?: string;
+  /** @deprecated Use `token`. */
+  readonly authToken?: string;
   /** Opens sockets. Defaults to the global `WebSocket`. */
   readonly createSocket?: (url: string) => WebSocketLike;
   /** First reconnect delay; it doubles up to `maxReconnectDelayMs`. */
@@ -168,8 +170,12 @@ export class ServerClient {
     this.reconnectDelay = options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS;
   }
 
+  private get token(): string | undefined {
+    return this.options.token ?? this.options.authToken;
+  }
+
   get authToken(): string | undefined {
-    return this.options.token;
+    return this.token;
   }
 
   get status(): ConnectionStatus {
@@ -367,6 +373,8 @@ export class ServerClient {
       } catch (err) {
         // A lost connection retries on reconnect, and `ready` waits for it.
         if (isNotConnectedError(err)) return;
+        // The server may still have finished it, so a release must still undo it.
+        if (err instanceof RequestTimeoutError) holding.acquiredIn = generation;
         holding.settle?.reject(err);
         holding.settle = null;
         this.report(err, `acquiring ${key}`);
@@ -388,7 +396,7 @@ export class ServerClient {
     let socket: WebSocketLike;
     try {
       const create = this.options.createSocket ?? ((url: string) => new WebSocket(url));
-      socket = create(socketUrl(this.options.url, this.options.token));
+      socket = create(socketUrl(this.options.url, this.token));
     } catch (err) {
       this.report(err, 'opening the WebSocket');
       this.scheduleReconnect();

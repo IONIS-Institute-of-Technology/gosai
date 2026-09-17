@@ -400,3 +400,49 @@ describe('ServerClient retained resources across reconnects', () => {
     client.close();
   });
 });
+
+describe('ServerClient compatibility and timeouts', () => {
+  test('accepts the deprecated authToken option', () => {
+    const sockets: FakeSocket[] = [];
+    const client = new ServerClient({
+      url: 'ws://127.0.0.1:7777/ws',
+      authToken: 'old-name',
+      createSocket: (url) => {
+        const socket = new FakeSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    client.connect();
+    expect(sockets[0]?.url).toContain('token=old-name');
+    expect(client.authToken).toBe('old-name');
+    client.close();
+  });
+
+  test('a timed-out acquire is still released, since the server may have done it', async () => {
+    const { client, latest } = setup();
+    client.connect();
+    latest().accept();
+    const held = client.retain('pose', {
+      acquire: async () => {
+        await client.request(
+          'driver:subscribe',
+          { driver: 'pose', event: 'raw', binding: 'pool' },
+          { timeoutMs: 1 },
+        );
+      },
+      release: async () => {
+        await client.request('driver:unsubscribe', {
+          driver: 'pose',
+          event: 'raw',
+          binding: 'pool',
+        });
+      },
+    });
+    await expect(held.ready).rejects.toBeInstanceOf(RequestTimeoutError);
+    held.release();
+    await settle();
+    expect(latest().ofType('driver:unsubscribe')).toHaveLength(1);
+    client.close();
+  });
+});

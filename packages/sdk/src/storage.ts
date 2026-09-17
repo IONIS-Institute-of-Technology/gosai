@@ -1,6 +1,14 @@
 import type { ServerConnection, StorageClient } from './types.js';
 
-export function createStorageClient(appSlug: string, server: ServerConnection): StorageClient {
+/**
+ * Storage for `appSlug`, such as a calibration target's. The third argument,
+ * a server base URL from when storage went over HTTP, is ignored.
+ */
+export function createStorageClient(
+  appSlug: string,
+  server: ServerConnection,
+  _baseUrl?: string,
+): StorageClient {
   return new StorageClientImpl(appSlug, server);
 }
 
