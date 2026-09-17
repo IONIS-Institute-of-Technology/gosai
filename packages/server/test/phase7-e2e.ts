@@ -2,9 +2,9 @@
  * Phase 7 end-to-end integration:
  *
  * 1. Boots a clean server.
- * 2. Installs the in-repo `templates/basic` "app" using a local-path source,
- *    with its `@gosai/sdk` dependency pointed at a freshly packed SDK. Its
- *    other dependencies come from the npm registry or bun's cache.
+ * 2. Installs the in-repo `templates/basic` "app" using a local-path source.
+ *    The template only has dev dependencies, which the installer skips, so
+ *    the test doesn't need network access.
  * 3. Confirms the app is catalogued, the package was bun-installed, and the
  *    build output exists at the expected static path.
  * 4. Starts the template app's experience over WebSocket and confirms it is
@@ -76,21 +76,6 @@ async function setupSourceRepo(): Promise<string> {
   await Bun.spawn({
     cmd: ['cp', '-R', `${TEMPLATE_DIR}/.`, sourceRepoDir],
   }).exited;
-  // The template depends on the published SDK; install this checkout's instead.
-  const sdkDir = join(REPO_ROOT, 'packages', 'sdk');
-  const pack = Bun.spawn({
-    cmd: [process.execPath, 'pm', 'pack', '--destination', tmp],
-    cwd: sdkDir,
-    stdout: 'ignore',
-  });
-  if ((await pack.exited) !== 0) throw new Error('bun pm pack failed');
-  const { version } = (await Bun.file(join(sdkDir, 'package.json')).json()) as { version: string };
-  const packagePath = join(sourceRepoDir, 'package.json');
-  const templatePackage = (await Bun.file(packagePath).json()) as {
-    dependencies: Record<string, string>;
-  };
-  templatePackage.dependencies['@gosai/sdk'] = `file:${join(tmp, `gosai-sdk-${version}.tgz`)}`;
-  await Bun.write(packagePath, JSON.stringify(templatePackage, null, 2));
   await git(['init', '-q', '-b', 'main'], sourceRepoDir);
   await git(['add', '.'], sourceRepoDir);
   await git(['commit', '-q', '-m', 'initial'], sourceRepoDir);

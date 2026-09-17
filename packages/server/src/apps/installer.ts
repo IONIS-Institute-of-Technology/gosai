@@ -213,29 +213,37 @@ interface JsInstallOptions {
   readonly timeoutMs: number;
 }
 
+/**
+ * Installs the app's runtime `dependencies`, which its build may bundle.
+ * `devDependencies`, such as `@gosai/sdk` and TypeScript for editors and type
+ * checking, are skipped: the build keeps the SDK external. A committed bun
+ * lockfile is honoured.
+ */
 async function maybeInstallJsDeps(opts: JsInstallOptions): Promise<void> {
   const packageJsonPath = join(opts.appPath, 'package.json');
   if (!existsSync(packageJsonPath)) return;
 
-  let parsed: { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+  let parsed: { dependencies?: Record<string, string> };
   try {
     parsed = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
   } catch (err) {
     opts.logger.warn('invalid package.json, skipping install', { err: String(err) });
     return;
   }
-  const count =
-    Object.keys(parsed.dependencies ?? {}).length +
-    Object.keys(parsed.devDependencies ?? {}).length;
+  const count = Object.keys(parsed.dependencies ?? {}).length;
   if (count === 0) {
-    opts.logger.info('no dependencies declared, skipping bun install');
+    opts.logger.info('no runtime dependencies declared, skipping bun install');
     return;
   }
 
-  opts.logger.info('installing app dependencies via bun', { count });
+  const cmd = ['bun', 'install', '--production'];
+  if (['bun.lock', 'bun.lockb'].some((file) => existsSync(join(opts.appPath, file)))) {
+    cmd.push('--frozen-lockfile');
+  }
+  opts.logger.info('installing app dependencies via bun', { count, command: cmd.join(' ') });
   await runChecked({
     label: 'bun install',
-    cmd: ['bun', 'install'],
+    cmd,
     cwd: opts.appPath,
     timeoutMs: opts.timeoutMs,
     logger: opts.logger,

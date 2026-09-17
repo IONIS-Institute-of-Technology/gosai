@@ -313,7 +313,22 @@ describe('installer', () => {
     expect(existsSync(join(paths.apps, 'current-app'))).toBe(true);
   });
 
-  test('fails when bun install fails, including for an unresolvable SDK dependency', async () => {
+  test('installs only runtime dependencies, so dev-only SDK and TypeScript need no registry', async () => {
+    const paths = makePaths();
+    // Unresolvable dev dependencies would fail any install that included them.
+    const source = makeRepo(paths.root, 'dev-only-app', 'echo built > built.txt', {
+      packageJson: {
+        devDependencies: { '@gosai/sdk': 'workspace:*', typescript: 'workspace:*' },
+      },
+    });
+    await installApp({ source, paths, logger: logger.child('install'), allowFileSources: true });
+    expect(existsSync(join(paths.apps, 'dev-only-app', 'node_modules'))).toBe(false);
+    expect(readFileSync(join(paths.apps, 'dev-only-app', 'built.txt'), 'utf8').trim()).toBe(
+      'built',
+    );
+  });
+
+  test('fails when installing runtime dependencies fails', async () => {
     const paths = makePaths();
     const source = makeRepo(paths.root, 'workspace-app', 'true', {
       packageJson: { dependencies: { '@gosai/sdk': 'workspace:*' } },
@@ -322,6 +337,59 @@ describe('installer', () => {
       installApp({ source, paths, logger: logger.child('install'), allowFileSources: true }),
     ).rejects.toThrow(/bun install failed/);
     expect(existsSync(join(paths.apps, 'workspace-app'))).toBe(false);
+  });
+
+  test('installs runtime dependencies from a committed lockfile without changing it', async () => {
+    const paths = makePaths();
+    const dependency = { 'local-dep': 'file:./vendor/local-dep' };
+
+    const locked = (
+      slug: string,
+      change: (packageJson: Record<string, unknown>) => void,
+    ): string => {
+      const source = makeRepo(paths.root, slug, 'true');
+      const repo = source.slice('file://'.length);
+      const dep = join(repo, 'vendor', 'local-dep');
+      mkdirSync(dep, { recursive: true });
+      writeFileSync(
+        join(dep, 'package.json'),
+        JSON.stringify({ name: 'local-dep', version: '1.0.0' }),
+      );
+      writeFileSync(join(dep, 'index.js'), 'export const answer = 42;');
+      const packageJson: Record<string, unknown> = {
+        name: slug,
+        private: true,
+        scripts: { build: 'test -f node_modules/local-dep/index.js' },
+        dependencies: { ...dependency },
+      };
+      writeFileSync(join(repo, 'package.json'), JSON.stringify(packageJson));
+      const install = Bun.spawnSync({ cmd: ['bun', 'install'], cwd: repo });
+      if (install.exitCode !== 0) throw new Error(install.stderr.toString());
+      rmSync(join(repo, 'node_modules'), { recursive: true, force: true });
+      change(packageJson);
+      writeFileSync(join(repo, 'package.json'), JSON.stringify(packageJson));
+      git(['add', '.'], repo);
+      git(['commit', '-q', '-m', 'lock'], repo);
+      return source;
+    };
+
+    const good = locked('locked-app', () => undefined);
+    await installApp({
+      source: good,
+      paths,
+      logger: logger.child('install'),
+      allowFileSources: true,
+    });
+    expect(existsSync(join(paths.apps, 'locked-app', 'node_modules', 'local-dep'))).toBe(true);
+
+    // A lockfile that no longer matches package.json fails instead of being rewritten.
+    const stale = locked('stale-app', (packageJson) => {
+      packageJson.dependencies = { ...dependency, 'other-dep': 'file:./vendor/local-dep' };
+    });
+    await expect(
+      installApp({ source: stale, paths, logger: logger.child('install'), allowFileSources: true }),
+    ).rejects.toThrow(/bun install failed[\s\S]*lockfile/);
+    expect(existsSync(join(paths.apps, 'stale-app'))).toBe(false);
   });
 
   test('lists an installed app whose sdk range excludes the SDK as invalid', () => {

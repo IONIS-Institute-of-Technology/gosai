@@ -53,8 +53,10 @@ Settings.
 Apps tab → "Install an app" → paste a git URL → Install
 ```
 
-The server clones the repo into `~/.gosai/apps/<slug>/`, runs any necessary
-`bun install` / `bun run build`, and refreshes the app list. The app now
+The server clones the repo into `~/.gosai/apps/<slug>/`, runs
+`bun install --production` when the app has runtime dependencies (with
+`--frozen-lockfile` when it commits `bun.lock`) and `bun run build`, and
+refreshes the app list. The app now
 appears under "Installed" with a "Start" button.
 
 ## 4. Start an experience
@@ -71,8 +73,10 @@ Settings tab; the next experience start uses it.
 
 The fastest path is to copy [`templates/basic/`](../templates/basic) into a
 new repo, change the manifest slug, push it to a git host, then install
-from the URL. The template is a standalone project: it gets `@gosai/sdk` from
-npm, so it builds anywhere, not only inside this repository. See
+from the URL. The template is a standalone project, so it builds anywhere, not
+only inside this repository. Its dev dependencies, `@gosai/sdk` from npm and
+TypeScript, are only for your editor and type checking: the build leaves the
+SDK to GOSAI, and GOSAI's installer skips dev dependencies. See
 [`packages/sdk/README.md`](../packages/sdk/README.md) for the SDK reference
 and [`drivers.md`](drivers.md) for the drivers.
 

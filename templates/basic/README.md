@@ -8,7 +8,7 @@ driver ticks, keeps the count in storage and reads its color from settings.
 ```
 hello-gosai/
 ├── gosai.app.json   # manifest: SDK range, experiences, requirements, settings
-├── package.json     # build script and the @gosai/sdk dependency
+├── package.json     # build script, and @gosai/sdk and TypeScript as dev dependencies
 ├── tsconfig.json
 └── src/
     └── main.ts      # the experience
@@ -22,19 +22,25 @@ bun run typecheck
 bun run build
 ```
 
-`bun install` gets `@gosai/sdk` from npm for its types. `build` bundles
-`src/main.ts` into `dist/main.js`, the `entry` the manifest names.
-`@gosai/sdk` stays external: GOSAI provides its own copy when it runs the app.
+`build` bundles `src/main.ts` into `dist/main.js`, the `entry` the manifest
+names. `@gosai/sdk` stays external: GOSAI provides its own copy when it runs
+the app, so the build needs nothing installed.
+
+`@gosai/sdk` and TypeScript are dev dependencies, only for your editor and
+`bun run typecheck`. When GOSAI installs the app from git it runs
+`bun install --production`, which skips them, and only when the app has
+runtime `dependencies` (libraries your build bundles, such as `three`). Commit
+`bun.lock` and GOSAI installs exactly those versions.
 
 The manifest's `"sdk": "^0.1.0"` says which SDK versions the app works with.
 Keep it in step with the `@gosai/sdk` range in `package.json`: GOSAI refuses to
-install the app when the SDK it serves is outside that range.
+install the app when the SDK it serves is outside the manifest's range.
 
 ## Run it in GOSAI
 
 - **Install from git.** Push the directory to a repository and paste its URL
-  in the dashboard's Apps tab. GOSAI clones it, runs `bun install` and
-  `bun run build`.
+  in the dashboard's Apps tab. GOSAI clones it, installs runtime dependencies
+  if there are any, and runs `bun run build`.
 - **Kiosk.** Run one built app without the dashboard, from the GOSAI
   repository: `bun run kiosk <path-to-this-directory>`. See the kiosk section
   of the root README.

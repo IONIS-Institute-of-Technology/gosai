@@ -13,13 +13,14 @@ TypeScript SDK for building GOSAI apps.
 ## Install
 
 ```bash
-bun add @gosai/sdk
+bun add -d @gosai/sdk
 ```
 
 The package holds the SDK's types and browser ESM bundles, with no runtime
-dependencies. Apps build with `@gosai/sdk` external (see [Building](#building)):
-at runtime GOSAI serves its own copy of the SDK to app windows, and refuses apps
-whose manifest `sdk` range doesn't include that version.
+dependencies. Install it as a dev dependency: apps build with `@gosai/sdk`
+external (see [Building](#building)), and at runtime GOSAI serves its own copy
+of the SDK to app windows. GOSAI refuses apps whose manifest `sdk` range doesn't
+include that version.
 
 The package has two entries:
 

@@ -4,8 +4,9 @@
  * 1. builds the SDK and packs it with `bun pm pack`,
  * 2. checks the tarball: no dependencies, and a version inside the
  *    template's `@gosai/sdk` range,
- * 3. copies `templates/basic` to a temporary directory, points its
- *    `@gosai/sdk` dependency at the tarball and installs it,
+ * 3. copies `templates/basic` to a temporary directory and builds it with
+ *    nothing installed, as the GOSAI installer does, then points its
+ *    `@gosai/sdk` dev dependency at the tarball and installs everything,
  * 4. generates types for an app driver with the packed `gosai-sdk` command,
  * 5. type-checks the template, together with a file that uses the typed
  *    built-in drivers, the generated driver and the host entry, and builds it.
@@ -76,9 +77,11 @@ try {
     );
   }
   const template = readJson<PackageJson>(join(templateDir, 'package.json'));
-  const range = template.dependencies?.['@gosai/sdk'] ?? '';
+  const range = template.devDependencies?.['@gosai/sdk'] ?? '';
+  // A prerelease counts as its release, as when the server checks manifests.
+  const release = packed.version.replace(/[-+].*$/, '');
   check(
-    Bun.semver.satisfies(packed.version, range) && !range.startsWith('workspace:'),
+    Bun.semver.satisfies(release, range) && !range.startsWith('workspace:'),
     `the template's @gosai/sdk range ${range} includes the packed ${packed.version}`,
   );
 
@@ -87,17 +90,19 @@ try {
     recursive: true,
     filter: (source) => !/[/\\](node_modules|dist)([/\\]|$)/.test(source.slice(templateDir.length)),
   });
+  // The installer skips dev dependencies, so the build must work without them.
+  await run([process.execPath, 'run', 'build'], app);
+  check(
+    Bun.file(join(app, 'dist', 'main.js')).size > 0,
+    'the template builds with nothing installed',
+  );
+  rmSync(join(app, 'dist'), { recursive: true, force: true });
+
   const appPackage = readJson<PackageJson>(join(app, 'package.json'));
+  const devDependencies = { ...appPackage.devDependencies, '@gosai/sdk': `file:${tarball}` };
   writeFileSync(
     join(app, 'package.json'),
-    `${JSON.stringify(
-      {
-        ...appPackage,
-        dependencies: { ...appPackage.dependencies, '@gosai/sdk': `file:${tarball}` },
-      },
-      null,
-      2,
-    )}\n`,
+    `${JSON.stringify({ ...appPackage, devDependencies }, null, 2)}\n`,
   );
   await run([process.execPath, 'install'], app);
 
