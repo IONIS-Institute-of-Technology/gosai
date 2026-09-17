@@ -11,8 +11,9 @@
  *
  * `uv sync` then materialises the venv, downloading a managed CPython 3.12
  * if the machine has none - so the CV drivers (camera, pose, hand_pose,
- * ball, ...) work out of the box on a clean machine. The hash covers
- * pyproject.toml, uv.lock, and the requested extras, so kiosks with the same
+ * ball, ...) work out of the box on a clean machine. Linux x64 machines with
+ * an NVIDIA GPU also get the `gpu` extra (CUDA onnxruntime). The hash covers
+ * pyproject.toml, uv.lock, and the extras, so kiosks with the same
  * requirements share one runtime and upgrades rebuild cleanly. Needs network
  * on the very first launch only.
  */
@@ -31,9 +32,10 @@ import {
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { app } from 'electron';
+import { currentPythonHost, pythonExtras, uvSyncArgs } from './python-extras.js';
 
 export interface PythonBootstrapOptions {
-  /** Optional dependency extras to install (e.g. ["speech", "realsense"]). */
+  /** Optional dependency extras to install (e.g. ["speech", "realsense"]). `gpu` is added automatically. */
   readonly extras?: string[];
   /** Progress callback; only invoked when an actual installation runs. */
   readonly onStatus?: (message: string) => void;
@@ -55,7 +57,7 @@ export async function ensurePythonRuntime(
     return null;
   }
 
-  const extras = [...new Set(options.extras ?? [])].sort();
+  const extras = pythonExtras(options.extras ?? [], currentPythonHost());
   const hash = runtimeHash(resourcesPython, extras);
   const runtimeDir = join(homedir(), '.gosai-runtime', `python-${hash}`);
   const pythonDir = join(runtimeDir, 'python');
@@ -79,16 +81,10 @@ export async function ensurePythonRuntime(
   });
 
   const uv = resolveUv();
-  const args = [
-    'sync',
-    '--frozen',
-    '--no-dev',
-    '--python',
-    '3.12',
-    ...extras.flatMap((e) => ['--extra', e]),
-  ];
   onStatus('Installing Python and the CV driver dependencies…');
-  await runUv(uv, args, pythonDir, join(runtimeDir, 'cpython'), onStatus);
+  for (const args of uvSyncArgs(extras, '3.12')) {
+    await runUv(uv, args, pythonDir, join(runtimeDir, 'cpython'), onStatus);
+  }
 
   if (!hasBridge(pythonDir)) {
     throw new Error('uv sync completed but the gosai-bridge entry point is missing');
