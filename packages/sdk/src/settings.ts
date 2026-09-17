@@ -52,7 +52,7 @@ export function serverSettingsBackend(appSlug: string, server: ServerConnection)
     version += 1;
     if (json === last) return;
     last = json;
-    for (const listener of [...listeners]) listener({ ...settings });
+    for (const listener of listeners) listener({ ...settings });
   };
 
   /**
