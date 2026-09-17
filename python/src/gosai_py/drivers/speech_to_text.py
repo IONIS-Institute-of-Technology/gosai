@@ -110,13 +110,11 @@ class SpeechToTextDriver(BaseDriver):
 
     def _transcribe(self, audio: Any) -> dict[str, Any]:
         if self._model is None:
-            return {"ok": False, "error": "model not loaded"}
+            raise RuntimeError("model not loaded")
         if audio is None:
-            return {"ok": False, "error": "audio buffer is None"}
-        try:
-            import numpy as np  # type: ignore[import-not-found]
-        except ImportError as exc:
-            return {"ok": False, "error": f"numpy required: {exc}"}
+            raise ValueError("audio buffer is None")
+        import numpy as np  # type: ignore[import-not-found]
+
         arr = np.asarray(audio, dtype=np.float32)
         if arr.ndim > 1:
             arr = arr[:, 0]

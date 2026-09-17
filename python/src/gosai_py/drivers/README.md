@@ -1,7 +1,7 @@
 # Driver notes
 
-Built-in GOSAI drivers live here. Each is a `BaseDriver` / `BaseProcessor`
-subclass auto-discovered by the Python bridge (see
+Built-in GOSAI drivers live here. Each is a `BaseDriver` subclass
+auto-discovered by the Python bridge (see
 `tests/test_drivers_discovery.py`). This note covers the two drivers added for
 the **second-self** app; the rest are documented by their module docstrings.
 

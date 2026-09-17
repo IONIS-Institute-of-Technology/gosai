@@ -18,8 +18,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, ClassVar
 
-from gosai_py.driver import DriverContext
-from gosai_py.processor import BaseProcessor
+from gosai_py.driver import BaseDriver, DriverContext
 from gosai_py.runtime import RuntimeInfo, mediapipe_base_options
 
 MODEL_FILENAME = "holistic_landmarker.task"
@@ -61,7 +60,7 @@ def _visibility(landmark: Any) -> float:
     return round(float(vis), 2) if vis is not None else 1.0
 
 
-class PoseDriver(BaseProcessor):
+class PoseDriver(BaseDriver):
     name: ClassVar[str] = "pose"
     description: ClassVar[str] = "Body, face and hand landmarks (MediaPipe Holistic Landmarker)."
     events: ClassVar[tuple[str, ...]] = ("raw_data",)
@@ -81,7 +80,6 @@ class PoseDriver(BaseProcessor):
         self._last_ts_ms = 0
 
     def pre_run(self) -> None:
-        super().pre_run()
         try:
             import mediapipe as mp  # type: ignore[import-not-found]
             from mediapipe.tasks.python import vision  # type: ignore[import-not-found]
@@ -122,15 +120,12 @@ class PoseDriver(BaseProcessor):
             self._mp_image_format = mp.ImageFormat.SRGBA if self._mp_uses_rgba else mp.ImageFormat.SRGB
             self.set_runtime_info(info)
             self.log("info", "MediaPipe Holistic Landmarker initialized")
-            self.start_latest_worker()
         except Exception as exc:
             self.log("error", f"pose: failed to create landmarker: {exc!r}")
             self._landmarker = None
             raise
 
     def cleanup(self) -> None:
-        self.stop_latest_worker()
-        super().cleanup()
         if self._landmarker is not None:
             try:
                 self._landmarker.close()
@@ -148,9 +143,6 @@ class PoseDriver(BaseProcessor):
         return super().execute(action, data)
 
     def on_data(self, driver: str, event: str, data: Any) -> None:
-        self.queue_latest_data(driver, event, data)
-
-    def process_latest_data(self, driver: str, event: str, data: Any) -> None:
         if self._landmarker is None or not isinstance(data, dict):
             return
         frame = data.get("_frame")

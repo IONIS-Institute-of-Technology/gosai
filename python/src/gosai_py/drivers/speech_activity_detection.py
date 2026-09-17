@@ -15,12 +15,11 @@ from __future__ import annotations
 import time
 from typing import Any, ClassVar
 
-from gosai_py.driver import DriverContext
-from gosai_py.processor import BaseProcessor
+from gosai_py.driver import BaseDriver, DriverContext
 from gosai_py.runtime import accelerator_mode, runtime_info
 
 
-class SpeechActivityDriver(BaseProcessor):
+class SpeechActivityDriver(BaseDriver):
     name: ClassVar[str] = "speech_activity_detection"
     description: ClassVar[str] = "Silero-VAD voice activity detection."
     events: ClassVar[tuple[str, ...]] = ("activity",)
@@ -38,7 +37,6 @@ class SpeechActivityDriver(BaseProcessor):
         self._warned_samplerate = False
 
     def pre_run(self) -> None:
-        super().pre_run()
         self._load_model()
 
     def execute(self, action: str, data: Any) -> Any:
@@ -125,14 +123,14 @@ class SpeechActivityDriver(BaseProcessor):
 
     def _predict(self, audio: Any) -> dict[str, Any]:
         if self._model is None:
-            return {"ok": False, "error": "model not loaded"}
+            raise RuntimeError("model not loaded")
         try:
             import numpy as np  # type: ignore[import-not-found]
             import torch  # type: ignore[import-not-found]
         except ImportError as exc:
-            return {"ok": False, "error": f"torch/numpy required: {exc}"}
+            raise RuntimeError(f"torch/numpy required: {exc}") from exc
         if audio is None:
-            return {"ok": False, "error": "audio buffer is None"}
+            raise ValueError("audio buffer is None")
         arr = np.asarray(audio, dtype=np.float32)
         if arr.ndim > 1:
             arr = arr[:, 0]

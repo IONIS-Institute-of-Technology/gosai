@@ -79,7 +79,7 @@ class MicrophoneDriver(BaseDriver):
         try:
             import sounddevice as sd  # type: ignore[import-not-found]
         except ImportError as exc:
-            return {"ok": False, "error": f"sounddevice not available: {exc}"}
+            raise RuntimeError(f"sounddevice not available: {exc}") from exc
         devices = sd.query_devices()
         defaults = sd.default.device
         return {

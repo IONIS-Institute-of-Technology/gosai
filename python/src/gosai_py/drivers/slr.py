@@ -24,8 +24,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, ClassVar
 
-from gosai_py.driver import DriverContext
-from gosai_py.processor import BaseProcessor
+from gosai_py.driver import BaseDriver, DriverContext
 from gosai_py.runtime import create_onnx_session
 
 MODELS_DIR = Path(__file__).resolve().parent / "slr_models"
@@ -97,7 +96,7 @@ def _adapt_frame(frame: dict[str, Any], include_face: bool) -> list[float]:
     return feats
 
 
-class SLRDriver(BaseProcessor):
+class SLRDriver(BaseDriver):
     """Sign-language recognition over a rolling window of pose frames."""
 
     name: ClassVar[str] = "slr"
@@ -119,22 +118,15 @@ class SLRDriver(BaseProcessor):
     def execute(self, action: str, data: Any) -> Any:
         if action == "set_actions":
             if not isinstance(data, list) or not all(isinstance(a, str) for a in data):
-                self.log("warn", "set_actions expects a list of strings")
-                return {"ok": False}
-            return {"ok": self._load_model(data)}
+                raise ValueError("set_actions expects a list of strings")
+            self._load_model(data)
+            return {"ok": True}
         return super().execute(action, data)
 
-    def _load_model(self, actions: list[str]) -> bool:
-        try:
-            import numpy as np  # noqa: F401  (used in on_data)
-        except ImportError as exc:
-            self.log("error", f"slr: numpy unavailable: {exc}")
-            return False
-
+    def _load_model(self, actions: list[str]) -> None:
         model_path = MODELS_DIR / f"slr_{len(actions)}.onnx"
         if not model_path.exists():
-            self.log("error", f"slr: no model for {len(actions)} actions ({model_path.name})")
-            return False
+            raise ValueError(f"slr: no model for {len(actions)} actions ({model_path.name})")
         try:
             session, info = create_onnx_session(
                 model_path,
@@ -142,8 +134,7 @@ class SLRDriver(BaseProcessor):
                 log_fn=self.log,
             )
         except Exception as exc:
-            self.log("error", f"slr: failed to load {model_path.name}: {exc!r}")
-            return False
+            raise RuntimeError(f"slr: failed to load {model_path.name}: {exc!r}") from exc
 
         inp = session.get_inputs()[0]
         feature_dim = int(inp.shape[2]) if len(inp.shape) >= 3 and isinstance(inp.shape[2], int) else 158
@@ -155,7 +146,6 @@ class SLRDriver(BaseProcessor):
         self.set_runtime_info(info)
         self.publish_state("running")
         self.log("info", f"slr: loaded {model_path.name} (features={feature_dim}, actions={len(actions)})")
-        return True
 
     def on_data(self, driver: str, event: str, data: Any) -> None:
         if self._session is None or not isinstance(data, dict):

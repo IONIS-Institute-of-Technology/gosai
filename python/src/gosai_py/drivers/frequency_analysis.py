@@ -14,11 +14,10 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from gosai_py.driver import DriverContext
-from gosai_py.processor import BaseProcessor
+from gosai_py.driver import BaseDriver, DriverContext
 
 
-class FrequencyAnalysisDriver(BaseProcessor):
+class FrequencyAnalysisDriver(BaseDriver):
     name: ClassVar[str] = "frequency_analysis"
     description: ClassVar[str] = "FFT-based frequency estimation on a microphone stream."
     events: ClassVar[tuple[str, ...]] = ("frequency",)
