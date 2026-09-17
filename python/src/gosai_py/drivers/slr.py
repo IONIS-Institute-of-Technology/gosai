@@ -136,11 +136,7 @@ class SLRDriver(BaseProcessor):
             self.log("error", f"slr: no model for {len(actions)} actions ({model_path.name})")
             return False
         try:
-            session, info = create_onnx_session(
-                model_path,
-                model_name=model_path.name,
-                log_fn=self.log,
-            )
+            session, info = create_onnx_session(model_path, log_fn=self.log, allow_cpu=True)
         except Exception as exc:
             self.log("error", f"slr: failed to load {model_path.name}: {exc!r}")
             return False

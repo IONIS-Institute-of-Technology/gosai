@@ -39,8 +39,9 @@ Actions:
 Environment (optional):
 - ``GOSAI_BALL_CONFIDENCE`` — detection confidence threshold 0..1 (default 0.70);
   the ``set_confidence`` action still overrides it at runtime.
-- ``GOSAI_ACCELERATOR`` — ``auto``, ``tensorrt``, ``cuda``, ``coreml`` (macOS),
-  ``dml``, ``cpu``. ``auto`` prefers TensorRT then CUDA on NVIDIA, CoreML on macOS.
+- ``GOSAI_ACCELERATOR`` — ``auto``, ``cuda``, ``tensorrt``, ``coreml`` (macOS),
+  ``dml``, ``cpu``. ``auto`` uses CUDA on NVIDIA and CoreML on macOS. TensorRT is
+  opt-in.
 - ``GOSAI_CUDA_DEVICE_ID`` — CUDA device index when using NVIDIA (default 0)
 - ``GOSAI_TRT_CACHE_DIR`` — where TensorRT caches compiled engines
   (default ``~/.cache/gosai/trt``); the first TensorRT run compiles and is slow.
@@ -57,7 +58,7 @@ from typing import Any, ClassVar, NamedTuple
 
 from gosai_py.driver import DriverContext
 from gosai_py.processor import BaseProcessor
-from gosai_py.runtime import create_onnx_session, cuda_device_id
+from gosai_py.runtime import AcceleratorConfig, create_onnx_session
 
 MODELS_DIR = Path(__file__).resolve().parent / "ball_models"
 MODEL_FILENAME = "ball.onnx"
@@ -359,7 +360,7 @@ class BallDriver(BaseProcessor):
                                      match_radius=110.0, min_match_radius=45.0)
         self._frame_idx = 0
         self._skip = 0  # 0 = process every frame; raise on slow hardware
-        self._cuda_device_id = cuda_device_id()
+        self._cuda_device_id = AcceleratorConfig.from_env().cuda_device_id
 
     def pre_run(self) -> None:
         super().pre_run()
@@ -374,8 +375,7 @@ class BallDriver(BaseProcessor):
 
         self._session, info = create_onnx_session(
             MODEL_PATH,
-            model_name=MODEL_PATH.name,
-            cuda_id=self._cuda_device_id,
+            cuda_device_id=self._cuda_device_id,
             log_fn=self.log,
         )
         self.set_runtime_info(dict(info))

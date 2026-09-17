@@ -134,7 +134,6 @@ class HandPoseDriver(BaseProcessor):
             base_options, info = mediapipe_base_options(
                 mp_python.BaseOptions,
                 model_path=model_path,
-                model_name=HAND_MODEL_FILENAME,
             )
             options = mp_vision.HandLandmarkerOptions(
                 base_options=base_options,

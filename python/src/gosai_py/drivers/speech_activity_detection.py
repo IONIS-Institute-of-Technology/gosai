@@ -17,7 +17,7 @@ from typing import Any, ClassVar
 
 from gosai_py.driver import DriverContext
 from gosai_py.processor import BaseProcessor
-from gosai_py.runtime import accelerator_mode, runtime_info
+from gosai_py.runtime import AcceleratorConfig, RuntimeInfo
 
 
 class SpeechActivityDriver(BaseProcessor):
@@ -94,19 +94,19 @@ class SpeechActivityDriver(BaseProcessor):
             raise
         self._model = model
         self.set_runtime_info(
-            runtime_info(
+            RuntimeInfo(
                 backend="torch",
                 provider="Silero VAD",
                 device=self._device,
                 model="silero_vad",
                 accelerated=self._device in {"cuda", "mps"},
-                reason=reason,
+                reason=reason or "",
             )
         )
         self.log("info", f"Silero VAD loaded on {self._device}")
 
     def _select_device(self, torch: Any) -> tuple[str, str | None]:
-        mode = accelerator_mode()
+        mode = AcceleratorConfig.from_env().mode
         if mode == "cpu":
             return "cpu", "CPU explicitly requested"
         if mode == "cuda":

@@ -96,7 +96,6 @@ class PoseDriver(BaseProcessor):
             base_options, info = mediapipe_base_options(
                 mp.tasks.BaseOptions,
                 model_path=model_path,
-                model_name=MODEL_FILENAME,
                 allow_gpu=allow_gpu,
             )
             options = vision.HolisticLandmarkerOptions(

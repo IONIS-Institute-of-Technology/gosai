@@ -19,7 +19,7 @@ import time
 from typing import Any, ClassVar
 
 from gosai_py.driver import BaseDriver, DriverContext
-from gosai_py.runtime import accelerator_mode, runtime_info
+from gosai_py.runtime import AcceleratorConfig, RuntimeInfo
 
 
 class SpeechToTextDriver(BaseDriver):
@@ -69,7 +69,7 @@ class SpeechToTextDriver(BaseDriver):
             import torch  # type: ignore[import-not-found]
             self._device, reason = self._select_device(torch)
         except ImportError as exc:
-            if accelerator_mode() == "cuda":
+            if AcceleratorConfig.from_env().mode == "cuda":
                 raise RuntimeError("torch is required to verify CUDA for faster-whisper") from exc
             self._device, reason = "cpu", f"torch unavailable for accelerator detection: {exc}"
         self._compute_type = "float16" if self._device == "cuda" else "int8"
@@ -83,19 +83,19 @@ class SpeechToTextDriver(BaseDriver):
             self.log("error", f"failed to load whisper model {self._model_size}: {exc!r}")
             raise
         self.set_runtime_info(
-            runtime_info(
+            RuntimeInfo(
                 backend="faster-whisper",
                 provider="CTranslate2",
                 device=self._device,
                 model=self._model_size,
                 accelerated=self._device == "cuda",
-                reason=reason,
+                reason=reason or "",
             )
         )
         self.log("info", f"whisper model loaded: {self._model_size} on {self._device}")
 
     def _select_device(self, torch: Any) -> tuple[str, str | None]:
-        mode = accelerator_mode()
+        mode = AcceleratorConfig.from_env().mode
         if mode == "cpu":
             return "cpu", "CPU explicitly requested"
         if mode == "cuda":
