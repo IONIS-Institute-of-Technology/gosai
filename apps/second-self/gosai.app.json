@@ -1,11 +1,11 @@
 {
+  "$schema": "../../packages/shared/schemas/gosai.app.schema.json",
   "slug": "second-self",
   "name": "Second Self",
   "version": "1.0.0",
   "description": "Augmented-mirror experience pack. A single composited surface projects interactive overlays onto a portrait mirror: skeleton overlays (hands, body, face), a gesture-driven launcher menu, motion games (poke-it, bounce, dance), audio experiences (theremine, music training) and sign-language modules (sign game, sign training). Driven by webcam pose estimation mirrored onto the display.",
   "author": "GOSAI",
   "default": "main",
-  "builtin": true,
   "requirements": { "display": true, "camera": true, "microphone": true, "speaker": true },
   "calibration": { "required": false },
   "experiences": [

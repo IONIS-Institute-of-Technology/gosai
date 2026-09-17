@@ -1,24 +1,17 @@
 /**
  * WebSocket message protocol shared between server, desktop, and apps.
  *
- * All messages are JSON-serializable. Binary payloads (frames, audio) use
- * base64 strings inside the JSON envelope or, when efficiency matters, are
- * sent as separate binary frames with the `id` referencing this envelope.
+ * Every message is a JSON envelope. Clients send commands, each with an `id`;
+ * the server answers with a `response` envelope carrying that id, and pushes
+ * events the client subscribed to. The shapes come from the zod schemas in
+ * `protocol-schemas.ts`, imported here as types only so browser bundles don't
+ * include zod.
  */
 
-import type {
-  AppDeviceSettings,
-  AppDeviceSettingsPatch,
-  DeviceCatalog,
-  DriverInfo,
-  DriverRuntimeInfo,
-  GlobalConfig,
-  InstalledApp,
-  LogEntry,
-  PerformanceSample,
-  RunningExperience,
-  SystemStats,
-} from './types.js';
+import type { z } from 'zod';
+import type { commandSchemas, eventSchemas } from './protocol-schemas.js';
+import type { AppEventName, DriverEventName, FixedServerEventName } from './events.js';
+import type { DriverEventPayload, DriverRuntimeInfo } from './types.js';
 
 export const PROTOCOL_VERSION = 1;
 
@@ -30,70 +23,54 @@ export interface MessageEnvelope<TType extends string = string, TPayload = unkno
   readonly ts?: number;
 }
 
+export const ErrorCodes = {
+  InvalidJson: 'INVALID_JSON',
+  InvalidMessage: 'INVALID_MESSAGE',
+  UnsupportedVersion: 'UNSUPPORTED_VERSION',
+  UnknownCommand: 'UNKNOWN_COMMAND',
+  InvalidPayload: 'INVALID_PAYLOAD',
+  Forbidden: 'FORBIDDEN',
+  HandlerError: 'HANDLER_ERROR',
+} as const;
+
+export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];
+
 export interface ErrorPayload {
-  readonly code: string;
+  readonly code: ErrorCode;
   readonly message: string;
   readonly details?: unknown;
 }
 
-export type ServerMessage =
-  | MessageEnvelope<
-      'server:welcome',
-      { protocolVersion: number; serverVersion: string; clientId: string }
-    >
-  | MessageEnvelope<'server:log', LogEntry>
-  | MessageEnvelope<'server:performance', PerformanceSample>
-  | MessageEnvelope<'server:config-changed', GlobalConfig>
-  | MessageEnvelope<'app:config-changed', { appSlug: string; settings: AppDeviceSettings }>
-  | MessageEnvelope<
-      // Driver events are routed per binding: the concrete event name is
-      // `driver:event:<binding>` so clients only receive their own app's stream.
-      `driver:event:${string}`,
-      { driver: string; event: string; data: unknown; ts: number; binding: string }
-    >
-  | MessageEnvelope<'driver:state-changed', DriverInfo>
-  | MessageEnvelope<'drivers:list-changed', { drivers: DriverInfo[] }>
-  | MessageEnvelope<'app:installed', InstalledApp>
-  | MessageEnvelope<'app:uninstalled', { slug: string }>
-  | MessageEnvelope<'apps:list-changed', { apps: InstalledApp[] }>
-  | MessageEnvelope<'experience:state-changed', RunningExperience>
-  | MessageEnvelope<'experiences:list-changed', { experiences: RunningExperience[] }>
-  | MessageEnvelope<'system:stats', SystemStats>
-  | MessageEnvelope<'response', { requestId: string; ok: true; data: unknown }>
-  | MessageEnvelope<'response', { requestId: string; ok: false; error: ErrorPayload }>;
+type CommandSchemas = typeof commandSchemas;
 
-export type ClientMessage =
-  | MessageEnvelope<'subscribe', { events: string[] }>
-  | MessageEnvelope<'unsubscribe', { events: string[] }>
-  | MessageEnvelope<'app:install', { source: string }>
-  | MessageEnvelope<'app:uninstall', { slug: string }>
-  | MessageEnvelope<'app:broadcast', { appSlug: string; topic: string; data?: unknown }>
-  | MessageEnvelope<'apps:list', Record<string, never>>
-  | MessageEnvelope<
-      'experience:start',
-      { appSlug: string; experienceSlug: string; driverBinding?: string }
-    >
-  | MessageEnvelope<'experience:stop', { appSlug: string; experienceSlug: string }>
-  | MessageEnvelope<'experiences:list', Record<string, never>>
-  | MessageEnvelope<'drivers:list', Record<string, never>>
-  // `binding` identifies the requesting app (its slug) so the server can route
-  // to the right per-app driver instance. Omitted => the `system` binding.
-  | MessageEnvelope<'driver:get-data', { driver: string; event: string; binding?: string }>
-  | MessageEnvelope<
-      'driver:execute',
-      { driver: string; action: string; data?: unknown; binding?: string }
-    >
-  | MessageEnvelope<'driver:subscribe', { driver: string; event: string; binding?: string }>
-  | MessageEnvelope<'driver:unsubscribe', { driver: string; event: string; binding?: string }>
-  | MessageEnvelope<'devices:list', Record<string, never>>
-  | MessageEnvelope<'logs:history', { limit?: number; level?: string }>
-  | MessageEnvelope<'config:get', Record<string, never>>
-  | MessageEnvelope<'config:set', Partial<GlobalConfig>>
-  | MessageEnvelope<'app:config:get', { appSlug: string }>
-  | MessageEnvelope<'app:config:set', { appSlug: string; settings: AppDeviceSettingsPatch }>;
+export type CommandName = keyof CommandSchemas;
 
-/** Response payload for `devices:list`. */
-export type DeviceListResult = DeviceCatalog;
+/** What a client sends. Fields with defaults may be left out. */
+export type CommandRequest<C extends CommandName> = z.input<CommandSchemas[C]['request']>;
+
+/** What the server hands the command handler, after validation. */
+export type ParsedCommandRequest<C extends CommandName> = z.output<CommandSchemas[C]['request']>;
+
+export type CommandResponse<C extends CommandName> = z.output<CommandSchemas[C]['response']>;
+
+type EventSchemas = typeof eventSchemas;
+
+export type FixedEventPayloads = { [E in FixedServerEventName]: z.output<EventSchemas[E]> };
+
+/** Payload type of any event name, including `driver:event:<binding>` and app events. */
+export type EventPayload<E extends string> = E extends FixedServerEventName
+  ? FixedEventPayloads[E]
+  : E extends DriverEventName
+    ? DriverEventPayload
+    : E extends AppEventName
+      ? unknown
+      : unknown;
+
+export type WelcomePayload = FixedEventPayloads['server:welcome'];
+
+export type ResponsePayload =
+  | { readonly requestId: string; readonly ok: true; readonly data: unknown }
+  | { readonly requestId: string; readonly ok: false; readonly error: ErrorPayload };
 
 /**
  * Python <-> Server bridge protocol (stdio newline-delimited JSON).
@@ -164,16 +141,5 @@ export interface BridgeInstanceList {
     readonly driver: string;
     readonly state: string;
     readonly subscriptions: readonly string[];
-  }[];
-}
-
-export interface BridgeManifest {
-  readonly drivers: readonly {
-    readonly name: string;
-    readonly events: readonly string[];
-    readonly actions: readonly string[];
-    readonly dependencies: readonly string[];
-    readonly description?: string;
-    readonly shared?: boolean;
   }[];
 }
