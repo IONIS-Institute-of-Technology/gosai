@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import ExitStack, contextmanager
 from typing import Any, ClassVar, Literal
 
 import cv2
@@ -145,6 +146,19 @@ _devices_lock = threading.Lock()
 _format_cache: dict[int, tuple[float, CameraFormats]] = {}
 # Devices a camera instance has open, with the mode it delivers.
 _devices_in_use: dict[int, CameraFormat] = {}
+# Held while a probe or an instance opens, closes or reopens the device, so a
+# probe never grabs a device between an instance's close and reopen.
+_device_locks: dict[int, threading.Lock] = {}
+
+
+@contextmanager
+def _holding_devices(*devices: int) -> Iterator[None]:
+    with _devices_lock:
+        locks = [_device_locks.setdefault(d, threading.Lock()) for d in sorted(set(devices))]
+    with ExitStack() as stack:
+        for lock in locks:
+            stack.enter_context(lock)
+        yield
 
 
 def probe_formats(device: int) -> CameraFormats:
@@ -154,6 +168,11 @@ def probe_formats(device: int) -> CameraFormats:
     webcams), asks for each standard resolution and records the size the
     camera returns.
     """
+    with _holding_devices(device):
+        return _probe_formats(device)
+
+
+def _probe_formats(device: int) -> CameraFormats:
     now = time.monotonic()
     with _devices_lock:
         in_use = _devices_in_use.get(device)
@@ -226,11 +245,11 @@ class CameraDriver(BaseDriver):
         self._config = config
 
     def pre_run(self) -> None:
-        with self._reconfigure_lock:
+        with self._reconfigure_lock, _holding_devices(self._config.device):
             self._open(self._config)
 
     def cleanup(self) -> None:
-        with self._reconfigure_lock:
+        with self._reconfigure_lock, _holding_devices(self._config.device):
             self._close()
         self.log("info", "camera released")
 
@@ -315,18 +334,22 @@ class CameraDriver(BaseDriver):
         with self._reconfigure_lock:
             previous = self._config
             target = msgspec.structs.replace(previous, **changes)
-            self._close()
+            with _holding_devices(previous.device, target.device):
+                return self._reopen(previous, target)
+
+    def _reopen(self, previous: CameraConfig, target: CameraConfig) -> CameraConfig:
+        self._close()
+        try:
+            self._open(target)
+        except Exception:
             try:
-                self._open(target)
-            except Exception:
-                try:
-                    self._open(previous)
-                except Exception as exc:
-                    self.log("error", f"could not restore camera device={previous.device}: {exc!r}")
-                    self.publish_state("errored")
-                raise
-            self.publish_state("running")
-            return self._config
+                self._open(previous)
+            except Exception as exc:
+                self.log("error", f"could not restore camera device={previous.device}: {exc!r}")
+                self.publish_state("errored")
+            raise
+        self.publish_state("running")
+        return self._config
 
     def _open(self, config: CameraConfig) -> None:
         cap = open_capture(config.device)

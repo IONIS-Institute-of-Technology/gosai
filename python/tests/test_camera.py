@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterator
 
 import numpy as np
@@ -162,3 +163,33 @@ def test_rotation_turns_clockwise() -> None:
     frame = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.uint8)
     assert _rotate_frame(frame, 90).tolist() == [[4, 1], [5, 2], [6, 3]]
     assert _rotate_frame(frame, 0) is frame
+
+
+def test_probes_never_grab_the_device_during_a_mode_change(
+    running: tuple[CameraDriver, RecordingContext], cameras: FakeCameras
+) -> None:
+    driver, context = running
+    stop = threading.Event()
+    probe_errors: list[Exception] = []
+
+    def probe() -> None:
+        while not stop.is_set():
+            camera._format_cache.clear()
+            try:
+                camera.probe_formats(0)
+            except Exception as exc:
+                probe_errors.append(exc)
+
+    thread = threading.Thread(target=probe)
+    thread.start()
+    try:
+        for i in range(40):
+            size = {"width": 640, "height": 480} if i % 2 else {"width": 1280, "height": 720}
+            driver.execute("set_mode", size)
+    finally:
+        stop.set()
+        thread.join()
+
+    assert "errored" not in context.states
+    assert probe_errors == []
+    assert list(cameras.open_handles) == [0]
