@@ -45,6 +45,8 @@ MODEL = Model.download(
     sha256="fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1",
 )
 
+DETECT_WARNING_INTERVAL_S = 5.0
+
 
 class HandPosePayload(msgspec.Struct, kw_only=True):
     hands_landmarks: list[list[list[float]]]
@@ -84,6 +86,8 @@ class HandPoseDriver(BaseDriver):
         self._frame_size: tuple[int, int] | None = None
         self._surface_size: tuple[int, int] = (1920, 1080)
         self._last_ts_ms = 0
+        self._detect_failures = 0
+        self._last_failure_warning = -DETECT_WARNING_INTERVAL_S
 
     def pre_run(self) -> None:
         model_path = resolve_model(MODEL, self.log)
@@ -164,7 +168,11 @@ class HandPoseDriver(BaseDriver):
         with self._detector_lock:
             if self._detector is None or self.stop_requested():
                 return
-            result = detector.detect_for_video(mp_image, ts_ms)
+            try:
+                result = detector.detect_for_video(mp_image, ts_ms)
+            except Exception as exc:
+                self._report_detect_failure(exc)
+                return
 
         # MediaPipe normalises over the crop; move back to the full frame.
         crop_w = cropped.shape[1]
@@ -192,6 +200,16 @@ class HandPoseDriver(BaseDriver):
                 "latency_ms": latency_ms(capture_ts),
             },
         )
+
+    def _report_detect_failure(self, exc: Exception) -> None:
+        """Warn about failed detections at most every DETECT_WARNING_INTERVAL_S."""
+        self._detect_failures += 1
+        now = time.monotonic()
+        if now - self._last_failure_warning < DETECT_WARNING_INTERVAL_S:
+            return
+        self.log("warn", f"hand_pose: detection failed {self._detect_failures} time(s): {exc!r}")
+        self._detect_failures = 0
+        self._last_failure_warning = now
 
     def _warp(self, hands: list[np.ndarray], cam_w: int, cam_h: int) -> list[np.ndarray]:
         """Warp normalised camera landmarks into normalised surface coordinates."""

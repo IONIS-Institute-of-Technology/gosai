@@ -183,7 +183,11 @@ class SpeakerDriver(BaseDriver):
             self._open_stream()
         except Exception:
             self._device, self._samplerate = previous
-            self._open_stream()
+            try:
+                self._open_stream()
+            except Exception as exc:
+                self.log("error", f"could not restore {self.name} device={previous[0]}: {exc!r}")
+                self.publish_state("errored")
             raise
 
     def _open_stream(self) -> None:

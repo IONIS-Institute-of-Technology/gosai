@@ -190,3 +190,19 @@ def test_slr_classifies_a_full_window(monkeypatch: pytest.MonkeyPatch) -> None:
     check_events(slr.SLRDriver, context)
     with pytest.raises(ValueError, match="no model for 3 actions"):
         driver.execute("set_actions", ["a", "b", "c"])
+
+
+def test_hand_pose_rate_limits_detection_failures(hand_driver: tuple[HandPoseDriver, RecordingContext]) -> None:
+    driver, context = hand_driver
+
+    class Broken(FakeDetector):
+        def detect_for_video(self, image: Any, ts_ms: int) -> Any:
+            raise RuntimeError("graph failed")
+
+    driver._detector = Broken(None)
+    for _ in range(20):
+        driver.on_data("camera", "frame", _frame(64, 48))
+
+    warnings = [message for level, message in context.logs if level == "warn"]
+    assert len(warnings) == 1 and "graph failed" in warnings[0]
+    assert context.emitted("raw_data") == []

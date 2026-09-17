@@ -250,3 +250,35 @@ def test_speech_to_text_explains_the_missing_extra(monkeypatch: pytest.MonkeyPat
     monkeypatch.setitem(sys.modules, "faster_whisper", None)
     with pytest.raises(RuntimeError, match="speech extra"):
         SpeechToTextDriver(RecordingContext()).pre_run()
+
+
+class _FlakySoundDevice(FakeSoundDevice):
+    """Fails every stream open after the first `good` ones."""
+
+    def __init__(self, good: int) -> None:
+        super().__init__()
+        self.good = good
+
+    def InputStream(self, **kwargs: Any) -> Any:  # noqa: N802 - sounddevice API
+        self.fail = len(self.streams) >= self.good
+        if self.fail:
+            raise RuntimeError(f"open {len(self.streams)} failed")
+        return super().InputStream(**kwargs)
+
+
+@pytest.mark.parametrize("driver_cls", [MicrophoneDriver, SpeakerDriver])
+def test_failed_restore_keeps_the_original_error_and_reports_errored(
+    monkeypatch: pytest.MonkeyPatch, driver_cls: type[MicrophoneDriver] | type[SpeakerDriver]
+) -> None:
+    fake = _FlakySoundDevice(good=1)
+    monkeypatch.setattr(devices, "sounddevice", lambda: fake)
+    context = RecordingContext()
+    driver = driver_cls(context)
+    driver._bridge_start()
+    try:
+        with pytest.raises(RuntimeError, match="device=3: open 1 failed"):
+            driver.execute("set_device", 3)
+        assert context.states == ["errored"]
+        assert any("could not restore" in message for _, message in context.logs)
+    finally:
+        assert driver._bridge_stop(5.0)
