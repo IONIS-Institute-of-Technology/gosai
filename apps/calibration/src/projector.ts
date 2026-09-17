@@ -145,12 +145,18 @@ export async function startProjector(
   state.layout = makeMarkerLayout(width, height, 9);
 
   for (const slot of state.layout) {
-    const result = (await rt.drivers.execute('calibration', 'render_marker', {
-      id: slot.id,
-      size: 200,
-    })) as MarkerImage;
-    if (!result?.ok || !result.png_base64) {
-      rt.log.warn('marker render failed', { id: slot.id, err: result?.error });
+    let result: MarkerImage;
+    try {
+      result = (await rt.drivers.execute('calibration', 'render_marker', {
+        id: slot.id,
+        size: 200,
+      })) as MarkerImage;
+    } catch (err) {
+      rt.log.warn('marker render failed', { id: slot.id, err: String(err) });
+      continue;
+    }
+    if (!result.png_base64) {
+      rt.log.warn('marker render returned no image', { id: slot.id });
       continue;
     }
     const img = document.createElement('img');

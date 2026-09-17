@@ -11,10 +11,11 @@
     }
   },
   "scripts": {
-    "dev": "bun --hot src/index.ts",
+    "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
     "typecheck": "tsc",
-    "test": "bun test"
+    "test": "bun test",
+    "test:install": "GOSAI_E2E_INSTALL=1 bun test/phase7-e2e.ts"
   },
   "dependencies": {
     "@gosai/shared": "workspace:*",

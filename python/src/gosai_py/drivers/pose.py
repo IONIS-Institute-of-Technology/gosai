@@ -7,53 +7,26 @@ and emits `raw_data`.
 MediaPipe removed the legacy ``mp.solutions`` API in 0.10.31; this driver uses
 the current Tasks vision API (``mediapipe.tasks.python.vision``). The model
 bundle (``holistic_landmarker.task``) is downloaded once into ``~/.gosai/models``
-on first launch. The emitted output schema is unchanged so apps stay portable.
+on first launch and checked against its sha256. The emitted output schema is unchanged so apps stay portable.
 """
 
 from __future__ import annotations
 
-import os
 import time
-import urllib.request
-from pathlib import Path
 from typing import Any, ClassVar
 
-from gosai_py.driver import DriverContext
-from gosai_py.processor import BaseProcessor
+from gosai_py.driver import BaseDriver, DriverContext
 from gosai_py.runtime import RuntimeInfo, mediapipe_base_options
+from gosai_py.runtime.models import Model, resolve_model
 
-MODEL_FILENAME = "holistic_landmarker.task"
-MODEL_URL = (
-    "https://storage.googleapis.com/mediapipe-models/holistic_landmarker/"
-    "holistic_landmarker/float16/latest/holistic_landmarker.task"
+MODEL = Model.download(
+    "holistic_landmarker.task",
+    url=(
+        "https://storage.googleapis.com/mediapipe-models/holistic_landmarker/"
+        "holistic_landmarker/float16/1/holistic_landmarker.task"
+    ),
+    sha256="e2dab61191e2dcd0a15f943d8e3ed1dce13c82dfa597b9dd39f562975a50c3f8",
 )
-
-
-def _models_dir() -> Path:
-    override = os.environ.get("GOSAI_HOME")
-    home = Path(override).expanduser().resolve() if override else Path.home() / ".gosai"
-    d = home / "models"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def _ensure_model(log_fn: Any) -> Path | None:
-    """Return the cached model path, downloading the bundle if missing."""
-    path = _models_dir() / MODEL_FILENAME
-    if path.exists() and path.stat().st_size > 0:
-        return path
-    try:
-        log_fn("info", f"pose: downloading {MODEL_FILENAME}")
-        tmp = path.with_suffix(path.suffix + ".part")
-        with urllib.request.urlopen(MODEL_URL, timeout=120) as resp, tmp.open("wb") as fp:
-            while chunk := resp.read(64 * 1024):
-                fp.write(chunk)
-        tmp.replace(path)
-        log_fn("info", f"pose: download complete ({MODEL_FILENAME})")
-        return path
-    except Exception as exc:
-        log_fn("error", f"pose: model download failed: {exc!r}")
-        return None
 
 
 def _visibility(landmark: Any) -> float:
@@ -61,10 +34,11 @@ def _visibility(landmark: Any) -> float:
     return round(float(vis), 2) if vis is not None else 1.0
 
 
-class PoseDriver(BaseProcessor):
+class PoseDriver(BaseDriver):
     name: ClassVar[str] = "pose"
     description: ClassVar[str] = "Body, face and hand landmarks (MediaPipe Holistic Landmarker)."
     events: ClassVar[tuple[str, ...]] = ("raw_data",)
+    stream_events: ClassVar[tuple[str, ...]] = ("raw_data",)
     actions: ClassVar[tuple[str, ...]] = ("set_flip", "set_window")
     dependencies: ClassVar[tuple[str, ...]] = ("camera",)
     subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("camera", "frame"),)
@@ -81,22 +55,18 @@ class PoseDriver(BaseProcessor):
         self._last_ts_ms = 0
 
     def pre_run(self) -> None:
-        super().pre_run()
         try:
             import mediapipe as mp  # type: ignore[import-not-found]
             from mediapipe.tasks.python import vision  # type: ignore[import-not-found]
         except ImportError as exc:
             raise RuntimeError(f"mediapipe not available: {exc}") from exc
 
-        model_path = _ensure_model(self.log)
-        if model_path is None:
-            raise RuntimeError("pose: model unavailable")
+        model_path = resolve_model(MODEL, self.log)
 
         def create(allow_gpu: bool) -> tuple[Any, RuntimeInfo]:
             base_options, info = mediapipe_base_options(
                 mp.tasks.BaseOptions,
                 model_path=model_path,
-                model_name=MODEL_FILENAME,
                 allow_gpu=allow_gpu,
             )
             options = vision.HolisticLandmarkerOptions(
@@ -122,15 +92,12 @@ class PoseDriver(BaseProcessor):
             self._mp_image_format = mp.ImageFormat.SRGBA if self._mp_uses_rgba else mp.ImageFormat.SRGB
             self.set_runtime_info(info)
             self.log("info", "MediaPipe Holistic Landmarker initialized")
-            self.start_latest_worker()
         except Exception as exc:
             self.log("error", f"pose: failed to create landmarker: {exc!r}")
             self._landmarker = None
             raise
 
     def cleanup(self) -> None:
-        self.stop_latest_worker()
-        super().cleanup()
         if self._landmarker is not None:
             try:
                 self._landmarker.close()
@@ -148,9 +115,6 @@ class PoseDriver(BaseProcessor):
         return super().execute(action, data)
 
     def on_data(self, driver: str, event: str, data: Any) -> None:
-        self.queue_latest_data(driver, event, data)
-
-    def process_latest_data(self, driver: str, event: str, data: Any) -> None:
         if self._landmarker is None or not isinstance(data, dict):
             return
         frame = data.get("_frame")

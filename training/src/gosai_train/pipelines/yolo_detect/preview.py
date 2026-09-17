@@ -7,7 +7,7 @@ from typing import Any
 
 def draw_detections(img: Any, boxes: list[tuple[float, float, float, float, float]]) -> Any:
     """Draw ``(x1, y1, x2, y2, conf)`` boxes on a BGR image (in place)."""
-    import cv2  # type: ignore[import-not-found]
+    import cv2
 
     for x1, y1, x2, y2, conf in boxes:
         p1, p2 = (int(x1), int(y1)), (int(x2), int(y2))

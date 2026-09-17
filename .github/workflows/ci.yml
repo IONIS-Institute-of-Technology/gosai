@@ -48,11 +48,16 @@ jobs:
       - uses: actions/checkout@v7
         with:
           lfs: false
+      - name: Fetch the ONNX models for the smoke tests
+        working-directory: .
+        run: |
+          git lfs install --local
+          git lfs pull --include="python/src/gosai_py/drivers/slr_models/*.onnx,python/src/gosai_py/drivers/ball_models/ball.onnx"
       - uses: astral-sh/setup-uv@v10
         with:
           python-version: '3.12'
-          # The Linux environment pulls several GB of CUDA wheels, too large to cache usefully.
-          enable-cache: false
+          enable-cache: true
+          cache-dependency-glob: python/uv.lock
       - run: uv sync --locked
       - run: uv run --locked ruff check .
       - run: uv run --locked pyright
@@ -73,3 +78,4 @@ jobs:
           python-version: '3.12'
           enable-cache: false
       - run: uv run --locked --only-group dev ruff check .
+      - run: uv run --locked --only-group dev pytest -q

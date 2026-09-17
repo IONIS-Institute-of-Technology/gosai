@@ -25,16 +25,16 @@ import math
 import time
 from typing import Any, ClassVar
 
-from gosai_py.driver import DriverContext
-from gosai_py.processor import BaseProcessor
+from gosai_py.driver import BaseDriver, DriverContext
 
 Point = tuple[float, float]
 
 
-class HandSignDriver(BaseProcessor):
+class HandSignDriver(BaseDriver):
     name: ClassVar[str] = "hand_sign"
     description: ClassVar[str] = "Hand gesture classification (geometric)."
     events: ClassVar[tuple[str, ...]] = ("sign",)
+    stream_events: ClassVar[tuple[str, ...]] = ("sign",)
     actions: ClassVar[tuple[str, ...]] = ()
     dependencies: ClassVar[tuple[str, ...]] = ("hand_pose",)
     subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("hand_pose", "raw_data"),)

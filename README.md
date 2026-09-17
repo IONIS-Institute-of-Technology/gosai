@@ -49,13 +49,11 @@ gosai/
 │   ├── shared/      shared TS types + protocol
 │   ├── server/      Bun/TypeScript server
 │   ├── sdk/         TypeScript SDK for app authors
-│   ├── cli/         CLI (kiosk launcher, ...)
 │   └── desktop/     Electron + React frontend
 ├── python/          Python runtime (uv-managed)
 │   └── src/gosai_py/
 │        ├── bridge.py    Node↔Python JSON-lines bridge
 │        ├── driver.py    BaseDriver
-│        ├── processor.py BaseProcessor
 │        └── drivers/     Built-in drivers (camera, pose, hand_pose, ...)
 ├── apps/               Built-in apps (calibration, interactive-pool, second-self)
 ├── templates/basic/    Starter template
@@ -82,7 +80,8 @@ train future driver models) with the multi-model pipeline in
 ```bash
 bun install
 bun run python:sync          # creates python/.venv with uv (CV + audio included)
-bun run python:sync -- --extra speech    # for STT/VAD drivers
+bun run python:sync -- --extra gpu --no-group cpu # CUDA onnxruntime on NVIDIA GPUs
+bun run python:sync -- --extra speech    # for the speech-to-text driver
 bun run python:sync -- --extra realsense # for Intel RealSense cameras
 bun run build:sdk           # builds the SDK bundle served to app windows
 bun run build:apps          # builds built-in app entry bundles
@@ -98,29 +97,30 @@ To install a new app paste its git URL into the Apps tab of the dashboard.
 
 ## Scripts
 
-| Command                    | Purpose                                               |
-| -------------------------- | ----------------------------------------------------- |
-| `bun run dev`              | Server, SDK runtime and desktop with hot reload       |
-| `bun run dev:server`       | Only the server                                       |
-| `bun run dev:desktop`      | Only the Electron app                                 |
-| `bun run build:sdk`        | Build the SDK bundle served to app windows at `/sdk/` |
-| `bun run build`            | Build every package                                   |
-| `bun run build:apps`       | Build the built-in apps                               |
-| `bun run build:server-bin` | Compile the server to a single executable             |
-| `bun run typecheck`        | TypeScript check across the workspace                 |
-| `bun run lint`             | oxlint across the workspace                           |
-| `bun run test`             | Server and SDK tests                                  |
-| `bun run format:check`     | Prettier check across the workspace                   |
-| `bun run python:sync`      | `uv sync` for the Python runtime                      |
-| `bun run python:lint`      | `ruff check` for the Python runtime                   |
-| `bun run python:test`      | `pytest` for the Python runtime                       |
-| `bun run python:check`     | ruff, pyright and pytest for the Python runtime       |
-| `bun run training:lint`    | `ruff check` for the training pipeline                |
-| `bun run package:mac`      | Build server bin + macOS DMG (arm64+x64)              |
-| `bun run package:linux`    | Build server bin + Linux AppImage                     |
-| `bun run package:kiosk`    | Build a single-app kiosk bundle (see below)           |
-| `bun run kiosk`            | Launch a built app as a kiosk from the repo           |
-| `bun run clean`            | Remove all build artifacts                            |
+| Command                  | Purpose                                               |
+| ------------------------ | ----------------------------------------------------- |
+| `bun run dev`            | Server, SDK runtime and desktop with hot reload       |
+| `bun run dev:server`     | Only the server                                       |
+| `bun run dev:desktop`    | Only the Electron app                                 |
+| `bun run build:sdk`      | Build the SDK bundle served to app windows at `/sdk/` |
+| `bun run build`          | Build every package                                   |
+| `bun run build:apps`     | Build the built-in apps                               |
+| `bun run bundle:prepare` | Compile the server and fetch uv for packaging         |
+| `bun run typecheck`      | TypeScript check across the workspace                 |
+| `bun run lint`           | oxlint across the workspace                           |
+| `bun run test`           | Server, SDK and desktop tests                         |
+| `bun run format:check`   | Prettier check across the workspace                   |
+| `bun run python:sync`    | `uv sync` for the Python runtime                      |
+| `bun run python:lint`    | `ruff check` for the Python runtime                   |
+| `bun run python:test`    | `pytest` for the Python runtime                       |
+| `bun run python:check`   | ruff, pyright and pytest for the Python runtime       |
+| `bun run training:lint`  | `ruff check` for the training pipeline                |
+| `bun run package:linux`  | Linux x64 AppImage                                    |
+| `bun run package:mac`    | macOS arm64 DMG (on a Mac)                            |
+| `bun run package:win`    | Windows x64 installer (best effort)                   |
+| `bun run package:kiosk`  | Build a single-app kiosk bundle (see below)           |
+| `bun run kiosk`          | Launch a built app as a kiosk from the repo           |
+| `bun run clean`          | Remove all build artifacts                            |
 
 ## Authoring an app
 
@@ -202,20 +202,20 @@ data directory (`~/.gosai-kiosks/<slug>` by default), and an embedded server
 on an ephemeral port - several kiosks coexist on one machine with zero port
 management.
 
-Launch a built app as a kiosk from the repo (or against a packaged GOSAI via
-`GOSAI_DESKTOP_BIN`):
+Any GOSAI executable runs a built app as a kiosk with
+`GOSAI --kiosk <app-dir>`. From the repo:
 
 ```bash
 bun run build:desktop && bun run build:sdk   # once
-bun run kiosk apps/interactive-pool          # add --display 1, --windowed, ...
+bun run kiosk apps/interactive-pool          # add --kiosk-display 1, --kiosk-windowed, ...
 ```
 
 Or package a self-contained kiosk bundle for a clean machine (embeds
 Electron, the compiled server, the Python tree, `uv`, and only that app):
 
 ```bash
-bun run package:kiosk -- apps/interactive-pool          # Linux AppImage (default)
-bun run package:kiosk -- apps/interactive-pool --macos  # macOS DMG
+bun run package:kiosk -- apps/interactive-pool                     # this machine's target
+bun run package:kiosk -- apps/interactive-pool --target linux-x64  # Linux x64 AppImage
 ```
 
 On its first launch the bundle installs Python 3.12 and all CV driver
@@ -226,15 +226,15 @@ Artifacts land in `packages/desktop/release/kiosk/<slug>/`. See
 ## Packaging
 
 ```bash
-bun run package:mac     # produces packages/desktop/release/GOSAI-*.dmg
 bun run package:linux   # produces packages/desktop/release/GOSAI-*.AppImage
+bun run package:mac     # produces packages/desktop/release/GOSAI-*.dmg (on a Mac)
 ```
 
 The packaged app bundles:
 
 - The compiled GOSAI server as a single binary.
-- The Python source tree (the `.venv` is materialised on first run).
-- The built-in `calibration` app + the SDK runtime bundle.
+- `uv` and the Python source tree (the `.venv` is materialised on first run).
+- The built-in apps + the SDK runtime bundle.
 
 See [`docs/deployment.md`](docs/deployment.md) for the full packaging guide.
 

@@ -9,8 +9,12 @@ import type { GosaiPaths } from './paths.js';
 import { Logger } from './logger/index.js';
 import { EventBus, WebSocketGateway, type ClientData } from './ipc/index.js';
 import { AppSettingsStore, ConfigStore } from './config/index.js';
-import { DriverManager, SYSTEM_BINDING } from './drivers/index.js';
-import { applyAppDeviceSettings, applyCameraSettings } from './drivers/camera-config.js';
+import { bridgeExecutable, DriverManager, SYSTEM_BINDING } from './drivers/index.js';
+import {
+  applyAppDeviceSettings,
+  applyGlobalCameraSettings,
+  driverConfigFor,
+} from './drivers/camera-config.js';
 import { AppManager } from './apps/index.js';
 import { AppStorage } from './apps/storage.js';
 import { SystemMonitor } from './monitor/index.js';
@@ -25,7 +29,6 @@ import {
   resolveSdkFile,
 } from './apps/app-host.js';
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
 
 const SERVER_VERSION = '0.1.0';
 
@@ -84,17 +87,7 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
     pythonDir,
     logger,
     bus,
-    // Per-app device assignments take priority; the camera falls back to the
-    // global default so single-app setups keep working without per-app config.
-    // The global camera is layered underneath the per-app block so an app that
-    // only pins a device (no resolution/fps) still inherits sensible defaults.
-    getDriverConfig: (binding, driver) => {
-      const app = binding === SYSTEM_BINDING ? undefined : appSettings.get(binding);
-      if (driver === 'camera') return { ...config.get().camera, ...app?.camera };
-      if (driver === 'microphone') return app?.microphone ? { ...app.microphone } : undefined;
-      if (driver === 'speaker') return app?.speaker ? { ...app.speaker } : undefined;
-      return undefined;
-    },
+    getDriverConfig: (binding, driver) => driverConfigFor({ config, appSettings }, binding, driver),
   });
 
   if (options.enablePython !== false && pythonHasBridge(pythonDir)) {
@@ -489,8 +482,14 @@ function registerHandlers(
   gateway.registerHandler('config:get', () => config.get());
   gateway.registerHandler('config:set', async (msg: ClientMessage) => {
     const payload = (msg as { payload: Record<string, unknown> }).payload;
+    const previousCamera = config.get().camera;
     const next = config.update(payload);
-    await applyCameraSettings(drivers, 'system', next.camera, logger.child('camera'));
+    await applyGlobalCameraSettings(
+      drivers,
+      { config, appSettings },
+      previousCamera,
+      logger.child('camera'),
+    );
     return next;
   });
 
@@ -502,8 +501,15 @@ function registerHandlers(
     const payload = (msg as { payload: { appSlug?: string; settings?: AppDeviceSettingsPatch } })
       .payload;
     const appSlug = assertSlug(payload?.appSlug, 'appSlug');
+    const previous = appSettings.get(appSlug);
     const next = appSettings.update(appSlug, payload.settings ?? {});
-    await applyAppDeviceSettings(drivers, appSlug, next, logger.child('app-config'));
+    await applyAppDeviceSettings(
+      drivers,
+      { config, appSettings },
+      appSlug,
+      previous,
+      logger.child('app-config'),
+    );
     return next;
   });
 
@@ -577,5 +583,5 @@ function resolvePythonDir(override?: string): string {
 }
 
 function pythonHasBridge(pythonDir: string): boolean {
-  return existsSync(join(pythonDir, '.venv', 'bin', 'gosai-bridge'));
+  return existsSync(bridgeExecutable(pythonDir));
 }

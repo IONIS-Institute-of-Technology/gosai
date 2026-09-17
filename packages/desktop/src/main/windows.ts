@@ -17,8 +17,6 @@ interface WindowRegistryOptions {
   readonly rootDir: string;
   /** Dashboard token for this launch. App window tokens derive from it. */
   readonly dashboardToken: string;
-  readonly serverHost?: string;
-  readonly serverPort?: number;
 }
 
 interface AppHostHandle {
@@ -94,17 +92,15 @@ export class WindowRegistry {
   private readonly endingExperiences = new Set<string>();
   private powerSaveBlockerId: number | null = null;
   private shuttingDown = false;
-  private serverHost: string;
-  private serverPort: number;
+  private serverHost = '127.0.0.1';
+  private serverPort = 7777;
 
-  constructor(private readonly options: WindowRegistryOptions) {
-    this.serverHost = options.serverHost ?? '127.0.0.1';
-    this.serverPort = options.serverPort ?? 7777;
-  }
+  constructor(private readonly options: WindowRegistryOptions) {}
 
   /**
-   * Points every window opened from now on at the given server. Called after
-   * the embedded server reports its (possibly ephemeral) port.
+   * Points every window opened from now on at the given server. Called with
+   * the embedded server's ephemeral port, or the port of a server started
+   * separately in development.
    */
   setServerAddress(addr: { host: string; port: number }): void {
     this.serverHost = addr.host;
@@ -276,7 +272,6 @@ export class WindowRegistry {
       // creation. On macOS, creation-time fullscreen plus setKiosk() on show
       // makes the window drop out of fullscreen on the first open.
       fullscreen: wantsFullscreen && !isLinux && !isMac,
-      ...(isMac ? { simpleFullscreen: false } : {}),
       backgroundColor: '#000000',
       autoHideMenuBar: true,
       show: false,

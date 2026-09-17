@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from gosai_py.bridge import Bridge
+from conftest import BridgeFactory
 from gosai_py.driver import BaseDriver
 
 
@@ -19,9 +19,7 @@ class FakeCamera(BaseDriver):
     name = "fakecam"
     events = ("frame",)
     actions = ("noop",)
-    dependencies = ()
     loop_interval_s = None  # callback-only: no background loop in tests
-    shared = False
 
     def execute(self, action: str, data: Any) -> Any:
         return {"echo": data}
@@ -30,7 +28,6 @@ class FakeCamera(BaseDriver):
 class FakeSpeaker(BaseDriver):
     name = "fakespk"
     events = ("level",)
-    dependencies = ()
     loop_interval_s = None
     shared = True
 
@@ -40,146 +37,116 @@ class FakeProc(BaseDriver):
     events = ("out",)
     dependencies = ("fakecam",)
     loop_interval_s = None
-    shared = False
 
 
-def _make_bridge() -> tuple[Bridge, list[dict[str, Any]]]:
-    bridge = Bridge()
-    collected: list[dict[str, Any]] = []
-
-    def _capture(msg: dict[str, Any]) -> None:
-        collected.append(msg)
-
-    bridge._write = _capture  # type: ignore[method-assign]
-    bridge._driver_classes = {
-        FakeCamera.name: FakeCamera,
-        FakeSpeaker.name: FakeSpeaker,
-        FakeProc.name: FakeProc,
-    }
-    return bridge, collected
+DRIVERS = (FakeCamera, FakeSpeaker, FakeProc)
 
 
-def _events(collected: list[dict[str, Any]], instance: str | None = None) -> list[dict[str, Any]]:
-    out = [m for m in collected if m.get("type") == "event"]
+def _request(bridge: Any, collector: Any, req_id: str, **fields: Any) -> dict[str, Any]:
+    bridge.handle({"id": req_id, **fields})
+    return collector.result(req_id)
+
+
+def _start(bridge: Any, collector: Any, req_id: str, instance: str, driver: str) -> None:
+    reply = _request(bridge, collector, req_id, type="start-driver", instance=instance, driver=driver)
+    assert reply["ok"], reply
+
+
+def _events(collector: Any, instance: str | None = None) -> list[dict[str, Any]]:
+    out = collector.of_type("event")
     if instance is not None:
         out = [m for m in out if m.get("instance") == instance]
     return out
 
 
-def test_exclusive_driver_gets_one_instance_per_binding() -> None:
-    bridge, _ = _make_bridge()
-    bridge.handle({"type": "start-driver", "id": "1", "instance": "appA", "driver": "fakecam"})
-    bridge.handle({"type": "start-driver", "id": "2", "instance": "appB", "driver": "fakecam"})
+def test_exclusive_driver_gets_one_instance_per_binding(make_bridge: BridgeFactory) -> None:
+    bridge, collector = make_bridge(DRIVERS)
+    _start(bridge, collector, "1", "appA", "fakecam")
+    _start(bridge, collector, "2", "appB", "fakecam")
 
-    a = bridge._driver_instances[("appA", "fakecam")]
-    b = bridge._driver_instances[("appB", "fakecam")]
+    a = bridge._instances[("appA", "fakecam")].driver
+    b = bridge._instances[("appB", "fakecam")].driver
     assert a is not b
 
-    bridge.handle({"type": "stop-driver", "id": "3", "instance": "appA", "driver": "fakecam"})
-    assert ("appA", "fakecam") not in bridge._driver_instances
-    assert ("appB", "fakecam") in bridge._driver_instances
+    assert _request(bridge, collector, "3", type="stop-driver", instance="appA", driver="fakecam")["ok"]
+    assert ("appA", "fakecam") not in bridge._instances
+    assert ("appB", "fakecam") in bridge._instances
 
 
-def test_events_are_tagged_with_their_instance() -> None:
-    bridge, collected = _make_bridge()
-    bridge.handle({"type": "start-driver", "id": "1", "instance": "appA", "driver": "fakecam"})
-    bridge.handle({"type": "start-driver", "id": "2", "instance": "appB", "driver": "fakecam"})
-    bridge.handle(
-        {"type": "subscribe", "id": "3", "instance": "appA", "driver": "fakecam", "event": "*"}
-    )
-    bridge.handle(
-        {"type": "subscribe", "id": "4", "instance": "appB", "driver": "fakecam", "event": "*"}
-    )
+def test_events_are_tagged_with_their_instance(make_bridge: BridgeFactory) -> None:
+    bridge, collector = make_bridge(DRIVERS)
+    _start(bridge, collector, "1", "appA", "fakecam")
+    _start(bridge, collector, "2", "appB", "fakecam")
+    _request(bridge, collector, "3", type="subscribe", instance="appA", driver="fakecam", event="*")
+    _request(bridge, collector, "4", type="subscribe", instance="appB", driver="fakecam", event="*")
 
-    bridge._driver_instances[("appA", "fakecam")].emit("frame", {"n": 1})
+    bridge._instances[("appA", "fakecam")].driver.emit("frame", {"n": 1})
 
-    evts = _events(collected)
-    assert len(evts) == 1
-    assert evts[0]["instance"] == "appA"
-    assert evts[0]["driver"] == "fakecam"
-    assert _events(collected, "appB") == []
+    event = collector.wait_for(lambda m: m.get("type") == "event")
+    assert event["instance"] == "appA"
+    assert event["driver"] == "fakecam"
+    assert event["data"] == {"n": 1}
+    bridge._writer.close()
+    assert _events(collector, "appB") == []
 
 
-def test_unsubscribed_instance_receives_no_events() -> None:
-    bridge, collected = _make_bridge()
-    bridge.handle({"type": "start-driver", "id": "1", "instance": "appA", "driver": "fakecam"})
+def test_unsubscribed_instance_receives_no_events(make_bridge: BridgeFactory) -> None:
+    bridge, collector = make_bridge(DRIVERS)
+    _start(bridge, collector, "1", "appA", "fakecam")
     # No external subscribe for appA, so an emit must not be forwarded to Node.
-    bridge._driver_instances[("appA", "fakecam")].emit("frame", {"n": 1})
-    assert _events(collected) == []
+    bridge._instances[("appA", "fakecam")].driver.emit("frame", {"n": 1})
+    bridge._writer.close()
+    assert _events(collector) == []
 
 
-def test_shared_instance_refcounts_subscribers() -> None:
-    bridge, collected = _make_bridge()
-    # Node sends the same `shared` namespace for every binding on a shared driver.
-    bridge.handle({"type": "start-driver", "id": "1", "instance": "shared", "driver": "fakespk"})
-    bridge.handle({"type": "start-driver", "id": "2", "instance": "shared", "driver": "fakespk"})
-    assert sum(1 for k in bridge._driver_instances if k[1] == "fakespk") == 1
+def test_subscriptions_are_idempotent_per_event(make_bridge: BridgeFactory) -> None:
+    bridge, collector = make_bridge(DRIVERS)
+    _start(bridge, collector, "1", "shared", "fakespk")
+    # Node reference-counts its own leases and sends one subscribe per event.
+    for req_id in ("2", "3"):
+        _request(bridge, collector, req_id, type="subscribe", instance="shared", driver="fakespk", event="level")
+    assert ("shared", "fakespk", "level") in bridge._external_subscriptions
 
-    bridge.handle(
-        {"type": "subscribe", "id": "3", "instance": "shared", "driver": "fakespk", "event": "*"}
-    )
-    bridge.handle(
-        {"type": "subscribe", "id": "4", "instance": "shared", "driver": "fakespk", "event": "*"}
-    )
-    assert bridge._external_subscribers[("shared", "fakespk", "*")] == 2
-
-    bridge.handle(
-        {"type": "unsubscribe", "id": "5", "instance": "shared", "driver": "fakespk", "event": "*"}
-    )
-    collected.clear()
-    bridge._driver_instances[("shared", "fakespk")].emit("level", {"rms": 0.2})
-    assert len(_events(collected)) == 1  # one subscriber still attached
-
-    bridge.handle(
-        {"type": "unsubscribe", "id": "6", "instance": "shared", "driver": "fakespk", "event": "*"}
-    )
-    collected.clear()
-    bridge._driver_instances[("shared", "fakespk")].emit("level", {"rms": 0.2})
-    assert _events(collected) == []  # no subscribers left
+    _request(bridge, collector, "4", type="unsubscribe", instance="shared", driver="fakespk", event="level")
+    bridge._instances[("shared", "fakespk")].driver.emit("level", {"rms": 0.2})
+    bridge._writer.close()
+    assert _events(collector) == []
 
 
-def test_dependencies_start_within_same_instance() -> None:
-    bridge, _ = _make_bridge()
-    bridge.handle({"type": "start-driver", "id": "1", "instance": "appA", "driver": "fakeproc"})
-    assert ("appA", "fakeproc") in bridge._driver_instances
-    assert ("appA", "fakecam") in bridge._driver_instances  # dependency in same namespace
-    assert ("appB", "fakecam") not in bridge._driver_instances
+def test_dependencies_must_run_in_the_same_instance(make_bridge: BridgeFactory) -> None:
+    bridge, collector = make_bridge(DRIVERS)
+    _start(bridge, collector, "1", "appB", "fakecam")
+
+    reply = _request(bridge, collector, "2", type="start-driver", instance="appA", driver="fakeproc")
+    assert not reply["ok"]
+    assert "needs fakecam running first" in reply["error"]
+    assert ("appA", "fakeproc") not in bridge._instances
+
+    _start(bridge, collector, "3", "appA", "fakecam")
+    _start(bridge, collector, "4", "appA", "fakeproc")
 
 
-def test_get_data_and_execute_are_instance_scoped() -> None:
-    bridge, collected = _make_bridge()
-    bridge.handle({"type": "start-driver", "id": "1", "instance": "appA", "driver": "fakecam"})
-    bridge.handle({"type": "start-driver", "id": "2", "instance": "appB", "driver": "fakecam"})
-    bridge._driver_instances[("appA", "fakecam")].emit("frame", {"who": "A"})
-    bridge._driver_instances[("appB", "fakecam")].emit("frame", {"who": "B"})
+def test_get_data_and_execute_are_instance_scoped(make_bridge: BridgeFactory) -> None:
+    bridge, collector = make_bridge(DRIVERS)
+    _start(bridge, collector, "1", "appA", "fakecam")
+    _start(bridge, collector, "2", "appB", "fakecam")
+    bridge._instances[("appA", "fakecam")].driver.emit("frame", {"who": "A", "_frame": object()})
+    bridge._instances[("appB", "fakecam")].driver.emit("frame", {"who": "B"})
 
-    collected.clear()
-    bridge.handle(
-        {"type": "get-data", "id": "3", "instance": "appA", "driver": "fakecam", "event": "frame"}
-    )
-    result = next(m for m in collected if m.get("type") == "result" and m.get("id") == "3")
+    result = _request(bridge, collector, "3", type="get-data", instance="appA", driver="fakecam", event="frame")
     assert result["data"] == {"who": "A"}
 
-    collected.clear()
-    bridge.handle(
-        {
-            "type": "execute",
-            "id": "4",
-            "instance": "appB",
-            "driver": "fakecam",
-            "action": "noop",
-            "data": 7,
-        }
+    result = _request(
+        bridge, collector, "4", type="execute", instance="appB", driver="fakecam", action="noop", data=7
     )
-    result = next(m for m in collected if m.get("type") == "result" and m.get("id") == "4")
     assert result["ok"] is True
     assert result["data"] == {"echo": 7}
 
 
-def test_list_drivers_reports_shared_flag() -> None:
-    bridge, collected = _make_bridge()
-    bridge.handle({"type": "list-drivers", "id": "1"})
-    result = next(m for m in collected if m.get("type") == "result")
+def test_list_drivers_reports_shared_flag(make_bridge: BridgeFactory) -> None:
+    bridge, collector = make_bridge(DRIVERS)
+    result = _request(bridge, collector, "1", type="list-drivers")
     by_name = {d["name"]: d for d in result["data"]["drivers"]}
     assert by_name["fakecam"]["shared"] is False
     assert by_name["fakespk"]["shared"] is True
+    assert by_name["fakeproc"]["dependencies"] == ["fakecam"]

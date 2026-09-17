@@ -64,6 +64,7 @@ class CameraDriver(BaseDriver):
     name: ClassVar[str] = "camera"
     description: ClassVar[str] = "Webcam capture (OpenCV) with optional RealSense depth."
     events: ClassVar[tuple[str, ...]] = ("frame", "color", "depth", "frame_size", "fps")
+    stream_events: ClassVar[tuple[str, ...]] = ("frame", "color", "depth")
     actions: ClassVar[tuple[str, ...]] = (
         "set_device",
         "set_mode",
@@ -389,7 +390,7 @@ class CameraDriver(BaseDriver):
                 self._latest_meta = meta
                 self._latest_frame_id += 1
 
-    def loop(self) -> None:
+    def loop(self) -> bool:
         with self._latest_lock:
             if (
                 self._latest_frame is None
@@ -404,7 +405,7 @@ class CameraDriver(BaseDriver):
                 self._published_frame_id = self._latest_frame_id
         if frame is None or meta is None:
             time.sleep(0.002)
-            return
+            return False
 
         if self._context.has_subscribers("frame"):
             self.emit("frame", {**meta, "_frame": frame})
@@ -416,7 +417,7 @@ class CameraDriver(BaseDriver):
                 encode_ms = (time.perf_counter() - encode_start) * 1000.0
             except Exception as exc:
                 self.log("error", f"frame encode failed: {exc!r}")
-                return
+                return True
             self.record("jpeg_encode_ms", encode_ms)
             self.emit(
                 "color",
@@ -446,13 +447,17 @@ class CameraDriver(BaseDriver):
             if remaining > 0:
                 time.sleep(remaining)
             self._last_emit = time.perf_counter()
+        return True
 
     def execute(self, action: str, data: Any) -> Any:
         if action == "list_formats":
             device = self._device
             if isinstance(data, dict) and "device" in data:
                 device = int(data["device"])
-            return self.probe_formats(device)
+            result = self.probe_formats(device)
+            if not result.get("ok"):
+                raise RuntimeError(result.get("error") or f"cannot list formats for device {device}")
+            return result
 
         try:
             import cv2  # type: ignore[import-not-found]

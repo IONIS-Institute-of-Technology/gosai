@@ -12,15 +12,19 @@
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import random
 import shutil
+from argparse import Namespace
 from pathlib import Path
 from typing import Any
 
 from ...context import ModelContext
 from ...util import console, load_yaml, save_yaml
+from .download import downloaded_version
+from .provenance import DATASETS_FILE
 from .sources import (
     Sample,
     collect_custom,
@@ -37,12 +41,10 @@ from .sources import (
 _DUP_THRESHOLD_SAME_SOURCE = 8
 
 
-# ── near-duplicate removal ────────────────────────────────────────────────
-
 def _dhash(image_path: Path):
     """256-bit difference hash as a 32-byte array; None when unreadable."""
-    import cv2  # type: ignore[import-not-found]
-    import numpy as np  # type: ignore[import-not-found]
+    import cv2
+    import numpy as np
 
     img = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
     if img is None:
@@ -54,7 +56,7 @@ def _dhash(image_path: Path):
 def _dedup(samples: list[Sample]) -> tuple[list[Sample], dict[str, int]]:
     """Drop near-duplicate images. Deterministic: samples are visited in a
     stable hash order, the first occurrence wins."""
-    import numpy as np  # type: ignore[import-not-found]
+    import numpy as np
 
     kept: list[Sample] = []
     dropped: dict[str, int] = {}
@@ -81,11 +83,9 @@ def _dedup(samples: list[Sample]) -> tuple[list[Sample], dict[str, int]]:
     return kept, dropped
 
 
-# ── motion-blur synthesis ─────────────────────────────────────────────────
-
 def _motion_blur_kernel(length: int, angle_deg: float):
-    import cv2  # type: ignore[import-not-found]
-    import numpy as np  # type: ignore[import-not-found]
+    import cv2
+    import numpy as np
 
     kernel = np.zeros((length, length), dtype=np.float32)
     c = (length - 1) / 2
@@ -117,7 +117,7 @@ def _expand_boxes(lines: list[str], length: int, angle_deg: float,
 
 def _synthesize_motion_blur(ctx: ModelContext, positives: list[Sample], cfg: dict) -> int:
     """Write motion-blurred copies of a fraction of train positives into merged."""
-    import cv2  # type: ignore[import-not-found]
+    import cv2
 
     fraction = float(cfg.get("fraction", 0.25))
     kernel_range = cfg.get("kernel", [9, 25])
@@ -151,8 +151,6 @@ def _synthesize_motion_blur(ctx: ModelContext, positives: list[Sample], cfg: dic
     return made
 
 
-# ── output writing / stats ────────────────────────────────────────────────
-
 def _place_image(src: Path, dst: Path) -> None:
     """Hardlink when possible (fast, no extra disk); fall back to a copy."""
     if dst.exists():
@@ -173,11 +171,14 @@ def _write_sample(ctx: ModelContext, sample: Sample) -> None:
     lbl_dst.write_text("\n".join(sample.label_lines))
 
 
-def _print_stats(samples: list[Sample], dup_dropped: dict[str, int]) -> None:
+def _print_stats(samples: list[Sample], dup_dropped: dict[str, int], blurred: int) -> None:
     from rich.table import Table
 
     per_source: dict[str, dict[str, Any]] = {}
+    per_split: dict[str, dict[str, int]] = {}
     for s in samples:
+        bucket = per_split.setdefault(s.split, {"pos": 0, "neg": 0})
+        bucket["pos" if s.is_positive else "neg"] += 1
         row = per_source.setdefault(
             s.prefix, {"pos": 0, "neg": 0, "boxes": 0, "sides": []}
         )
@@ -202,11 +203,13 @@ def _print_stats(samples: list[Sample], dup_dropped: dict[str, int]) -> None:
             median, str(dup_dropped.get(prefix, 0)),
         )
     console.print(table)
+    for split in ("train", "val", "test"):
+        b = per_split.get(split, {"pos": 0, "neg": 0})
+        extra = f" (+{blurred} blurred)" if split == "train" and blurred else ""
+        console.print(f"  {split:<5} pos={b['pos']:<6} neg={b['neg']}{extra}")
 
 
-# ── entry point ───────────────────────────────────────────────────────────
-
-def run(ctx: ModelContext, args: Any = None) -> None:
+def run(ctx: ModelContext, args: Namespace) -> None:
     if not ctx.raw_dir.exists() or not any(ctx.raw_dir.iterdir()):
         raise SystemExit(f"no datasets in {ctx.raw_dir}; run `gosai-train download` first")
 
@@ -219,11 +222,14 @@ def run(ctx: ModelContext, args: Any = None) -> None:
     blur_cfg = train_cfg.get("motion_blur") or {}
 
     positives, ds_negatives = collect_datasets(ctx, overrides, discovered)
+    dataset_versions = {
+        prefix: downloaded_version(ctx.raw_dir / prefix)
+        for prefix in sorted({s.prefix for s in positives + ds_negatives})
+    }
     positives += collect_custom(ctx)
     negatives = ds_negatives + collect_extra_negatives(ctx)
 
-    # Persist discovered keep/drop decisions for review (generated file;
-    # promote entries into classes.yaml `overrides:` to force a decision).
+    # Review file: promote wrong decisions into classes.yaml `overrides:`.
     save_yaml(ctx.classes_lock, {"discovered": dict(sorted(discovered.items()))})
 
     if not positives:
@@ -236,13 +242,11 @@ def run(ctx: ModelContext, args: Any = None) -> None:
     positives = [s for s in all_samples if s.is_positive]
     negatives = [s for s in all_samples if not s.is_positive]
 
-    # Cap negatives deterministically.
     cap = int(len(positives) * max_ratio)
     negatives.sort(key=lambda s: s.sort_key)
     neg_over_cap = max(0, len(negatives) - cap)
     negatives = negatives[:cap]
 
-    # Fresh output.
     if ctx.merged_dir.exists():
         shutil.rmtree(ctx.merged_dir)
     for sample in positives + negatives:
@@ -263,19 +267,11 @@ def run(ctx: ModelContext, args: Any = None) -> None:
             "names": [ctx.class_name],
         },
     )
+    (ctx.merged_dir / DATASETS_FILE).write_text(json.dumps(dataset_versions, indent=2) + "\n")
 
-    counts: dict[str, dict[str, int]] = {}
-    for sample in positives + negatives:
-        bucket = counts.setdefault(sample.split, {"pos": 0, "neg": 0})
-        bucket["pos" if sample.is_positive else "neg"] += 1
-
-    _print_stats(positives + negatives, dup_dropped)
     console.print("[green]done[/] merged dataset at " + str(ctx.merged_dir))
     console.print(
         f"  positives: {len(positives)}  negatives: {len(negatives)} "
         f"(capped, dropped {neg_over_cap})  motion-blur copies: {blurred}"
     )
-    for split in ("train", "val", "test"):
-        b = counts.get(split, {"pos": 0, "neg": 0})
-        extra = f" (+{blurred} blurred)" if split == "train" and blurred else ""
-        console.print(f"  {split:<5} pos={b['pos']:<6} neg={b['neg']}{extra}")
+    _print_stats(positives + negatives, dup_dropped, blurred)

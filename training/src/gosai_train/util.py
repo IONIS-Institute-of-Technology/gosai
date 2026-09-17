@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-import os
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -31,27 +33,11 @@ def save_yaml(path: str | Path, data: dict[str, Any]) -> None:
         yaml.safe_dump(data, f, sort_keys=False, allow_unicode=True)
 
 
-def load_env(root: Path) -> None:
-    """Load simple KEY=VALUE pairs from <root>/.env into os.environ (no overwrite)."""
-    env_path = Path(root) / ".env"
-    if not env_path.exists():
-        return
-    for raw in env_path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
-            os.environ[key] = value
-
-
 def is_image(path: Path) -> bool:
     return path.suffix.lower() in IMG_EXTS
 
 
-def iter_images(directory: Path):
+def iter_images(directory: Path) -> Iterator[Path]:
     if not directory.exists():
         return
     for p in sorted(directory.rglob("*")):
@@ -59,21 +45,51 @@ def iter_images(directory: Path):
             yield p
 
 
-def paths_txt(prefix: str, paths: list[Path]) -> str:
-    """Write paths to a temp .txt and return it, for use as an ultralytics source.
+def iter_videos(source: Path) -> Iterator[Path]:
+    """Video files under a directory, or the source itself when it is a video file."""
+    if source.is_file():
+        if source.suffix.lower() in VIDEO_EXTS:
+            yield source
+        return
+    for p in sorted(source.rglob("*")):
+        if p.is_file() and p.suffix.lower() in VIDEO_EXTS:
+            yield p
 
-    Passing a Python list to `model.predict()` makes ultralytics decode every
-    image into memory and run them as ONE batch (`LoadPilAndNumpy`), which OOMs
-    on large sets. A .txt source streams via `LoadImagesAndVideos` and respects
-    the requested batch size.
+
+def iter_video_frames(path: Path, step: int) -> Iterator[tuple[int, Any]]:
+    """Yield ``(frame_index, bgr_frame)`` for every ``step``-th frame of a video."""
+    import cv2
+
+    cap = cv2.VideoCapture(str(path))
+    if not cap.isOpened():
+        console.print(f"[yellow]skip[/] {path.name}: cannot open")
+        return
+    try:
+        idx = 0
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            if idx % step == 0:
+                yield idx, frame
+            idx += 1
+    finally:
+        cap.release()
+
+
+@contextmanager
+def paths_source(prefix: str, paths: list[Path]) -> Iterator[str]:
+    """A temporary .txt listing ``paths``, for use as an Ultralytics source.
+
+    Passing a Python list to `model.predict()` makes Ultralytics decode every
+    image into memory and run them as one batch, which runs out of memory on
+    large sets. A .txt source streams and respects the batch size. Consume the
+    streamed results inside the ``with`` block: the file is deleted on exit.
     """
-    import tempfile
-
-    with tempfile.NamedTemporaryFile(
-        "w", prefix=f"gosai-{prefix}-", suffix=".txt", delete=False, encoding="utf-8"
-    ) as f:
-        f.write("\n".join(str(p) for p in paths))
-    return f.name
+    with tempfile.TemporaryDirectory(prefix=f"gosai-{prefix}-") as tmp:
+        listing = Path(tmp) / "sources.txt"
+        listing.write_text("\n".join(str(p) for p in paths), encoding="utf-8")
+        yield str(listing)
 
 
 def find_latest(root: Path, pattern: str) -> Path | None:

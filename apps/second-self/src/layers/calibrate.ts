@@ -80,8 +80,6 @@ const DIM = 'rgba(255,255,255,0.65)';
 type Phase = 'intro' | 'capture' | 'stepback' | 'solving' | 'verify' | 'saving' | 'failed';
 
 interface SolveResult {
-  ok: boolean;
-  error?: string;
   tilt_deg?: number;
   scale?: number;
   affine?: number[];
@@ -276,17 +274,13 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
         target: [target[0], target[1]],
         ...(holdLandmark !== null ? { landmark: holdLandmark } : {}),
       })
-      .then((res) => {
-        const r = res as { ok?: boolean; error?: string };
-        if (!r?.ok) {
-          message = r?.error ?? 'capture failed, hold still and retry';
-          return;
-        }
+      .then(() => {
         if (round === 1 && span !== null) round1Spans.push(span);
         advanceTarget();
       })
       .catch((err) => {
-        message = 'capture failed, retrying';
+        // The driver rejects with a user-facing reason (too few frames, hand not visible).
+        message = err instanceof Error ? err.message : 'capture failed, hold still and retry';
         deps.rt.log.warn('calibrate: capture failed', { err: String(err) });
       })
       .finally(() => {
@@ -331,10 +325,6 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
       .execute('pose_to_mirror', 'solve_calibration', {})
       .then(async (res) => {
         const r = res as SolveResult;
-        if (!r?.ok) {
-          solveFailed(r?.error ?? 'unknown error');
-          return;
-        }
         // The verify overlay must show the *fitted reflection* projection,
         // even when the wizard was launched from direct mode.
         await deps.rt.drivers
@@ -345,7 +335,7 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
         verifyDwell.clear();
       })
       .catch((err) => {
-        solveFailed(String(err));
+        solveFailed(err instanceof Error ? err.message : String(err));
       });
   }
 

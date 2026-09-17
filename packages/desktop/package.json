@@ -11,20 +11,20 @@
     "preview": "electron-vite preview",
     "start": "electron .",
     "typecheck": "tsc -p tsconfig.node.json && tsc -p tsconfig.web.json",
+    "test": "bun test",
     "clean": "rm -rf out dist release",
-    "pack": "electron-vite build && electron-builder --dir",
-    "dist:mac": "electron-vite build && electron-builder --mac --config electron-builder.config.cjs",
-    "dist:linux": "electron-vite build && electron-builder --linux --config electron-builder.config.cjs"
-  },
-  "dependencies": {
-    "@gosai/shared": "workspace:*"
+    "pack": "electron-vite build && bun ../../scripts/prepare-bundle.ts && electron-builder --config electron-builder.config.cjs --publish never --dir",
+    "dist:linux": "electron-vite build && bun ../../scripts/prepare-bundle.ts --target linux-x64 && electron-builder --config electron-builder.config.cjs --publish never --linux",
+    "dist:mac": "electron-vite build && bun ../../scripts/prepare-bundle.ts --target mac-arm64 && electron-builder --config electron-builder.config.cjs --publish never --mac",
+    "dist:win": "electron-vite build && bun ../../scripts/prepare-bundle.ts --target win-x64 && electron-builder --config electron-builder.config.cjs --publish never --win"
   },
   "devDependencies": {
+    "@gosai/shared": "workspace:*",
     "@tailwindcss/vite": "^4.3.3",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^5.1.4",
-    "electron": "^43.1.1",
+    "electron": "^44.4.1",
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "react": "^19.3.0",

@@ -5,8 +5,6 @@ numpy arrays (frames, audio buffers) should be encoded for transport.
 
 - `frame_to_jpeg_base64(frame)`: encode an HxWx3 BGR frame to a base64 JPEG.
 - `frame_to_png_base64(frame)`: encode to PNG (lossless).
-- `to_msgpack(value)`: pack a structure into a MessagePack bytes object.
-- `from_msgpack(bytes_value)`: unpack the inverse.
 
 Frame encoding requires OpenCV.
 """
@@ -15,21 +13,6 @@ from __future__ import annotations
 
 import base64
 from typing import Any
-
-import msgpack  # type: ignore[import-not-found]
-
-
-def to_msgpack(value: Any) -> bytes:
-    """Pack a value using MessagePack."""
-    packed = msgpack.packb(value, use_bin_type=True)
-    if packed is None:
-        raise RuntimeError("msgpack.packb returned None")
-    return packed
-
-
-def from_msgpack(data: bytes) -> Any:
-    """Unpack a MessagePack-encoded payload."""
-    return msgpack.unpackb(data, raw=False)
 
 
 def frame_to_jpeg_base64(frame: Any, quality: int = 75) -> str:
