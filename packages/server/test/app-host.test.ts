@@ -126,6 +126,8 @@ describe('network.connect sources', () => {
     const connect = csp.split('; ').find((d) => d.startsWith('connect-src'));
     expect(connect).toBe("connect-src 'self' blob: data: https: wss: ws://relay.local:8080");
     expect(csp).not.toContain('unsafe-inline');
-    expect(csp).toContain("script-src 'self' http://*.localhost:7777 ");
+    // Apps import only their own modules, never another app's.
+    expect(csp).toContain("script-src 'self' 'sha256-");
+    expect(csp).not.toContain('*.localhost');
   });
 });

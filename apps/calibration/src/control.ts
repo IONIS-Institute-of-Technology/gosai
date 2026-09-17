@@ -1,814 +1,589 @@
 /**
- * Control-side renderer + orchestrator for the calibration wizard.
+ * The control window: runs the wizard (see wizard.ts), shows the camera feed,
+ * collects the surface corners, owns the projector's marker pan and zoom,
+ * and saves the target app's profile once the operator accepts the preview.
  *
- * Runs in the (non-fullscreen) control window. Owns the step machine and is
- * responsible for:
- *   - showing the live camera feed and detection overlay
- *   - collecting the four surface-corner clicks
- *   - calling `calibration.compute` to compute the homography
- *   - persisting `homography` and `focus_quad` to app storage
- *
- * Keyboard shortcuts:
- *   - Space / Enter : advance to next step
- *   - Backspace     : revert to previous step
- *   - Escape        : abort
- *   - r             : reset corner picks
+ * Keys: arrows pan and the wheel zooms the markers, Space or Enter goes on,
+ * Backspace goes back, Escape cancels, r resets the corners.
  */
 
 import {
-  type AppEventsSubscription,
-  type CalibrationStepContext,
-  type CameraProjectorSurfaceCalibrationOptions,
-  type DriverSubscription,
+  CalibrationWizardTopics,
+  computeFit,
+  finishCalibration,
+  loadCameraProjectorSurfaceCalibration,
+  saveCameraProjectorSurfaceCalibration,
+  type CalibrationPoint,
+  type CameraProjectorSurfaceStep,
   type ExperienceRuntimeContext,
 } from '@gosai/sdk';
+import type { CalibrationTarget } from './calibrate.js';
 import {
-  WIZARD_EVENTS,
-  STORAGE_KEYS,
-  DEFAULT_SURFACE_SIZE,
-  type CornersEvent,
-  type FocusQuad,
-  type MarkerTransform,
-  type MarkerTransformEvent,
-  type Point2D,
-  type SizeXY,
-  type SurfaceQuadDisplay,
-  type WizardStep,
   DEFAULT_MARKER_TRANSFORM,
+  MARKER_COUNT,
+  MARKER_TRANSFORM_TOPIC,
+  MAX_SCALE,
+  MIN_SCALE,
   PAN_STEP,
   ZOOM_STEP,
-  MIN_SCALE,
-  MAX_SCALE,
+  cornerLabels,
   setBodyFullscreen,
+  type MarkerTransform,
+  type StepEvent,
 } from './shared.js';
-
-interface DOM {
-  root: HTMLDivElement;
-  header: HTMLDivElement;
-  body: HTMLDivElement;
-  footer: HTMLDivElement;
-  stepTitle: HTMLDivElement;
-  stepHelp: HTMLDivElement;
-  cameraCanvas: HTMLCanvasElement;
-  cameraImg: HTMLImageElement;
-  overlay: HTMLCanvasElement;
-  backBtn: HTMLButtonElement;
-  nextBtn: HTMLButtonElement;
-  abortBtn: HTMLButtonElement;
-  resetBtn: HTMLButtonElement;
-  status: HTMLDivElement;
-}
-
-export interface ControlState {
-  dom: DOM;
-  step: WizardStep;
-  /** Target app being calibrated. Calibration data is stored in this app. */
-  targetAppSlug: string | null;
-  context: CalibrationStepContext | null;
-  options: CameraProjectorSurfaceCalibrationOptions;
-  camFrame: HTMLImageElement | null;
-  camFrameSize: { w: number; h: number } | null;
-  /** Surface corners in normalised camera coords (0..1). */
-  corners: Point2D[];
-  /** Index of corner currently being dragged, or -1. */
-  draggingIdx: number;
-  detectedMarkers: number;
-  totalMarkers: number;
-  /** Mirror of the projector's marker transform for forwarding inputs. */
-  markerTransform: MarkerTransform;
-  eventSubs: AppEventsSubscription[];
-  driverSubs: DriverSubscription[];
-  keyHandler: ((e: KeyboardEvent) => void) | null;
-  wheelHandler: ((e: WheelEvent) => void) | null;
-  downHandler: ((e: MouseEvent) => void) | null;
-  moveHandler: ((e: MouseEvent) => void) | null;
-  upHandler: ((e: MouseEvent) => void) | null;
-  resizeHandler: (() => void) | null;
-  resizeObserver: ResizeObserver | null;
-  busy: boolean;
-}
+import {
+  addCorner,
+  advance,
+  canAdvance,
+  canGoBack,
+  cancel,
+  computeFailed,
+  computeSucceeded,
+  goBack,
+  initialWizard,
+  moveCorner,
+  resetCorners,
+  toCalibration,
+  type ComputeResult,
+  type WizardState,
+  type WizardStep,
+} from './wizard.js';
 
 const STEP_TITLES: Record<WizardStep, string> = {
   markers: 'Step 1 · ArUco Markers',
-  'pool-corners': 'Step 2 · Surface Corners',
+  'surface-corners': 'Step 2 · Surface Corners',
   compute: 'Step 3 · Compute Homography',
   preview: 'Step 4 · Preview',
   done: 'Calibration Complete',
-  abort: 'Aborted',
+  cancelled: 'Cancelled',
 };
 
 const STEP_HELP: Record<WizardStep, string> = {
-  markers:
-    'Aim the camera so all 9 markers are visible. Use [Arrow keys] to pan and [Scroll wheel] to zoom the pattern to fit the surface. Press [Space] / Next when ready.',
-  'pool-corners':
+  markers: `Aim the camera so all ${MARKER_COUNT} markers are visible. Use [Arrow keys] to pan and [Scroll wheel] to zoom the pattern to fit the surface. Press [Space] / Next when ready.`,
+  'surface-corners':
     'Click to place surface corners (top-left → clockwise). Drag an existing corner to adjust it. Press [r] to reset all, [Space] / Next when 4 corners are placed.',
   compute: 'Computing the camera→display homography. This should only take a moment.',
   preview:
-    'Check that the calibration looks right. Press [Space] / Done to finish or [Backspace] to go back.',
-  done: 'Calibration data saved. Closing windows…',
-  abort: 'Calibration aborted. No data was saved.',
+    'Check that the calibration looks right. Press [Space] / Done to save or [Backspace] to pick the corners again.',
+  done: 'Calibration saved. Closing windows…',
+  cancelled: 'Calibration cancelled. Nothing was saved.',
 };
 
-const ORDERED_STEPS: WizardStep[] = ['markers', 'pool-corners', 'compute', 'preview', 'done'];
-
-export function initControlState(): ControlState {
-  setBodyFullscreen();
-  document.body.style.background = '#0a0a0a';
-
-  const root = document.createElement('div');
-  root.style.cssText =
-    'position:fixed;inset:0;display:flex;flex-direction:column;background:#0a0a0a;color:#fff;font:13px ui-monospace,monospace;';
-  document.body.appendChild(root);
-
-  const header = document.createElement('div');
-  header.style.cssText =
-    'padding:12px 16px;border-bottom:1px solid #222;background:#111;display:flex;flex-direction:column;gap:4px;';
-  root.appendChild(header);
-
-  const stepTitle = document.createElement('div');
-  stepTitle.style.cssText = 'font-size:14px;font-weight:600;color:#f5f5f5;';
-  header.appendChild(stepTitle);
-
-  const stepHelp = document.createElement('div');
-  stepHelp.style.cssText = 'font-size:12px;color:#a3a3a3;line-height:1.4;';
-  header.appendChild(stepHelp);
-
-  const body = document.createElement('div');
-  body.style.cssText =
-    'flex:1;position:relative;overflow:hidden;background:#000;display:flex;align-items:center;justify-content:center;';
-  root.appendChild(body);
-
-  const cameraCanvas = document.createElement('canvas');
-  cameraCanvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;';
-  body.appendChild(cameraCanvas);
-
-  const overlay = document.createElement('canvas');
-  overlay.style.cssText =
-    'position:absolute;inset:0;width:100%;height:100%;display:block;cursor:crosshair;';
-  body.appendChild(overlay);
-
-  const cameraImg = document.createElement('img');
-  cameraImg.style.display = 'none';
-
-  const status = document.createElement('div');
-  status.style.cssText =
-    'position:absolute;top:8px;right:8px;background:rgba(0,0,0,0.7);padding:6px 10px;border-radius:4px;font-size:11px;color:#d4d4d4;';
-  status.textContent = '';
-  body.appendChild(status);
-
-  const footer = document.createElement('div');
-  footer.style.cssText =
-    'padding:10px 16px;border-top:1px solid #222;background:#111;display:flex;gap:8px;align-items:center;';
-  root.appendChild(footer);
-
-  const abortBtn = button('Abort (Esc)', '#7f1d1d');
-  const resetBtn = button('Reset corners (r)');
-  const backBtn = button('Back (⌫)');
-  const nextBtn = button('Next (Space)', '#166534');
-
-  footer.appendChild(abortBtn);
-  footer.appendChild(resetBtn);
-  const spacer = document.createElement('div');
-  spacer.style.flex = '1';
-  footer.appendChild(spacer);
-  footer.appendChild(backBtn);
-  footer.appendChild(nextBtn);
-
-  return {
-    dom: {
-      root,
-      header,
-      body,
-      footer,
-      stepTitle,
-      stepHelp,
-      cameraCanvas,
-      cameraImg,
-      overlay,
-      backBtn,
-      nextBtn,
-      abortBtn,
-      resetBtn,
-      status,
-    },
-    step: 'markers',
-    targetAppSlug: null,
-    context: null,
-    options: {},
-    camFrame: null,
-    camFrameSize: null,
-    corners: [],
-    draggingIdx: -1,
-    detectedMarkers: 0,
-    totalMarkers: 9,
-    markerTransform: { ...DEFAULT_MARKER_TRANSFORM },
-    eventSubs: [],
-    driverSubs: [],
-    keyHandler: null,
-    wheelHandler: null,
-    downHandler: null,
-    moveHandler: null,
-    upHandler: null,
-    resizeHandler: null,
-    resizeObserver: null,
-    busy: false,
-  };
-}
-
-export async function startControl(
-  ctx: CalibrationStepContext,
-  state: ControlState,
-  options: CameraProjectorSurfaceCalibrationOptions,
-): Promise<void> {
-  const rt = ctx.rt;
-  rt.log.info('control role starting');
-
-  state.context = ctx;
-  state.options = options;
-  state.targetAppSlug = ctx.targetAppSlug;
-
-  // Restore previous corner picks so the user does not lose work if the
-  // wizard is re-opened.
-  const previous = await ctx.targetStorage.get<FocusQuad>(STORAGE_KEYS.FocusQuad);
-  if (previous?.points && previous.points.length === 4) {
-    state.corners = previous.points.slice();
-  }
-
-  state.resizeHandler = (): void => {
-    const dpr = window.devicePixelRatio || 1;
-    const r = state.dom.body.getBoundingClientRect();
-    const w = Math.max(1, Math.round(r.width * dpr));
-    const h = Math.max(1, Math.round(r.height * dpr));
-    if (state.dom.cameraCanvas.width !== w || state.dom.cameraCanvas.height !== h) {
-      state.dom.cameraCanvas.width = w;
-      state.dom.cameraCanvas.height = h;
-      state.dom.overlay.width = w;
-      state.dom.overlay.height = h;
-    }
-    drawCamera(state);
-    drawOverlay(state);
-  };
-  window.addEventListener('resize', state.resizeHandler);
-  // The header's help text wraps differently between steps, which reflows the
-  // body without firing `window.resize`. ResizeObserver catches those changes
-  // so the canvas dimensions stay in sync with the visible rect.
-  state.resizeObserver = new ResizeObserver(() => state.resizeHandler?.());
-  state.resizeObserver.observe(state.dom.body);
-  state.resizeHandler();
-
-  state.driverSubs.push(
-    rt.drivers.on('camera', 'color', (payload) => {
-      const data = payload as { jpeg_base64?: string; width?: number; height?: number };
-      if (typeof data?.jpeg_base64 !== 'string') return;
-      const img = new Image();
-      img.onload = () => {
-        state.camFrame = img;
-        state.camFrameSize = { w: img.naturalWidth, h: img.naturalHeight };
-        drawCamera(state);
-        drawOverlay(state);
-      };
-      img.src = `data:image/jpeg;base64,${data.jpeg_base64}`;
-    }),
-    rt.drivers.on('calibration', 'detection', (payload) => {
-      const data = payload as { detected: number; total?: number };
-      state.detectedMarkers = data.detected;
-      if (typeof data.total === 'number') state.totalMarkers = data.total;
-      updateStatus(state);
-    }),
-  );
-
-  state.downHandler = (e: MouseEvent) => onPointerDown(rt, state, e);
-  state.moveHandler = (e: MouseEvent) => onPointerMove(rt, state, e);
-  state.upHandler = (e: MouseEvent) => onPointerUp(rt, state, e);
-  state.dom.overlay.addEventListener('mousedown', state.downHandler);
-  state.dom.overlay.addEventListener('mousemove', state.moveHandler);
-  state.dom.overlay.addEventListener('mouseup', state.upHandler);
-
-  state.keyHandler = (e: KeyboardEvent) => void onKey(rt, state, e);
-  document.addEventListener('keydown', state.keyHandler);
-
-  state.wheelHandler = (e: WheelEvent): void => {
-    if (state.step !== 'markers') return;
-    e.preventDefault();
-    const direction = e.deltaY < 0 ? 1 : -1;
-    state.markerTransform.scale = Math.min(
-      MAX_SCALE,
-      Math.max(MIN_SCALE, state.markerTransform.scale + direction * ZOOM_STEP),
-    );
-    void rt.events.emit(WIZARD_EVENTS.MarkerTransform, {
-      transform: state.markerTransform,
-    } satisfies MarkerTransformEvent);
-  };
-  document.addEventListener('wheel', state.wheelHandler, { passive: false });
-
-  state.dom.nextBtn.addEventListener('click', () => void advance(rt, state));
-  state.dom.backBtn.addEventListener('click', () => void revert(rt, state));
-  state.dom.abortBtn.addEventListener('click', () => void abort(rt, state));
-  state.dom.resetBtn.addEventListener('click', () => resetCorners(rt, state));
-
-  state.eventSubs.push(
-    rt.events.on(WIZARD_EVENTS.MarkerTransform, (payload) => {
-      const data = payload as MarkerTransformEvent;
-      state.markerTransform = { ...data.transform };
-    }),
-  );
-
-  setStep(rt, state, 'markers');
-}
-
-export async function stopControl(state: ControlState): Promise<void> {
-  for (const s of state.eventSubs) s.unsubscribe();
-  for (const s of state.driverSubs) s.unsubscribe();
-  if (state.downHandler) state.dom.overlay.removeEventListener('mousedown', state.downHandler);
-  if (state.moveHandler) state.dom.overlay.removeEventListener('mousemove', state.moveHandler);
-  if (state.upHandler) state.dom.overlay.removeEventListener('mouseup', state.upHandler);
-  if (state.keyHandler) document.removeEventListener('keydown', state.keyHandler);
-  if (state.wheelHandler) document.removeEventListener('wheel', state.wheelHandler);
-  if (state.resizeHandler) window.removeEventListener('resize', state.resizeHandler);
-  if (state.resizeObserver) state.resizeObserver.disconnect();
-  state.dom.root.remove();
-}
-
-function button(text: string, color?: string): HTMLButtonElement {
-  const btn = document.createElement('button');
-  btn.textContent = text;
-  btn.style.cssText = `
-    background:${color ?? '#1f2937'};
-    color:#fff;
-    border:1px solid rgba(255,255,255,0.08);
-    padding:8px 14px;
-    font:12px ui-monospace,monospace;
-    cursor:pointer;
-    border-radius:4px;
-  `;
-  return btn;
-}
-
-function setStep(rt: ExperienceRuntimeContext, state: ControlState, step: WizardStep): void {
-  state.step = step;
-  state.dom.stepTitle.textContent = stepTitle(state, step);
-  state.dom.stepHelp.textContent = stepHelp(state, step);
-  state.dom.resetBtn.style.display = step === 'pool-corners' ? 'inline-block' : 'none';
-  state.dom.nextBtn.disabled = !canAdvance(state);
-  state.dom.backBtn.disabled = step === 'markers' || step === 'done' || step === 'compute';
-  state.dom.nextBtn.textContent = step === 'preview' ? 'Done (Space)' : 'Next (Space)';
-  updateStatus(state);
-  drawOverlay(state);
-
-  void rt.events.emit(WIZARD_EVENTS.Step, { step });
-
-  if (step === 'compute') {
-    void runCompute(rt, state);
-  }
-}
-
-function canAdvance(state: ControlState): boolean {
-  switch (state.step) {
-    case 'markers':
-      // Allow advance even with partial detection; user knows best.
-      return true;
-    case 'pool-corners':
-      return state.corners.length === 4;
-    case 'compute':
-      return false;
-    case 'preview':
-      return true;
-    default:
-      return false;
-  }
-}
-
-function updateStatus(state: ControlState): void {
-  let text = '';
-  switch (state.step) {
-    case 'markers':
-      text = `markers detected: ${state.detectedMarkers}/${state.totalMarkers}`;
-      break;
-    case 'pool-corners':
-      text = `corners: ${state.corners.length}/4`;
-      break;
-    case 'compute':
-      text = 'computing…';
-      break;
-    case 'preview':
-      text = 'press Done to finish';
-      break;
-    case 'done':
-      text = 'done · closing';
-      break;
-    case 'abort':
-      text = 'aborted';
-      break;
-  }
-  state.dom.status.textContent = text;
-  state.dom.nextBtn.disabled = !canAdvance(state);
-}
-
-function drawCamera(state: ControlState): void {
-  const ctx = state.dom.cameraCanvas.getContext('2d');
-  if (!ctx) return;
-  const canvas = state.dom.cameraCanvas;
-  ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  if (!state.camFrame) return;
-  // Letterbox to preserve aspect ratio.
-  const aspect = state.camFrame.naturalWidth / state.camFrame.naturalHeight;
-  const cAspect = canvas.width / canvas.height;
-  let dw, dh, dx, dy;
-  if (aspect > cAspect) {
-    dw = canvas.width;
-    dh = canvas.width / aspect;
-    dx = 0;
-    dy = (canvas.height - dh) / 2;
-  } else {
-    dh = canvas.height;
-    dw = canvas.height * aspect;
-    dy = 0;
-    dx = (canvas.width - dw) / 2;
-  }
-  ctx.drawImage(state.camFrame, dx, dy, dw, dh);
-}
-
-const CORNER_LABELS = ['TL', 'TR', 'BR', 'BL'] as const;
 const CORNER_HIT_RADIUS_PX = 28;
 
-function drawOverlay(state: ControlState): void {
-  const ctx = state.dom.overlay.getContext('2d');
-  if (!ctx) return;
-  const canvas = state.dom.overlay;
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+interface View {
+  readonly root: HTMLDivElement;
+  readonly stepTitle: HTMLDivElement;
+  readonly stepHelp: HTMLDivElement;
+  readonly body: HTMLDivElement;
+  readonly camera: CanvasRenderingContext2D;
+  readonly overlay: CanvasRenderingContext2D;
+  readonly status: HTMLDivElement;
+  readonly back: HTMLButtonElement;
+  readonly next: HTMLButtonElement;
+  readonly cancel: HTMLButtonElement;
+  readonly reset: HTMLButtonElement;
+}
 
-  if (state.step === 'pool-corners' && state.corners.length > 0) {
-    const { dx, dy, dw, dh } = imageRectInCanvas(state);
+interface Rect {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
 
-    // Polygon fill + stroke
+/** Starts the control window. Returns what removes it. */
+export async function startControl(
+  rt: ExperienceRuntimeContext,
+  target: CalibrationTarget,
+): Promise<() => void> {
+  rt.log.info('control window starting', { target: target.appSlug });
+  // Start from the corners of the last calibration, so a recalibration keeps them.
+  const previous = await loadCameraProjectorSurfaceCalibration(rt, { appSlug: target.appSlug });
+  const view = createView();
+  new ControlWindow(rt, target, view, initialWizard(previous?.focusQuad ?? [])).start();
+  return () => view.root.remove();
+}
+
+class ControlWindow {
+  private frame: HTMLImageElement | null = null;
+  private detectedMarkers = 0;
+  private transform: MarkerTransform = DEFAULT_MARKER_TRANSFORM;
+  private dragging = -1;
+  private saving = false;
+
+  constructor(
+    private readonly rt: ExperienceRuntimeContext,
+    private readonly target: CalibrationTarget,
+    private readonly view: View,
+    private wizard: WizardState,
+  ) {}
+
+  start(): void {
+    const { rt, view } = this;
+    const signal = rt.signal;
+
+    rt.drivers.on('camera', 'color', (payload) => {
+      const jpeg = (payload as { jpeg_base64?: unknown } | null)?.jpeg_base64;
+      if (typeof jpeg !== 'string') return;
+      const img = new Image();
+      img.onload = () => {
+        this.frame = img;
+        this.draw();
+      };
+      img.src = `data:image/jpeg;base64,${jpeg}`;
+    });
+    rt.drivers.on('calibration', 'detection', (payload) => {
+      const detected = (payload as { detected?: unknown } | null)?.detected;
+      if (typeof detected !== 'number') return;
+      this.detectedMarkers = detected;
+      this.updateStatus();
+    });
+
+    // The header's help text wraps differently between steps, which resizes
+    // the body without a window resize.
+    const resize = new ResizeObserver(() => this.resize());
+    resize.observe(view.body);
+    signal.addEventListener('abort', () => resize.disconnect());
+
+    const overlay = view.overlay.canvas;
+    overlay.addEventListener('mousedown', (e) => this.pointerDown(e), { signal });
+    overlay.addEventListener('mousemove', (e) => this.pointerMove(e), { signal });
+    window.addEventListener('mouseup', () => this.pointerUp(), { signal });
+    document.addEventListener('keydown', (e) => this.key(e), { signal });
+    document.addEventListener('wheel', (e) => this.wheel(e), { passive: false, signal });
+    view.next.addEventListener('click', () => this.next(), { signal });
+    view.back.addEventListener('click', () => this.back(), { signal });
+    view.cancel.addEventListener('click', () => this.cancel(), { signal });
+    view.reset.addEventListener('click', () => this.update(resetCorners(this.wizard)), { signal });
+
+    this.resize();
+    this.render();
+    this.broadcastStep();
+  }
+
+  /** Applies a wizard transition, then tells the projector and runs the step's work. */
+  private update(next: WizardState): void {
+    const stepChanged = next.step !== this.wizard.step;
+    this.wizard = next;
+    this.render();
+    if (!stepChanged) return;
+    this.broadcastStep();
+    if (next.step === 'compute') void this.compute();
+  }
+
+  private next(): void {
+    if (this.wizard.step === 'preview') {
+      void this.save();
+      return;
+    }
+    this.update(advance(this.wizard));
+  }
+
+  private back(): void {
+    this.update(goBack(this.wizard));
+  }
+
+  private cancel(): void {
+    if (this.wizard.step === 'done' || this.wizard.step === 'cancelled') return;
+    this.update(cancel(this.wizard));
+    void this.finish({ ok: false, cancelled: true, error: 'Calibration cancelled' });
+  }
+
+  private async compute(): Promise<void> {
+    const { rt, wizard } = this;
+    const frame = this.frame;
+    try {
+      const result = await rt.drivers.execute<ComputeResult>('calibration', 'compute', {
+        focus_quad: wizard.corners,
+        frame_size: frame ? { width: frame.naturalWidth, height: frame.naturalHeight } : undefined,
+        surface_size: this.target.options.surfaceSize,
+      });
+      const converted = toCalibration(result, wizard.corners);
+      if (!converted.ok) throw new Error(converted.error);
+      rt.log.info('homography computed', {
+        markers: result.markers,
+        inliers: result.inliers,
+        errorMean: result.reprojection_error_mean,
+        errorMax: result.reprojection_error_max,
+        surface: result.surface_matrix !== null,
+      });
+      this.update(computeSucceeded(this.wizard, converted.calibration));
+    } catch (err) {
+      // The driver rejects when it can't compute, e.g. with too few markers.
+      const message = err instanceof Error ? err.message : String(err);
+      rt.log.warn('compute failed', { err: message });
+      this.update(computeFailed(this.wizard, `compute failed: ${message}`));
+    }
+  }
+
+  private async save(): Promise<void> {
+    const calibration = this.wizard.calibration;
+    if (this.saving || this.wizard.step !== 'preview' || !calibration) return;
+    this.saving = true;
+    this.render();
+    try {
+      await saveCameraProjectorSurfaceCalibration(this.rt, calibration, {
+        appSlug: this.target.appSlug,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.rt.log.error('saving the calibration failed', { err: message });
+      this.saving = false;
+      this.wizard = { ...this.wizard, error: `saving failed: ${message}` };
+      this.render();
+      return;
+    }
+    this.update(advance(this.wizard));
+    await this.finish({ ok: true });
+  }
+
+  private async finish(result: Parameters<typeof finishCalibration>[1]): Promise<void> {
+    try {
+      await finishCalibration(this.rt, result);
+    } catch (err) {
+      this.rt.log.error('could not report the end of the calibration', { err: String(err) });
+    }
+  }
+
+  private broadcastStep(): void {
+    const { step, calibration } = this.wizard;
+    if (step !== 'preview') {
+      this.emit(CalibrationWizardTopics.Step, { step } satisfies StepEvent);
+    } else if (calibration) {
+      const { homography, surfaceQuadDisplay } = calibration;
+      this.emit(CalibrationWizardTopics.Step, {
+        step,
+        homography,
+        surfaceQuadDisplay,
+      } satisfies StepEvent);
+    }
+  }
+
+  private emit(topic: string, data: unknown): void {
+    this.rt.events
+      .emit(topic, data)
+      .catch((err: unknown) => this.rt.log.warn(`${topic} broadcast failed`, { err: String(err) }));
+  }
+
+  // ── Input ────────────────────────────────────────────────────────────────
+
+  private key(e: KeyboardEvent): void {
+    if (this.wizard.step === 'markers') {
+      const pan: Record<string, [number, number]> = {
+        ArrowLeft: [-PAN_STEP, 0],
+        ArrowRight: [PAN_STEP, 0],
+        ArrowUp: [0, -PAN_STEP],
+        ArrowDown: [0, PAN_STEP],
+      };
+      const delta = pan[e.code];
+      if (delta) {
+        e.preventDefault();
+        this.setTransform({
+          ...this.transform,
+          offsetX: this.transform.offsetX + delta[0],
+          offsetY: this.transform.offsetY + delta[1],
+        });
+        return;
+      }
+    }
+    const actions: Record<string, () => void> = {
+      Space: () => this.next(),
+      Enter: () => this.next(),
+      Backspace: () => this.back(),
+      Escape: () => this.cancel(),
+      KeyR: () => this.update(resetCorners(this.wizard)),
+    };
+    const action = actions[e.code];
+    if (!action) return;
+    e.preventDefault();
+    action();
+  }
+
+  private wheel(e: WheelEvent): void {
+    if (this.wizard.step !== 'markers') return;
+    e.preventDefault();
+    const direction = e.deltaY < 0 ? 1 : -1;
+    const scale = Math.min(
+      MAX_SCALE,
+      Math.max(MIN_SCALE, this.transform.scale + direction * ZOOM_STEP),
+    );
+    this.setTransform({ ...this.transform, scale });
+  }
+
+  private setTransform(transform: MarkerTransform): void {
+    this.transform = transform;
+    this.emit(MARKER_TRANSFORM_TOPIC, transform);
+    this.updateStatus();
+  }
+
+  private pointerDown(e: MouseEvent): void {
+    if (this.wizard.step !== 'surface-corners') return;
+    const point = this.canvasPoint(e);
+    const hit = this.hitCorner(point);
+    if (hit >= 0) {
+      this.dragging = hit;
+      this.drawOverlay();
+      return;
+    }
+    const corner = this.normalised(point);
+    if (corner) this.update(addCorner(this.wizard, corner));
+  }
+
+  private pointerMove(e: MouseEvent): void {
+    if (this.wizard.step !== 'surface-corners') return;
+    const point = this.canvasPoint(e);
+    if (this.dragging >= 0) {
+      const corner = this.normalised(point);
+      if (corner) this.update(moveCorner(this.wizard, this.dragging, corner));
+      return;
+    }
+    this.view.overlay.canvas.style.cursor = this.hitCorner(point) >= 0 ? 'grab' : 'crosshair';
+  }
+
+  private pointerUp(): void {
+    if (this.dragging < 0) return;
+    this.dragging = -1;
+    this.view.overlay.canvas.style.cursor = 'crosshair';
+    this.drawOverlay();
+  }
+
+  /** A mouse position in canvas pixels, from the live CSS box, which may lag the backing store. */
+  private canvasPoint(e: MouseEvent): CalibrationPoint {
+    const canvas = this.view.overlay.canvas;
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) * (rect.width > 0 ? canvas.width / rect.width : 1),
+      y: (e.clientY - rect.top) * (rect.height > 0 ? canvas.height / rect.height : 1),
+    };
+  }
+
+  /** A canvas point in normalised camera coordinates, or `null` outside the image. */
+  private normalised(point: CalibrationPoint): CalibrationPoint | null {
+    const image = this.imageRect();
+    const x = (point.x - image.x) / image.width;
+    const y = (point.y - image.y) / image.height;
+    return x < 0 || y < 0 || x > 1 || y > 1 ? null : { x, y };
+  }
+
+  private hitCorner(point: CalibrationPoint): number {
+    const canvas = this.view.overlay.canvas;
+    const rect = canvas.getBoundingClientRect();
+    let best = -1;
+    let bestDistance = CORNER_HIT_RADIUS_PX * (rect.width > 0 ? canvas.width / rect.width : 1);
+    this.wizard.corners.forEach((corner, index) => {
+      const at = this.toCanvas(corner);
+      const distance = Math.hypot(point.x - at.x, point.y - at.y);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = index;
+      }
+    });
+    return best;
+  }
+
+  // ── Drawing ──────────────────────────────────────────────────────────────
+
+  /** Where the letterboxed camera image sits in the canvases. */
+  private imageRect(): Rect {
+    const { width, height } = this.view.camera.canvas;
+    const frame = this.frame;
+    if (!frame) return { x: 0, y: 0, width, height };
+    const reference = { width: frame.naturalWidth, height: frame.naturalHeight };
+    const fit = computeFit({ width, height }, reference, 'contain');
+    return {
+      x: fit.offsetX,
+      y: fit.offsetY,
+      width: reference.width * fit.scaleX,
+      height: reference.height * fit.scaleY,
+    };
+  }
+
+  private toCanvas(corner: CalibrationPoint): CalibrationPoint {
+    const image = this.imageRect();
+    return { x: image.x + corner.x * image.width, y: image.y + corner.y * image.height };
+  }
+
+  private resize(): void {
+    const dpr = window.devicePixelRatio || 1;
+    const rect = this.view.body.getBoundingClientRect();
+    const width = Math.max(1, Math.round(rect.width * dpr));
+    const height = Math.max(1, Math.round(rect.height * dpr));
+    for (const canvas of [this.view.camera.canvas, this.view.overlay.canvas]) {
+      if (canvas.width === width && canvas.height === height) continue;
+      canvas.width = width;
+      canvas.height = height;
+    }
+    this.draw();
+  }
+
+  private render(): void {
+    const { view, wizard } = this;
+    const copy = this.stepCopy(wizard.step);
+    view.stepTitle.textContent = copy.title;
+    view.stepHelp.textContent = copy.help;
+    view.reset.style.display = wizard.step === 'surface-corners' ? 'inline-block' : 'none';
+    view.back.disabled = this.saving || !canGoBack(wizard);
+    view.next.disabled = this.saving || !canAdvance(wizard);
+    view.next.textContent = wizard.step === 'preview' ? 'Done (Space)' : 'Next (Space)';
+    this.updateStatus();
+    this.drawOverlay();
+  }
+
+  private stepCopy(step: WizardStep): { title: string; help: string } {
+    const custom = isFlowStep(step) ? this.target.options.stepCopy?.[step] : undefined;
+    return { title: custom?.title ?? STEP_TITLES[step], help: custom?.help ?? STEP_HELP[step] };
+  }
+
+  private updateStatus(): void {
+    const { wizard, transform } = this;
+    const texts: Record<WizardStep, string> = {
+      markers: `markers detected: ${this.detectedMarkers}/${MARKER_COUNT} · ↔ ${transform.offsetX} ↕ ${transform.offsetY} · zoom ${Math.round(transform.scale * 100)}%`,
+      'surface-corners': `corners: ${wizard.corners.length}/4`,
+      compute: 'computing…',
+      preview: this.saving ? 'saving…' : 'press Done to save',
+      done: 'saved · closing',
+      cancelled: 'cancelled',
+    };
+    const error =
+      wizard.step === 'surface-corners' || wizard.step === 'preview' ? wizard.error : null;
+    this.view.status.textContent = error ? `${texts[wizard.step]} · ${error}` : texts[wizard.step];
+    this.view.status.style.background = error ? 'rgba(239,68,68,0.85)' : 'rgba(0,0,0,0.7)';
+  }
+
+  private draw(): void {
+    const ctx = this.view.camera;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    if (this.frame) {
+      const image = this.imageRect();
+      ctx.drawImage(this.frame, image.x, image.y, image.width, image.height);
+    }
+    this.drawOverlay();
+  }
+
+  private drawOverlay(): void {
+    const ctx = this.view.overlay;
+    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    const corners = this.wizard.corners.map((corner) => this.toCanvas(corner));
+    if (this.wizard.step !== 'surface-corners' || corners.length === 0) return;
+
     ctx.strokeStyle = '#4ade80';
     ctx.lineWidth = 3;
     ctx.beginPath();
-    state.corners.forEach((p, i) => {
-      const x = dx + p.x * dw;
-      const y = dy + p.y * dh;
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    if (state.corners.length === 4) {
+    corners.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+    if (corners.length === 4) {
       ctx.closePath();
       ctx.fillStyle = 'rgba(74,222,128,0.12)';
       ctx.fill();
     }
     ctx.stroke();
 
-    // Corner handles with labels
-    for (let i = 0; i < state.corners.length; i++) {
-      const p = state.corners[i]!;
-      const x = dx + p.x * dw;
-      const y = dy + p.y * dh;
-      const active = i === state.draggingIdx;
-      const radius = active ? 12 : 8;
+    const labels = cornerLabels(this.target.options);
+    ctx.font = 'bold 10px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    corners.forEach((p, i) => {
+      const active = i === this.dragging;
       ctx.fillStyle = active ? '#22d3ee' : '#4ade80';
       ctx.beginPath();
-      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, active ? 12 : 8, 0, Math.PI * 2);
       ctx.fill();
       ctx.strokeStyle = '#000';
       ctx.lineWidth = 1;
       ctx.stroke();
-      // Label
       ctx.fillStyle = '#000';
-      ctx.font = 'bold 10px ui-monospace, monospace';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      const labels = state.options.cornerLabels ?? CORNER_LABELS;
-      ctx.fillText(labels[i] ?? `${i + 1}`, x, y);
-    }
+      ctx.fillText(labels[i] ?? `${i + 1}`, p.x, p.y);
+    });
   }
 }
 
-function imageRectInCanvas(state: ControlState): {
-  dx: number;
-  dy: number;
-  dw: number;
-  dh: number;
-} {
-  const canvas = state.dom.overlay;
-  if (!state.camFrameSize) return { dx: 0, dy: 0, dw: canvas.width, dh: canvas.height };
-  const aspect = state.camFrameSize.w / state.camFrameSize.h;
-  const cAspect = canvas.width / canvas.height;
-  if (aspect > cAspect) {
-    const dw = canvas.width;
-    const dh = canvas.width / aspect;
-    return { dx: 0, dy: (canvas.height - dh) / 2, dw, dh };
-  }
-  const dh = canvas.height;
-  const dw = canvas.height * aspect;
-  return { dx: (canvas.width - dw) / 2, dy: 0, dw, dh };
+function isFlowStep(step: WizardStep): step is CameraProjectorSurfaceStep {
+  return step !== 'done' && step !== 'cancelled';
 }
 
-/** Convert a MouseEvent to canvas-pixel coords. Uses the live rect-to-buffer
- * ratio (not `devicePixelRatio`) so hit-testing stays correct even if the
- * canvas buffer is briefly out of sync with the CSS box. */
-function mouseToCanvas(state: ControlState, e: MouseEvent): { px: number; py: number } {
-  const rect = state.dom.overlay.getBoundingClientRect();
-  const scaleX = rect.width > 0 ? state.dom.overlay.width / rect.width : 1;
-  const scaleY = rect.height > 0 ? state.dom.overlay.height / rect.height : 1;
-  return { px: (e.clientX - rect.left) * scaleX, py: (e.clientY - rect.top) * scaleY };
-}
-
-/** Convert canvas-pixel coords to normalised image coords (0..1). */
-function canvasToNorm(
-  state: ControlState,
-  px: number,
-  py: number,
-): { u: number; v: number } | null {
-  const { dx, dy, dw, dh } = imageRectInCanvas(state);
-  if (px < dx || py < dy || px > dx + dw || py > dy + dh) return null;
-  return { u: (px - dx) / dw, v: (py - dy) / dh };
-}
-
-/** Find the index of the corner closest to (px, py), or -1. */
-function hitTestCorner(state: ControlState, px: number, py: number): number {
-  const { dx, dy, dw, dh } = imageRectInCanvas(state);
-  const rect = state.dom.overlay.getBoundingClientRect();
-  const scale = rect.width > 0 ? state.dom.overlay.width / rect.width : 1;
-  const hitR = CORNER_HIT_RADIUS_PX * scale;
-  let bestIdx = -1;
-  let bestDist = hitR;
-  for (let i = 0; i < state.corners.length; i++) {
-    const p = state.corners[i]!;
-    const cx = dx + p.x * dw;
-    const cy = dy + p.y * dh;
-    const dist = Math.hypot(px - cx, py - cy);
-    if (dist < bestDist) {
-      bestDist = dist;
-      bestIdx = i;
-    }
-  }
-  return bestIdx;
-}
-
-function onPointerDown(rt: ExperienceRuntimeContext, state: ControlState, e: MouseEvent): void {
-  if (state.step !== 'pool-corners') return;
-  const { px, py } = mouseToCanvas(state, e);
-  const hit = hitTestCorner(state, px, py);
-  if (hit >= 0) {
-    // Start dragging an existing corner.
-    state.draggingIdx = hit;
-    drawOverlay(state);
-    return;
-  }
-  // No corner hit — add a new corner if fewer than 4 exist.
-  if (state.corners.length >= 4) return;
-  const norm = canvasToNorm(state, px, py);
-  if (!norm) return;
-  state.corners.push({ x: norm.u, y: norm.v });
-  void rt.events.emit(WIZARD_EVENTS.Corners, { points: state.corners } satisfies CornersEvent);
-  drawOverlay(state);
-  updateStatus(state);
-}
-
-function onPointerMove(_rt: ExperienceRuntimeContext, state: ControlState, e: MouseEvent): void {
-  if (state.step !== 'pool-corners') return;
-  const { px, py } = mouseToCanvas(state, e);
-  if (state.draggingIdx >= 0) {
-    const norm = canvasToNorm(state, px, py);
-    if (norm) {
-      state.corners[state.draggingIdx] = { x: norm.u, y: norm.v };
-      drawOverlay(state);
-    }
-    return;
-  }
-  // Cursor feedback: pointer near a handle, crosshair otherwise.
-  const hit = hitTestCorner(state, px, py);
-  state.dom.overlay.style.cursor = hit >= 0 ? 'grab' : 'crosshair';
-}
-
-function onPointerUp(rt: ExperienceRuntimeContext, state: ControlState, _e: MouseEvent): void {
-  if (state.draggingIdx < 0) return;
-  state.draggingIdx = -1;
-  state.dom.overlay.style.cursor = 'crosshair';
-  void rt.events.emit(WIZARD_EVENTS.Corners, { points: state.corners } satisfies CornersEvent);
-  drawOverlay(state);
-  updateStatus(state);
-}
-
-function resetCorners(rt: ExperienceRuntimeContext, state: ControlState): void {
-  if (state.step !== 'pool-corners') return;
-  state.corners = [];
-  void rt.events.emit(WIZARD_EVENTS.Corners, { points: state.corners } satisfies CornersEvent);
-  drawOverlay(state);
-  updateStatus(state);
-}
-
-async function onKey(
-  rt: ExperienceRuntimeContext,
-  state: ControlState,
-  e: KeyboardEvent,
-): Promise<void> {
-  if (state.step === 'markers') {
-    let panHandled = true;
-    switch (e.code) {
-      case 'ArrowLeft':
-        state.markerTransform.offsetX -= PAN_STEP;
-        break;
-      case 'ArrowRight':
-        state.markerTransform.offsetX += PAN_STEP;
-        break;
-      case 'ArrowUp':
-        state.markerTransform.offsetY -= PAN_STEP;
-        break;
-      case 'ArrowDown':
-        state.markerTransform.offsetY += PAN_STEP;
-        break;
-      default:
-        panHandled = false;
-    }
-    if (panHandled) {
-      e.preventDefault();
-      void rt.events.emit(WIZARD_EVENTS.MarkerTransform, {
-        transform: state.markerTransform,
-      } satisfies MarkerTransformEvent);
-      return;
-    }
-  }
-
-  if (e.code === 'Space' || e.code === 'Enter') {
-    e.preventDefault();
-    await advance(rt, state);
-  } else if (e.code === 'Backspace') {
-    e.preventDefault();
-    await revert(rt, state);
-  } else if (e.code === 'Escape') {
-    e.preventDefault();
-    await abort(rt, state);
-  } else if (e.code === 'KeyR') {
-    e.preventDefault();
-    resetCorners(rt, state);
-  }
-}
-
-async function advance(rt: ExperienceRuntimeContext, state: ControlState): Promise<void> {
-  if (!canAdvance(state)) return;
-  const idx = ORDERED_STEPS.indexOf(state.step);
-  if (idx < 0 || idx >= ORDERED_STEPS.length - 1) return;
-  const next = ORDERED_STEPS[idx + 1]!;
-  if (state.step === 'pool-corners') {
-    await persistCorners(rt, state);
-  }
-  if (next === 'done') {
-    await persistCalibrationStatus(state);
-    setStep(rt, state, 'done');
-    await rt.events.emit(WIZARD_EVENTS.Finished, { ok: true });
-    return;
-  }
-  setStep(rt, state, next);
-}
-
-async function revert(rt: ExperienceRuntimeContext, state: ControlState): Promise<void> {
-  if (state.step === 'markers' || state.step === 'done' || state.step === 'compute') return;
-  const idx = ORDERED_STEPS.indexOf(state.step);
-  if (idx <= 0) return;
-  setStep(rt, state, ORDERED_STEPS[idx - 1]!);
-}
-
-async function abort(rt: ExperienceRuntimeContext, state: ControlState): Promise<void> {
-  setStep(rt, state, 'abort');
-  await rt.events.emit(WIZARD_EVENTS.Aborted, { ok: true });
-  await rt.events.emit(WIZARD_EVENTS.Finished, { ok: false });
-}
-
-async function persistCorners(rt: ExperienceRuntimeContext, state: ControlState): Promise<void> {
-  if (state.corners.length !== 4) return;
-  if (!state.context) throw new Error('calibration context is unavailable');
-  const quad: FocusQuad = {
-    points: [state.corners[0]!, state.corners[1]!, state.corners[2]!, state.corners[3]!],
+function createView(): View {
+  setBodyFullscreen('#0a0a0a');
+  const element = <K extends keyof HTMLElementTagNameMap>(
+    tag: K,
+    css: string,
+    parent: HTMLElement,
+  ): HTMLElementTagNameMap[K] => {
+    const el = document.createElement(tag);
+    el.style.cssText = css;
+    parent.appendChild(el);
+    return el;
   };
-  await state.context.targetStorage.set(STORAGE_KEYS.FocusQuad, quad);
-  rt.log.info('focus quad saved', { points: 4, target: state.targetAppSlug ?? 'unknown' });
+
+  const root = element(
+    'div',
+    'position:fixed;inset:0;display:flex;flex-direction:column;background:#0a0a0a;color:#fff;font:13px ui-monospace,monospace;',
+    document.body,
+  );
+  const header = element(
+    'div',
+    'padding:12px 16px;border-bottom:1px solid #222;background:#111;display:flex;flex-direction:column;gap:4px;',
+    root,
+  );
+  const stepTitle = element('div', 'font-size:14px;font-weight:600;color:#f5f5f5;', header);
+  const stepHelp = element('div', 'font-size:12px;color:#a3a3a3;line-height:1.4;', header);
+  const body = element(
+    'div',
+    'flex:1;position:relative;overflow:hidden;background:#000;display:flex;align-items:center;justify-content:center;',
+    root,
+  );
+  const camera = context2d(
+    element('canvas', 'position:absolute;inset:0;width:100%;height:100%;display:block;', body),
+  );
+  const overlay = context2d(
+    element(
+      'canvas',
+      'position:absolute;inset:0;width:100%;height:100%;display:block;cursor:crosshair;',
+      body,
+    ),
+  );
+  const status = element(
+    'div',
+    'position:absolute;top:8px;right:8px;background:rgba(0,0,0,0.7);padding:6px 10px;border-radius:4px;font-size:11px;color:#d4d4d4;max-width:70%;',
+    body,
+  );
+  const footer = element(
+    'div',
+    'padding:10px 16px;border-top:1px solid #222;background:#111;display:flex;gap:8px;align-items:center;',
+    root,
+  );
+  const button = (text: string, color = '#1f2937'): HTMLButtonElement => {
+    const btn = element(
+      'button',
+      `background:${color};color:#fff;border:1px solid rgba(255,255,255,0.08);padding:8px 14px;font:12px ui-monospace,monospace;cursor:pointer;border-radius:4px;`,
+      footer,
+    );
+    btn.textContent = text;
+    return btn;
+  };
+  const cancelButton = button('Cancel (Esc)', '#7f1d1d');
+  const reset = button('Reset corners (r)');
+  element('div', 'flex:1;', footer);
+  const back = button('Back (⌫)');
+  const next = button('Next (Space)', '#166534');
+
+  return {
+    root,
+    stepTitle,
+    stepHelp,
+    body,
+    camera,
+    overlay,
+    status,
+    back,
+    next,
+    cancel: cancelButton,
+    reset,
+  };
 }
 
-async function runCompute(rt: ExperienceRuntimeContext, state: ControlState): Promise<void> {
-  if (!state.context) throw new Error('calibration context is unavailable');
-  state.busy = true;
-  updateStatus(state);
-  try {
-    // Send the focus_quad and frame_size to the driver so it can ALSO compute
-    // the camera->surface homography (and where the surface lands in display
-    // space). The surface reference resolution defaults to 1920x1080 -- it is
-    // what apps render in. Falls back gracefully if the camera frame size has
-    // not been observed yet.
-    const surfaceSize: SizeXY = state.options.surfaceSize ?? DEFAULT_SURFACE_SIZE;
-    const focusQuadParam =
-      state.corners.length === 4 ? state.corners.map((p) => ({ x: p.x, y: p.y })) : undefined;
-    const frameSizeParam = state.camFrameSize
-      ? { width: state.camFrameSize.w, height: state.camFrameSize.h }
-      : undefined;
-
-    const result = (await rt.drivers.execute('calibration', 'compute', {
-      focus_quad: focusQuadParam,
-      frame_size: frameSizeParam,
-      surface_size: surfaceSize,
-    })) as {
-      matrix?: number[];
-      inverse?: number[];
-      surface_matrix?: number[] | null;
-      surface_inverse?: number[] | null;
-      surface_quad_display?: Point2D[] | null;
-      surface_size?: SizeXY | null;
-      frame_size?: SizeXY | null;
-      inliers?: number;
-      samples?: number;
-      markers?: number;
-      reprojection_error_mean?: number;
-      reprojection_error_max?: number;
-    };
-    if (Array.isArray(result.matrix)) {
-      const storage = state.context.targetStorage;
-      await storage.set(STORAGE_KEYS.Homography, result.matrix);
-      if (Array.isArray(result.inverse)) {
-        await storage.set(STORAGE_KEYS.HomographyInverse, result.inverse);
-      }
-      // Surface-space matrices (camera -> apps' reference space).
-      if (Array.isArray(result.surface_matrix)) {
-        await storage.set(STORAGE_KEYS.HomographySurface, result.surface_matrix);
-      } else {
-        // Clear any stale surface matrix so apps fall back cleanly.
-        await storage.remove(STORAGE_KEYS.HomographySurface).catch(() => undefined);
-      }
-      if (Array.isArray(result.surface_inverse)) {
-        await storage.set(STORAGE_KEYS.HomographySurfaceInverse, result.surface_inverse);
-      } else {
-        await storage.remove(STORAGE_KEYS.HomographySurfaceInverse).catch(() => undefined);
-      }
-      // Where the physical surface lands in display space, needed for CSS
-      // matrix3d keystone correction in consumer apps.
-      if (Array.isArray(result.surface_quad_display) && result.surface_quad_display.length === 4) {
-        const quadDisplay: SurfaceQuadDisplay = {
-          points: [
-            result.surface_quad_display[0]!,
-            result.surface_quad_display[1]!,
-            result.surface_quad_display[2]!,
-            result.surface_quad_display[3]!,
-          ],
-        };
-        await storage.set(STORAGE_KEYS.SurfaceQuadDisplay, quadDisplay);
-      } else {
-        await storage.remove(STORAGE_KEYS.SurfaceQuadDisplay).catch(() => undefined);
-      }
-      if (result.surface_size) {
-        await storage.set(STORAGE_KEYS.SurfaceSize, result.surface_size);
-      }
-      if (result.frame_size) {
-        await storage.set(STORAGE_KEYS.FrameSize, result.frame_size);
-      }
-      const errMean = result.reprojection_error_mean ?? 0;
-      const errMax = result.reprojection_error_max ?? 0;
-      rt.log.info('homography persisted', {
-        inliers: result.inliers,
-        samples: result.samples,
-        markers: result.markers,
-        errorMean: errMean,
-        errorMax: errMax,
-        surface: Array.isArray(result.surface_matrix),
-      });
-    }
-  } catch (err) {
-    // The driver rejects when it cannot compute, e.g. too few markers detected.
-    const message = err instanceof Error ? err.message : String(err);
-    rt.log.error('compute failed', { err: message });
-    state.dom.status.textContent = `compute failed: ${message}`;
-    state.dom.status.style.background = 'rgba(239,68,68,0.85)';
-    state.busy = false;
-    state.dom.backBtn.disabled = false;
-    return;
-  }
-  state.busy = false;
-  setStep(rt, state, 'preview');
-}
-
-async function persistCalibrationStatus(state: ControlState): Promise<void> {
-  if (!state.context) throw new Error('calibration context is unavailable');
-  await state.context.markComplete();
-}
-
-function stepTitle(state: ControlState, step: WizardStep): string {
-  const key = cameraProjectorStep(step);
-  return (key ? state.options.stepCopy?.[key]?.title : undefined) ?? STEP_TITLES[step];
-}
-
-function stepHelp(state: ControlState, step: WizardStep): string {
-  const key = cameraProjectorStep(step);
-  return (key ? state.options.stepCopy?.[key]?.help : undefined) ?? STEP_HELP[step];
-}
-
-function cameraProjectorStep(
-  step: WizardStep,
-): 'markers' | 'pool-corners' | 'compute' | 'preview' | null {
-  switch (step) {
-    case 'markers':
-    case 'pool-corners':
-    case 'compute':
-    case 'preview':
-      return step;
-    default:
-      return null;
-  }
+function context2d(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('2D canvas is unavailable');
+  return ctx;
 }
