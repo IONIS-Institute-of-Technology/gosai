@@ -1,4 +1,12 @@
-import { app, BrowserWindow, powerSaveBlocker, screen, type Display } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  powerSaveBlocker,
+  screen,
+  type Display,
+  type WebContents,
+  type WebFrameMain,
+} from 'electron';
 import { join } from 'node:path';
 import { mintAppToken } from '@gosai/shared/auth';
 import { IPC_CHANNELS } from './channels.js';
@@ -112,6 +120,29 @@ export class WindowRegistry {
     return mintAppToken(this.options.dashboardToken, opts.appSlug, extra);
   }
 
+  /** True when `frame` is the dashboard's top-level frame showing the dashboard page. */
+  isDashboardFrame(frame: WebFrameMain | null | undefined): boolean {
+    const dashboard = this.dashboard;
+    if (!frame || !dashboard || dashboard.isDestroyed()) return false;
+    try {
+      const main = dashboard.webContents.mainFrame;
+      if (frame.processId !== main.processId || frame.routingId !== main.routingId) return false;
+      return new URL(frame.url).pathname.endsWith('/dashboard.html');
+    } catch {
+      return false;
+    }
+  }
+
+  /** True for app-host and control windows, which run app code. */
+  isAppWindow(contents: WebContents): boolean {
+    for (const handle of [...this.appHosts.values(), ...this.controlWindows.values()]) {
+      if (!handle.window.isDestroyed() && handle.window.webContents.id === contents.id) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   setShuttingDown(): void {
     this.shuttingDown = true;
   }
@@ -135,7 +166,7 @@ export class WindowRegistry {
         preload: join(this.options.rootDir, '../preload/dashboard.cjs'),
         contextIsolation: true,
         nodeIntegration: false,
-        sandbox: false,
+        sandbox: true,
       },
     });
 
@@ -189,7 +220,6 @@ export class WindowRegistry {
       autoHideMenuBar: true,
       show: false,
       webPreferences: {
-        preload: join(this.options.rootDir, '../preload/app-host.cjs'),
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
@@ -336,7 +366,6 @@ export class WindowRegistry {
       alwaysOnTop: true,
       show: false,
       webPreferences: {
-        preload: join(this.options.rootDir, '../preload/app-host.cjs'),
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,

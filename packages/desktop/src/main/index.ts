@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 import { generateDashboardToken } from '@gosai/shared/auth';
 import { registerIpc } from './ipc.js';
+import { installWebContentsGuards } from './security.js';
 import { WindowRegistry } from './windows.js';
 import { ServerRunner, shouldAutostartServer } from './server-runner.js';
 import { applyKioskPaths, resolveKioskConfig, runKiosk } from './kiosk.js';
@@ -38,6 +39,8 @@ delete process.env.GOSAI_DASHBOARD_TOKEN;
 
 const windows = new WindowRegistry({ rootDir: __dirname, dashboardToken });
 let serverRunner: ServerRunner | null = null;
+
+installWebContentsGuards((contents) => windows.isAppWindow(contents));
 
 app.whenReady().then(async () => {
   registerIpc({ windows });

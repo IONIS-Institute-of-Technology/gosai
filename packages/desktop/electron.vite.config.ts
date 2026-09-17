@@ -24,7 +24,6 @@ export default defineConfig({
       lib: {
         entry: {
           dashboard: resolve(__dirname, 'src/preload/dashboard.ts'),
-          appHost: resolve(__dirname, 'src/preload/app-host.ts'),
         },
         formats: ['cjs'],
       },

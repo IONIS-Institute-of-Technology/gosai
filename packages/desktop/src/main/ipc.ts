@@ -1,4 +1,5 @@
-import { ipcMain } from 'electron';
+import { ipcMain, type IpcMainInvokeEvent } from 'electron';
+import { isValidSlug } from '@gosai/shared/slug';
 import type { WindowRegistry } from './windows.js';
 import { IPC_CHANNELS } from './channels.js';
 
@@ -8,82 +9,129 @@ export interface IpcContext {
   readonly windows: WindowRegistry;
 }
 
+/**
+ * Every channel is for the dashboard only. Each handler checks that the
+ * sender is the dashboard's main frame and validates its arguments before
+ * touching a window.
+ */
 export function registerIpc(ctx: IpcContext): void {
-  ipcMain.handle(IPC_CHANNELS.Displays, () => ({
+  const handle = (channel: string, handler: (args: Args) => unknown): void => {
+    ipcMain.handle(channel, (event: IpcMainInvokeEvent, raw: unknown) => {
+      if (!ctx.windows.isDashboardFrame(event.senderFrame)) {
+        throw new Error(`${channel} is only available to the dashboard`);
+      }
+      return handler(new Args(channel, raw));
+    });
+  };
+
+  handle(IPC_CHANNELS.Displays, () => ({
     displays: ctx.windows.listDisplays(),
     primary: ctx.windows.primaryDisplay(),
   }));
 
-  ipcMain.handle(
-    IPC_CHANNELS.AppHostOpen,
-    (
-      _ev,
-      args: {
-        displayId: number;
-        appSlug: string;
-        experienceSlug: string;
-        fullscreen?: boolean;
-        targetAppSlug?: string;
-        driverBinding?: string;
-      },
-    ) => {
-      const handle = ctx.windows.openAppHost(args);
-      return {
-        windowId: handle.id,
-        displayId: handle.displayId,
-        appSlug: handle.appSlug,
-        experienceSlug: handle.experienceSlug,
-      };
-    },
+  handle(IPC_CHANNELS.AppHostOpen, (args) => {
+    const handle = ctx.windows.openAppHost({
+      displayId: args.integer('displayId'),
+      appSlug: args.slug('appSlug'),
+      experienceSlug: args.string('experienceSlug'),
+      ...args.optional('fullscreen', (key) => args.boolean(key)),
+      ...args.optional('targetAppSlug', (key) => args.slug(key)),
+      ...args.optional('driverBinding', (key) => args.slug(key)),
+    });
+    return {
+      windowId: handle.id,
+      displayId: handle.displayId,
+      appSlug: handle.appSlug,
+      experienceSlug: handle.experienceSlug,
+    };
+  });
+
+  handle(IPC_CHANNELS.AppHostClose, (args) => ctx.windows.closeAppHost(args.integer('windowId')));
+
+  handle(IPC_CHANNELS.AppHostList, () => ctx.windows.listAppHosts());
+
+  handle(IPC_CHANNELS.ExperienceEnd, (args) => {
+    ctx.windows.endExperience(args.slug('appSlug'), args.string('experienceSlug'));
+    return { ok: true };
+  });
+
+  handle(IPC_CHANNELS.ControlWindowOpen, (args) => {
+    const handle = ctx.windows.openControlWindow({
+      appSlug: args.slug('appSlug'),
+      experienceSlug: args.string('experienceSlug'),
+      ...args.optional('projectorDisplayId', (key) => args.integer(key)),
+      ...args.optional('targetAppSlug', (key) => args.slug(key)),
+      ...args.optional('driverBinding', (key) => args.slug(key)),
+      ...args.optional('width', (key) => args.integer(key)),
+      ...args.optional('height', (key) => args.integer(key)),
+      ...args.optional('title', (key) => args.string(key)),
+    });
+    return {
+      windowId: handle.id,
+      appSlug: handle.appSlug,
+      experienceSlug: handle.experienceSlug,
+    };
+  });
+
+  handle(IPC_CHANNELS.ControlWindowClose, (args) =>
+    ctx.windows.closeControlWindow(args.integer('windowId')),
   );
 
-  ipcMain.handle(IPC_CHANNELS.AppHostClose, (_ev, args: { windowId: number }) => {
-    return ctx.windows.closeAppHost(args.windowId);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.AppHostList, () => ctx.windows.listAppHosts());
-
-  ipcMain.handle(
-    IPC_CHANNELS.ExperienceEnd,
-    (_ev, args: { appSlug: string; experienceSlug: string }) => {
-      ctx.windows.endExperience(args.appSlug, args.experienceSlug);
-      return { ok: true };
-    },
+  handle(IPC_CHANNELS.ControlWindowHide, (args) =>
+    ctx.windows.setControlWindowVisible(args.integer('windowId'), false),
   );
 
-  ipcMain.handle(
-    IPC_CHANNELS.ControlWindowOpen,
-    (
-      _ev,
-      args: {
-        appSlug: string;
-        experienceSlug: string;
-        projectorDisplayId?: number;
-        targetAppSlug?: string;
-        driverBinding?: string;
-        width?: number;
-        height?: number;
-        title?: string;
-      },
-    ) => {
-      const handle = ctx.windows.openControlWindow(args);
-      return {
-        windowId: handle.id,
-        appSlug: handle.appSlug,
-        experienceSlug: handle.experienceSlug,
-      };
-    },
+  handle(IPC_CHANNELS.ControlWindowShow, (args) =>
+    ctx.windows.setControlWindowVisible(args.integer('windowId'), true),
   );
+}
 
-  ipcMain.handle(IPC_CHANNELS.ControlWindowClose, (_ev, args: { windowId: number }) => {
-    return ctx.windows.closeControlWindow(args.windowId);
-  });
+const MAX_STRING_LENGTH = 256;
 
-  ipcMain.handle(IPC_CHANNELS.ControlWindowHide, (_ev, args: { windowId: number }) => {
-    return ctx.windows.setControlWindowVisible(args.windowId, false);
-  });
+/** Reads typed fields from an IPC argument object, throwing on bad input. */
+class Args {
+  private readonly values: Record<string, unknown>;
 
-  ipcMain.handle(IPC_CHANNELS.ControlWindowShow, (_ev, args: { windowId: number }) => {
-    return ctx.windows.setControlWindowVisible(args.windowId, true);
-  });
+  constructor(
+    private readonly channel: string,
+    raw: unknown,
+  ) {
+    this.values = raw !== null && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  }
+
+  string(key: string): string {
+    const value = this.values[key];
+    if (typeof value !== 'string' || value.length === 0 || value.length > MAX_STRING_LENGTH) {
+      throw this.invalid(key);
+    }
+    return value;
+  }
+
+  slug(key: string): string {
+    const value = this.values[key];
+    if (!isValidSlug(value)) throw this.invalid(key);
+    return value;
+  }
+
+  integer(key: string): number {
+    const value = this.values[key];
+    if (typeof value !== 'number' || !Number.isSafeInteger(value)) throw this.invalid(key);
+    return value;
+  }
+
+  boolean(key: string): boolean {
+    const value = this.values[key];
+    if (typeof value !== 'boolean') throw this.invalid(key);
+    return value;
+  }
+
+  /** `{ [key]: read(key) }` when the field is present, `{}` otherwise. */
+  optional<K extends string, T>(key: K, read: (key: K) => T): { [P in K]?: T } {
+    if (this.values[key] === undefined) return {};
+    return { [key]: read(key) } as { [P in K]?: T };
+  }
+
+  private invalid(key: string): Error {
+    return new Error(`${this.channel}: invalid ${key}`);
+  }
 }
