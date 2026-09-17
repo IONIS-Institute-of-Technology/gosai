@@ -14,7 +14,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { isValidSlug } from '@gosai/shared/slug';
+import { assertSlug, isValidSlug } from '@gosai/shared/slug';
 import type { CalibrationSchema } from './kiosk-calibration.js';
 import { parseDisplayIndex, parseExtras, type LaunchArgs } from './launch-args.js';
 
@@ -141,8 +141,10 @@ function readManifest(appDir: string): AppManifest {
     throw new Error(`Not a GOSAI app: ${manifestPath} not found`);
   }
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as AppManifest;
-  if (typeof manifest.slug !== 'string' || !Array.isArray(manifest.experiences)) {
-    throw new Error(`${manifestPath} needs a "slug" and an "experiences" list`);
+  if (!Array.isArray(manifest.experiences)) {
+    throw new Error(`${manifestPath} needs an "experiences" list`);
   }
+  // The slug names directories under the kiosk home that get replaced.
+  assertSlug(manifest.slug, `${manifestPath}: slug`);
   return manifest;
 }

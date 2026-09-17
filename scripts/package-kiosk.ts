@@ -27,6 +27,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } fr
 import { basename, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { parseDisplayIndex, parseExtras } from '../packages/desktop/src/main/launch-args.js';
+import { isValidSlug, SLUG_PATTERN } from '@gosai/shared/slug';
 import { prepareBundle } from './prepare-bundle.js';
 import { hostTarget, parseTarget, TARGETS } from './targets.js';
 
@@ -104,7 +105,10 @@ const { appDir, target, experience, displayIndex, pythonExtras, windowed, skipBu
 const manifestPath = join(appDir, 'gosai.app.json');
 if (!existsSync(manifestPath)) fail(`not a GOSAI app: ${manifestPath} not found`);
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Manifest;
-if (!manifest.slug) fail('manifest has no "slug"');
+// The slug names staging and output directories that get deleted.
+if (!isValidSlug(manifest.slug)) {
+  fail(`manifest slug must match ${SLUG_PATTERN.source} (got ${JSON.stringify(manifest.slug)})`);
+}
 if (experience && !manifest.experiences.some((e) => e.slug === experience)) {
   fail(`experience "${experience}" not declared in ${manifest.slug}`);
 }

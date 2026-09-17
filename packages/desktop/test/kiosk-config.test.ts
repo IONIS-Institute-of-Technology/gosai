@@ -132,6 +132,11 @@ describe('resolveKioskConfig', () => {
       resolveKioskConfig(sources({ argv: ['--kiosk', appDir], env: { GOSAI_KIOSK_DISPLAY: 'x' } })),
     ).toThrow('GOSAI_KIOSK_DISPLAY must be a display index');
 
+    const traversal = writeApp(join(root, 'traversal'), '../..');
+    expect(() => resolveKioskConfig(sources({ argv: ['--kiosk', traversal] }))).toThrow(
+      'slug must match',
+    );
+
     const resources = mkdirp(join(root, 'resources'));
     writeFileSync(join(resources, 'kiosk.json'), JSON.stringify({ appSlug: '../pool' }));
     expect(() => resolveKioskConfig(sources({ resourcesPath: resources }))).toThrow('appSlug');
