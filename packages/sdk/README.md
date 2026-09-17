@@ -320,6 +320,11 @@ open.
 
 ### From the earlier calibration API
 
+Manifests in the earlier shape still load, with a deprecation warning in the
+server log: `{ "required", "entry" }` calibrates as `camera-projector-surface`
+without the options the entry module set, a `calibration` without `entry` is
+ignored, and so is a custom `statusKey`.
+
 | Before                                                                             | Now                                                          |
 | ---------------------------------------------------------------------------------- | ------------------------------------------------------------ |
 | `calibration.entry` module with `createCameraProjectorSurfaceCalibration(options)` | `calibration.kind` and `calibration.options` in the manifest |

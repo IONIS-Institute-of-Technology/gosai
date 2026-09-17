@@ -4,6 +4,7 @@ import {
   calibrationFlow,
   isBuiltinCalibrationKind,
   isCalibrated,
+  upgradeLegacyCalibration,
 } from '../src/calibration.js';
 import { parseCalibrationData } from '../src/schemas.js';
 
@@ -37,5 +38,15 @@ describe('calibration contract', () => {
       data: { anything: true },
     });
     expect(parseCalibrationData('acme-depth', undefined).success).toBe(false);
+  });
+
+  test('only shapes from before kinds are upgraded', () => {
+    const current = { kind: 'acme-depth', experience: 'setup' };
+    expect(upgradeLegacyCalibration(current)).toEqual({ calibration: current, warnings: [] });
+    expect(upgradeLegacyCalibration('nope')).toEqual({ calibration: 'nope', warnings: [] });
+    expect(upgradeLegacyCalibration({ required: true, entry: 'a.js' }).calibration).toEqual({
+      kind: 'camera-projector-surface',
+      required: true,
+    });
   });
 });

@@ -58,6 +58,56 @@ export interface AppCalibrationSchema {
   readonly experience?: string;
 }
 
+/** Where the camera-projector-surface flow used to mark an app as calibrated. */
+const LEGACY_STATUS_KEY = 'calibration_status';
+
+/**
+ * Converts a `calibration` object in the shape manifests used before kinds:
+ * `{ required, entry?, statusKey? }`. Returns the object to validate in its
+ * place (`undefined` to drop it) and a deprecation warning per change. The
+ * new shape, and anything that isn't an object, comes back as it is.
+ *
+ * - Without `entry`, the object never did anything and is dropped.
+ * - With `entry`, the module only ever held camera-projector-surface
+ *   options, so the app calibrates as that kind; the module's options are
+ *   ignored.
+ * - A custom `statusKey` is ignored.
+ */
+export function upgradeLegacyCalibration(calibration: unknown): {
+  readonly calibration: unknown;
+  readonly warnings: readonly string[];
+} {
+  if (typeof calibration !== 'object' || calibration === null || Array.isArray(calibration)) {
+    return { calibration, warnings: [] };
+  }
+  const legacy = calibration as Record<string, unknown>;
+  if ('kind' in legacy) return { calibration, warnings: [] };
+
+  const warnings: string[] = [];
+  const { entry, statusKey } = legacy;
+  if (statusKey !== undefined && statusKey !== LEGACY_STATUS_KEY) {
+    warnings.push(
+      `calibration.statusKey ${JSON.stringify(statusKey)} is deprecated and ignored; the calibration profile decides whether the app is calibrated, so calibrate the app again`,
+    );
+  }
+  if (entry === undefined) {
+    warnings.push(
+      'calibration without a kind or an entry is deprecated and ignored; remove it, or declare { "kind": ... }',
+    );
+    return { calibration: undefined, warnings };
+  }
+  warnings.push(
+    `calibration.entry is deprecated: the app now calibrates as "${CalibrationKinds.CameraProjectorSurface}" and the options exported by ${JSON.stringify(entry)} are ignored; declare { "kind", "options" } instead`,
+  );
+  return {
+    calibration: {
+      kind: CalibrationKinds.CameraProjectorSurface,
+      required: legacy.required === true,
+    },
+    warnings,
+  };
+}
+
 /** The built-in app that runs flows for built-in kinds. */
 export const CALIBRATION_RUNNER = {
   appSlug: 'calibration',

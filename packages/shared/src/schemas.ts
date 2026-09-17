@@ -16,6 +16,7 @@ import {
   CALIBRATION_KIND_PATTERN,
   CALIBRATION_PROFILE_VERSION,
   isBuiltinCalibrationKind,
+  upgradeLegacyCalibration,
   type AppCalibrationSchema,
   type BuiltinCalibrationKind,
   type CalibrationProfile,
@@ -468,16 +469,22 @@ export const appManifestSchema = z
     }
   });
 
-/** Parsed manifest, without `$schema`. */
+/**
+ * Parsed manifest, without `$schema`. A `calibration` object in its
+ * pre-kind shape is converted first (see `upgradeLegacyCalibration`), with a
+ * warning, so older apps keep working; the schema itself only describes the
+ * current shape.
+ */
 export function parseAppManifest(
   value: unknown,
 ):
   | { success: true; data: AppManifest; warnings: readonly string[] }
   | { success: false; error: string } {
-  const result = appManifestSchema.safeParse(value);
+  const upgraded = upgradeLegacyManifest(value);
+  const result = appManifestSchema.safeParse(upgraded.value);
   if (!result.success) return { success: false, error: formatZodError(result.error) };
   const { $schema: _schema, builtin, ...manifest } = result.data;
-  const warnings: string[] = [];
+  const warnings: string[] = [...upgraded.warnings];
   if (builtin !== undefined) {
     warnings.push('`builtin` is ignored; it comes from where the app is installed');
   }
@@ -486,6 +493,23 @@ export function parseAppManifest(
     if (!known.has(key)) warnings.push(`unknown field \`${key}\` is ignored`);
   }
   return { success: true, data: manifest satisfies AppManifest, warnings };
+}
+
+function upgradeLegacyManifest(value: unknown): {
+  value: unknown;
+  warnings: readonly string[];
+} {
+  if (typeof value !== 'object' || value === null || !('calibration' in value)) {
+    return { value, warnings: [] };
+  }
+  const { calibration, ...rest } = value as Record<string, unknown>;
+  const upgraded = upgradeLegacyCalibration(calibration);
+  if (upgraded.warnings.length === 0) return { value, warnings: [] };
+  return {
+    value:
+      upgraded.calibration === undefined ? rest : { ...rest, calibration: upgraded.calibration },
+    warnings: upgraded.warnings,
+  };
 }
 
 /** The first `required` cycle among experiences, as a slug path, or `null`. */

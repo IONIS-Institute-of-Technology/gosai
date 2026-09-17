@@ -307,15 +307,60 @@ describe('validateManifest', () => {
       ).toBe('setup');
     });
 
-    test('rejects the old entry-module shape and bad kinds', () => {
-      expect(() => withCalibration({ required: true, entry: 'dist/calibration.js' })).toThrow(
-        ManifestError,
-      );
-      expect(() => withCalibration({ required: false })).toThrow(ManifestError);
+    test('rejects bad kinds and mixes of the old and new shapes', () => {
       expect(() => withCalibration({ kind: 'Camera Surface' })).toThrow(ManifestError);
       expect(() => withCalibration({ kind: 'camera-projector-surface', required: 'yes' })).toThrow(
         ManifestError,
       );
+      expect(() =>
+        withCalibration({ kind: 'camera-projector-surface', entry: 'dist/calibration.js' }),
+      ).toThrow(ManifestError);
+    });
+
+    describe('shapes from before kinds', () => {
+      const legacy = (calibration: unknown) => {
+        const warnings: string[] = [];
+        const manifest = validateManifest(
+          PATH,
+          {
+            slug: 'c',
+            name: 'C',
+            version: '0.1.0',
+            experiences: [{ slug: 'a', name: 'A', entry: './a.ts' }],
+            calibration,
+          },
+          (warning) => warnings.push(warning),
+        );
+        return { calibration: manifest.calibration, warnings };
+      };
+
+      test('a calibration without kind or entry is dropped with a warning', () => {
+        const { calibration, warnings } = legacy({ required: false });
+        expect(calibration).toBeUndefined();
+        expect(warnings).toEqual([expect.stringContaining('deprecated and ignored')]);
+        expect(legacy({ required: true }).calibration).toBeUndefined();
+      });
+
+      test('an entry module becomes camera-projector-surface, ignoring its options', () => {
+        const { calibration, warnings } = legacy({ required: true, entry: 'dist/calibration.js' });
+        expect(calibration).toEqual({ kind: 'camera-projector-surface', required: true });
+        expect(warnings).toEqual([
+          expect.stringContaining('options exported by "dist/calibration.js" are ignored'),
+        ]);
+        expect(legacy({ required: false, entry: 'x.js' }).calibration).toEqual({
+          kind: 'camera-projector-surface',
+          required: false,
+        });
+      });
+
+      test('a custom statusKey is ignored with a warning, the default one silently', () => {
+        const custom = legacy({ required: true, entry: 'x.js', statusKey: 'pool_calibrated' });
+        expect(custom.calibration).toEqual({ kind: 'camera-projector-surface', required: true });
+        expect(custom.warnings).toHaveLength(2);
+        expect(custom.warnings[0]).toContain('"pool_calibrated" is deprecated and ignored');
+        const standard = legacy({ required: true, entry: 'x.js', statusKey: 'calibration_status' });
+        expect(standard.warnings).toHaveLength(1);
+      });
     });
   });
 
