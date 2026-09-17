@@ -170,3 +170,18 @@ def test_ball_input_size_comes_from_the_session() -> None:
     assert ball._input_spec(session([1, 3, 640, 960])) == ("images", (640, 960))
     with pytest.raises(RuntimeError, match="fixed NCHW"):
         ball._input_spec(session([1, 3, "height", "width"]))
+
+
+def test_ball_reads_the_accelerator_env_in_pre_run(
+    identity_model: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GOSAI_CUDA_DEVICE_ID", "first")
+    monkeypatch.setattr(ball, "resolve_model", lambda model, log_fn: identity_model)
+    context = SimpleNamespace(
+        log=_log, subscribe=lambda *args: None, unsubscribe=lambda *args: None
+    )
+
+    driver = ball.BallDriver(context)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="GOSAI_CUDA_DEVICE_ID"):
+        driver.pre_run()

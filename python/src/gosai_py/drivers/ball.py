@@ -60,7 +60,7 @@ from typing import Any, ClassVar, NamedTuple
 
 from gosai_py.driver import DriverContext
 from gosai_py.processor import BaseProcessor
-from gosai_py.runtime import AcceleratorConfig, create_onnx_session
+from gosai_py.runtime import create_onnx_session
 from gosai_py.runtime.models import Model, resolve_model
 
 MODEL = Model.bundled(Path(__file__).resolve().parent / "ball_models" / "ball.onnx")
@@ -367,7 +367,8 @@ class BallDriver(BaseProcessor):
                                      match_radius=110.0, min_match_radius=45.0)
         self._frame_idx = 0
         self._skip = 0  # 0 = process every frame; raise on slow hardware
-        self._cuda_device_id = AcceleratorConfig.from_env().cuda_device_id
+        # None uses GOSAI_CUDA_DEVICE_ID, read when the session is created.
+        self._cuda_device_id: int | None = None
 
     def pre_run(self) -> None:
         super().pre_run()
