@@ -21,6 +21,7 @@ from __future__ import annotations
 import importlib
 import keyword
 import pkgutil
+import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -33,6 +34,10 @@ from gosai_py.driver import BaseDriver
 from gosai_py.drivers import driver_classes_in
 
 MANIFEST_FILE = "gosai.app.json"
+
+# The names built-in drivers use. The server adds `<app slug>/` in front, and
+# `gosai-sdk gen-driver-types` accepts both forms.
+DRIVER_NAME = re.compile(r"[a-z][a-z0-9_]*")
 
 
 class AppDriversError(Exception):
@@ -84,9 +89,26 @@ def app_driver_classes(
     classes: dict[str, type[BaseDriver]] = {}
     for module in modules:
         for cls in driver_classes_in(module):
-            if cls.__module__ == package.__name__ or cls.__module__.startswith(prefix):
-                classes[cls.name] = cls
+            if cls.__module__ != package.__name__ and not cls.__module__.startswith(prefix):
+                continue
+            problem = _name_problem(cls)
+            if problem is not None:
+                on_error(f"{cls.__module__}.{cls.__qualname__}", ValueError(problem))
+                continue
+            classes[cls.name] = cls
     return list(classes.values())
+
+
+def _name_problem(cls: type[BaseDriver]) -> str | None:
+    """Why the driver's name or dependencies can't be used, or None."""
+    names = [("name", cls.name), *(("dependency", dep) for dep in cls.dependencies)]
+    for kind, value in names:
+        if not isinstance(value, str) or DRIVER_NAME.fullmatch(value) is None:
+            return (
+                f"driver {kind} {value!r} must be lowercase letters, digits and underscores, "
+                "starting with a letter, such as my_driver"
+            )
+    return None
 
 
 def read_app_manifest(app_dir: str | Path) -> tuple[str, Path]:

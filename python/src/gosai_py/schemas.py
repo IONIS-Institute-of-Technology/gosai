@@ -230,7 +230,14 @@ def main(argv: Sequence[str] = ()) -> int:
         except AppDriversError as exc:
             print(str(exc), file=sys.stderr)
             return 1
-        classes = sorted(app_driver_classes(package, on_error), key=lambda cls: cls.name)
+        # The app directory may be read-only or signed: keep bytecode out of it
+        # unless PYTHONPYCACHEPREFIX sends it elsewhere.
+        write_bytecode = sys.dont_write_bytecode
+        sys.dont_write_bytecode = write_bytecode or sys.pycache_prefix is None
+        try:
+            classes = sorted(app_driver_classes(package, on_error), key=lambda cls: cls.name)
+        finally:
+            sys.dont_write_bytecode = write_bytecode
         output = {"drivers": [describe_app_driver(slug, cls) for cls in classes]}
     sys.stdout.buffer.write(msgspec.json.format(msgspec.json.encode(output)) + b"\n")
     return 1 if failures else 0

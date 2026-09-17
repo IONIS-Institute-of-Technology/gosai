@@ -114,6 +114,38 @@ def test_a_broken_module_does_not_hide_the_others(tmp_path: Path) -> None:
     assert errors == [f"{package.name}.broken"]
 
 
+def test_reports_drivers_with_names_the_server_cannot_use(tmp_path: Path) -> None:
+    bad = """
+from gosai_py import BaseDriver
+
+
+class Slashed(BaseDriver):
+    name = "other-app/counter"
+
+
+class Capital(BaseDriver):
+    name = "Counter"
+
+
+class BadDependency(BaseDriver):
+    name = "fine_name"
+    dependencies = ("hand-pose",)
+"""
+    package = make_package(tmp_path, {"__init__.py": "", "counter.py": COUNTER, "bad.py": bad})
+    errors: dict[str, str] = {}
+
+    classes = app_driver_classes(package, lambda module, exc: errors.update({module: str(exc)}))
+
+    assert [cls.name for cls in classes] == ["counter"]
+    assert sorted(errors) == [
+        f"{package.name}.bad.BadDependency",
+        f"{package.name}.bad.Capital",
+        f"{package.name}.bad.Slashed",
+    ]
+    assert "'other-app/counter'" in errors[f"{package.name}.bad.Slashed"]
+    assert "dependency 'hand-pose'" in errors[f"{package.name}.bad.BadDependency"]
+
+
 def test_refuses_package_names_that_are_taken_or_invalid(tmp_path: Path) -> None:
     (tmp_path / "json").mkdir()
     with pytest.raises(AppDriversError, match="already taken"):
@@ -193,6 +225,7 @@ def test_schema_dump_names_app_drivers_like_the_server(
     counter = by_name["hello-app/counter"]["schema"]
     assert counter["events"]["count"]["payload"] == {"$ref": "#/$defs/Count"}
     assert counter["actions"]["reset"]["params"] == {"type": "integer"}
+    assert not list(package.rglob("__pycache__")), "the dump wrote bytecode into the app"
 
 
 def test_schema_dump_rejects_a_manifest_without_drivers(
@@ -207,6 +240,12 @@ def test_schema_dump_rejects_a_manifest_without_drivers(
 
 def test_manifest_driver_path_stays_inside_the_app(tmp_path: Path) -> None:
     app = write_app(tmp_path, "../elsewhere")
+    with pytest.raises(AppDriversError, match="inside the app"):
+        read_app_manifest(app)
+    # A symlink leading out of the app counts as outside too, as on the server.
+    (tmp_path / "outside_drivers").mkdir()
+    (app / "linked_drivers").symlink_to(tmp_path / "outside_drivers")
+    write_app(tmp_path, "linked_drivers")
     with pytest.raises(AppDriversError, match="inside the app"):
         read_app_manifest(app)
 
