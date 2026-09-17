@@ -80,6 +80,10 @@ A starter app lives in [`templates/basic`](../../templates/basic).
       },
     ],
   },
+  "network": {
+    // origins beyond the defaults, see "Network access" below
+    "connect": ["ws://relay.local:8080"],
+  },
 }
 ```
 
@@ -140,15 +144,19 @@ doesn't make motion jump. Scale motion by `deltaMs` rather than per frame.
 If `render` throws, the runtime logs each distinct error once. After 60
 consecutive failing frames it stops the experience and the window shows the
 error. If `init` or `start` throws, the runtime calls `stop` (when `init`
-succeeded), releases everything and shows the error.
+succeeded), releases everything and shows the error. When the window closes
+while `init` or `start` is still running, `rt.signal` aborts at once so the
+hook can bail out, and the experience stops once the hook returns.
 
 ### Cleanup
 
 When the experience stops, the runtime:
 
-- removes every `rt.drivers.on` and `rt.events.on` subscription still open,
-- aborts `rt.signal`,
-- closes `rt.audio` and the server connection.
+1. aborts `rt.signal` and removes every `rt.drivers.on` and `rt.events.on`
+   subscription still open, so nothing fires into a stopping experience,
+2. runs your `stop` hook, with the server connection still open for storage
+   writes, logs and driver actions,
+3. closes `rt.audio` and the server connection.
 
 Pass `rt.signal` to anything else that accepts one:
 
@@ -161,26 +169,26 @@ Release other resources (WebGL renderers, media elements) in `stop`.
 
 ## Runtime context
 
-| Member                                         | Description                                                                          |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `rt.app.appSlug`, `rt.app.experienceSlug`      | Identity.                                                                            |
-| `rt.app.manifest`, `rt.app.experience`         | The parsed manifest and this experience's entry in it.                               |
-| `rt.app.params`                                | Launch parameters of the window, such as `role` and `target` for calibration.        |
-| `rt.drivers.on(driver, event, listener)`       | Subscribe to a driver event. Returns `{ unsubscribe() }`.                            |
-| `rt.drivers.get<T>(driver, event)`             | Latest value of a driver event.                                                      |
-| `rt.drivers.execute<T>(driver, action, data?)` | Run a driver action and get its result.                                              |
-| `rt.storage.get<T>(key, fallback?)`            | Read a JSON value. Returns `T` when you pass a fallback, `T \| undefined` otherwise. |
-| `rt.storage.set(key, value)`, `remove`, `list` | Per-app key/value storage.                                                           |
-| `rt.settings.get<T>()`                         | Settings from the manifest schema: stored values merged over the defaults.           |
-| `rt.settings.set({ 'display.zoom': 2 })`       | Store settings by dotted key. Keys you don't set keep following their default.       |
-| `rt.assets.url(path)`                          | URL of a file in the app, relative to the app root, e.g. `assets/logo.png`.          |
-| `rt.events.emit(topic, data)`, `rt.events.on`  | Messages between windows of the same app, e.g. a projector and a control window.     |
-| `rt.log.debug/info/warn/error(message, data?)` | Logs shown in the dashboard's Logs panel.                                            |
-| `rt.audio`                                     | An `AudioContext` created on first use and resumed when the experience starts.       |
-| `rt.ping()`                                    | Round-trip time to the server, in milliseconds.                                      |
-| `rt.signal`                                    | Aborts when the experience stops.                                                    |
-| `rt.router.switchTo(slug)`, `rt.router.stop()` | Start or stop experiences of this app on the server. It doesn't open windows yet.    |
-| `rt.app.server`                                | The raw server connection, for commands the SDK doesn't wrap.                        |
+| Member                                         | Description                                                                            |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `rt.app.appSlug`, `rt.app.experienceSlug`      | Identity.                                                                              |
+| `rt.app.manifest`, `rt.app.experience`         | The parsed manifest and this experience's entry in it.                                 |
+| `rt.app.params`                                | Launch parameters of the window, such as `role` and `target` for calibration.          |
+| `rt.drivers.on(driver, event, listener)`       | Subscribe to a driver event. Returns `{ unsubscribe() }`.                              |
+| `rt.drivers.get<T>(driver, event)`             | Latest value of a driver event.                                                        |
+| `rt.drivers.execute<T>(driver, action, data?)` | Run a driver action and get its result.                                                |
+| `rt.storage.get<T>(key, fallback?)`            | Read a JSON value. Returns `T` when you pass a fallback, `T \| undefined` otherwise.   |
+| `rt.storage.set(key, value)`, `remove`, `list` | Per-app key/value storage.                                                             |
+| `rt.settings.get<T>()`                         | Settings from the manifest schema: stored values merged over the defaults.             |
+| `rt.settings.set({ 'display.zoom': 2 })`       | Store settings by dotted key. Keys you don't set keep following their default.         |
+| `rt.assets.url(path, appSlug?)`                | URL of a file in the app (or in `appSlug`), relative to its root, e.g. `assets/a.png`. |
+| `rt.events.emit(topic, data)`, `rt.events.on`  | Messages between windows of the same app, e.g. a projector and a control window.       |
+| `rt.log.debug/info/warn/error(message, data?)` | Logs shown in the dashboard's Logs panel.                                              |
+| `rt.audio`                                     | An `AudioContext` created on first use and resumed when the experience starts.         |
+| `rt.ping()`                                    | Round-trip time to the server, in milliseconds.                                        |
+| `rt.signal`                                    | Aborts when the experience stops.                                                      |
+| `rt.router.switchTo(slug)`, `rt.router.stop()` | Start or stop experiences of this app on the server. It doesn't open windows yet.      |
+| `rt.app.server`                                | The raw server connection, for commands the SDK doesn't wrap.                          |
 
 ## Layers
 
@@ -214,6 +222,9 @@ await layers.stopAll(); // in stop
 
 - A layer has optional `preload`, `start`, `render`, `stop`, `suspend` and
   `resume` hooks. It renders once `start` has resolved, in `zIndex` order.
+- If `start` throws, the error goes to `onError` and the layer's `stop` hook
+  still runs, the same rule as for experiences. A failing `create` or
+  `preload` doesn't call `stop`.
 - Starting an exclusive layer stops every other layer except persistent ones,
   its `allowed` list and its `required` list, then starts the required ones.
 - Persistent layers ignore `stop(slug)` unless you pass `{ force: true }`.
@@ -302,9 +313,32 @@ of the SDK, fetches your manifest, imports your entry and runs it. Files in
 your app are served under `/v1/apps/<slug>/static/`; use `rt.assets.url` to
 build their URLs.
 
-The page's Content Security Policy allows scripts, styles, images, media and
-fonts from the app origin, `data:` and `blob:` URLs for media, WebAssembly,
-and network connections to the app origin or to `https:` and `wss:` URLs.
-Inline scripts, inline `style` attributes set through HTML or `setAttribute`,
-and plain `http:` or `ws:` connections to other hosts are blocked. Setting
-`element.style` properties from code works.
+### Content Security Policy
+
+Everything served on an app origin carries a Content Security Policy:
+
+- **Scripts** load only from the app origin (your bundle and the SDK) and
+  other GOSAI app origins, and WebAssembly may compile. Bundle every script
+  and `.wasm` file with your app: CDNs and inline scripts are blocked.
+- **Styles, images, media and fonts** load from the app origin; images,
+  media and fonts also from `data:` and `blob:` URLs. Inline `style`
+  attributes written in HTML or with `setAttribute` are blocked; setting
+  `element.style` properties from code works.
+- **Connections** (`fetch`, `XMLHttpRequest`, `WebSocket`) may go to the app
+  origin, `blob:` and `data:` URLs (loaders such as GLTF use them for
+  embedded textures and model weights), and any `https:` or `wss:` URL.
+
+Plain `http:` and `ws:` connections to other hosts are blocked by default,
+since they would reach services on the machine or the local network. List the
+ones your app needs in the manifest:
+
+```json
+"network": { "connect": ["ws://relay.local:8080", "http://192.168.1.20"] }
+```
+
+Each entry is a plain `scheme://host[:port]` origin with an `http`, `https`,
+`ws` or `wss` scheme: no path, wildcard, quotes or spaces. The server refuses
+a manifest with any other entry.
+
+Blocked requests are logged through `rt.log` with the directive and URL, once
+per URL, so they show up in the dashboard's Logs panel.

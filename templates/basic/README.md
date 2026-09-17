@@ -46,5 +46,17 @@ by hand to its apps directory.
   space that `fit()` maps onto the window.
 - `stop` saves the counter.
 
+## Network access
+
+The app window may connect to its own origin and to any `https:` or `wss:`
+URL. To reach a plain `http:` or `ws:` service, such as a device on the local
+network, list its origin in `gosai.app.json`:
+
+```json
+"network": { "connect": ["ws://relay.local:8080"] }
+```
+
+Blocked requests appear in the dashboard's Logs panel.
+
 See [`packages/sdk/README.md`](../../packages/sdk/README.md) for the manifest
 reference and the full runtime API.
