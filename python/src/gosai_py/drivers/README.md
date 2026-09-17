@@ -6,6 +6,30 @@ auto-discovered by the Python bridge (see
 **second-self** app and the `ball` driver's runtime backends; the rest are
 documented by their module docstrings.
 
+## Behaviour changes for driver callers
+
+Actions now decode their `data` with msgspec against the types in each
+driver's schema (`uv run python -m gosai_py.schemas`), so some inputs that used
+to be coerced or ignored behave differently:
+
+- Integer fields reject fractional numbers (`3.5`); whole floats (`3.0`) and
+  numeric strings (`"7"`) still convert. `null` in a field that isn't nullable
+  raises instead of falling back to a default.
+- Booleans convert from strings, so `set_flip("false")` now means false.
+  Before, any non-empty string meant true.
+- `ball.set_output_size` needs both `width` and `height`.
+- `pose_to_mirror.set_mirror_config` rejects the whole update when one field is
+  invalid (unknown `mode` or `fit`, an `affine` without 4 numbers, a
+  non-numeric setting). Before, bad values were logged and skipped.
+- `calibration.compute` raises on a `focus_quad` that isn't 4 points or a
+  non-positive `frame_size`, instead of ignoring them.
+- `interpolate.reset` takes a stream name or `null`. `reset({"name": ...})`
+  now raises; before, it reset every stream.
+- Actions that take no data, such as `calibration.clear`, ignore whatever
+  `data` they receive.
+
+The `ball` event sends `diameter` instead of `r`.
+
 ## `pose` hand-key convention (important)
 
 `pose.raw_data` emits the hand keys **swapped** relative to the MediaPipe model

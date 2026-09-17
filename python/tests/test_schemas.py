@@ -221,3 +221,16 @@ def test_event_delivery_matches_the_bridge() -> None:
     assert "queue_size" not in camera_events["frame_size"]
     assert microphone_events["audio_stream"]["delivery"] == "buffered"
     assert microphone_events["audio_stream"]["queue_size"] == 64
+
+
+def test_documented_input_conversions() -> None:
+    from gosai_py.drivers.interpolate import InterpolateDriver
+
+    driver = Declared(None)  # type: ignore[arg-type]
+    assert driver.execute("set_level", 3.0) == {"level": 3}
+    with pytest.raises(msgspec.ValidationError, match="got `float`"):
+        driver.execute("set_level", 3.5)
+    with pytest.raises(msgspec.ValidationError, match="got `null`"):
+        driver.execute("set_level", None)
+    with pytest.raises(msgspec.ValidationError, match=r"Expected `str \| null`, got `object`"):
+        InterpolateDriver(None).execute("reset", {"name": "p"})  # type: ignore[arg-type]

@@ -206,3 +206,9 @@ def test_hand_pose_rate_limits_detection_failures(hand_driver: tuple[HandPoseDri
     warnings = [message for level, message in context.logs if level == "warn"]
     assert len(warnings) == 1 and "graph failed" in warnings[0]
     assert context.emitted("raw_data") == []
+
+
+def test_flip_reads_boolean_strings(pose_driver: tuple[PoseDriver, RecordingContext]) -> None:
+    driver, _ = pose_driver
+    assert driver.execute("set_flip", "false") == {"flip": False}
+    assert driver.execute("set_flip", "true") == {"flip": True}
