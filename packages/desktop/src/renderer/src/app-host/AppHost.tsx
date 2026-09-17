@@ -33,7 +33,7 @@ export function AppHost(): JSX.Element {
       try {
         const sdk = (await import(
           /* @vite-ignore */ `${SERVER_BASE_URL}/sdk-runtime.js`
-        )) as typeof import('@gosai/sdk');
+        )) as typeof import('@gosai/sdk/host');
         if (cancelled) return;
 
         const manifestRes = await fetch(`${SERVER_BASE_URL}/v1/apps`, {
@@ -42,12 +42,7 @@ export function AppHost(): JSX.Element {
         if (cancelled) return;
         if (!manifestRes.ok) throw new Error(`Cannot fetch apps list (${manifestRes.status})`);
         const apps = (await manifestRes.json()) as {
-          apps: Array<{
-            manifest: {
-              slug: string;
-              experiences: Array<{ slug: string; entry: string }>;
-            };
-          }>;
+          apps: Array<{ manifest: import('@gosai/sdk').AppManifest }>;
         };
         if (cancelled) return;
 
@@ -68,6 +63,7 @@ export function AppHost(): JSX.Element {
 
         const started = await sdk.runExperience(expModule.default, {
           appSlug,
+          manifest: app.manifest,
           experienceSlug,
           ...(driverBinding ? { driverBinding } : {}),
           serverBaseUrl: SERVER_BASE_URL,

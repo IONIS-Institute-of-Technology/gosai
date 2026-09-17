@@ -379,6 +379,9 @@ function registerHandlers(
 ): void {
   const { apps, drivers, config, appSettings, logger, bus } = ctx;
 
+  // Round-trip probe for latency meters (`rt.ping()` in the SDK).
+  gateway.registerHandler('system:ping', () => ({ ts: Date.now() }));
+
   gateway.registerHandler('apps:list', () => ({ apps: apps.listApps() }));
   gateway.registerHandler('app:install', async (msg: ClientMessage) => {
     const payload = (msg as { payload: { source?: string } }).payload;

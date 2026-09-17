@@ -1,46 +1,93 @@
 /**
- * Runtime entry point invoked from the app-host renderer. Provides everything
- * an experience needs to interact with the GOSAI server.
+ * Runs one experience: builds the runtime context, calls the lifecycle hooks,
+ * drives the render loop and releases everything the context handed out when
+ * the experience stops.
  */
 
+import type { AppManifest } from '@gosai/shared';
+import { createAssetsClient } from './assets.js';
 import { ServerClient } from './connection.js';
 import { DriverClientImpl } from './driver-client.js';
-import { StorageClientImpl } from './storage.js';
-import { AppLoggerImpl } from './logger.js';
-import { ExperienceRouterImpl } from './experience-router.js';
 import { AppEventsClientImpl } from './events-client.js';
+import { ExperienceRouterImpl } from './experience-router.js';
+import { AppLoggerImpl } from './logger.js';
+import { createSettingsClient, storageSettingsBackend, type SettingsBackend } from './settings.js';
+import { StorageClientImpl } from './storage.js';
 import type {
   AppContext,
+  AppEventsClient,
+  AppEventsSubscription,
+  DriverClient,
+  DriverSubscription,
   ExperienceDefinition,
   ExperienceRuntimeContext,
-  FrameInfo,
   ServerConnection,
 } from './types.js';
 
 export interface RuntimeOptions {
   readonly appSlug: string;
   readonly experienceSlug: string;
+  /** The app's manifest. Identity, settings defaults and the experience entry come from it. */
+  readonly manifest: AppManifest;
   /**
    * App binding used for driver instances. Defaults to `appSlug`; calibration
    * uses this to run under the target app's camera settings while keeping
-   * storage/events scoped to the calibration app.
+   * storage and events scoped to the calibration app.
    */
   readonly driverBinding?: string;
-  /** HTTP base URL (e.g. http://127.0.0.1:7777) and WS URL are derived from this. */
+  /** HTTP origin of the server, e.g. `http://my-app.localhost:7777`. */
   readonly serverBaseUrl: string;
+  /** WebSocket URL. Derived from `serverBaseUrl` when omitted. */
   readonly wsUrl?: string;
   /** App token desktop main gave the window. */
   readonly authToken?: string;
+  /** Launch parameters exposed as `rt.app.params`. */
+  readonly params?: Readonly<Record<string, string>>;
+  /** Aborting cancels a start in progress, or stops the running experience. */
+  readonly signal?: AbortSignal;
+  /** Upper bound for `frame.deltaMs`. Defaults to 100. */
+  readonly maxDeltaMs?: number;
+  /** Consecutive failing frames after which the runtime stops the experience. Defaults to 60. */
+  readonly maxRenderFailures?: number;
+  /** How long to wait for the server connection. Defaults to 5000 ms. */
+  readonly connectTimeoutMs?: number;
+  /** Called when the runtime stops the experience on its own, after repeated render failures. */
+  readonly onFatalError?: (error: unknown) => void;
 }
 
 export interface RuntimeHandle {
   readonly context: ExperienceRuntimeContext;
   readonly server: ServerConnection;
+  /** Stops the experience. Safe to call more than once. */
   stop(): Promise<void>;
 }
 
+/** Schedules animation frames. Swappable so the runtime can be tested without a browser. */
+export interface FrameScheduler {
+  request(callback: (timestamp: number) => void): number;
+  cancel(handle: number): void;
+  now(): number;
+}
+
+/** What the runtime needs besides its options. `runExperience` builds the browser version. */
+export interface RuntimeEnvironment {
+  readonly server: ServerConnection & { close(): void };
+  readonly frames: FrameScheduler;
+  readonly createAudioContext?: () => AudioContext;
+  /** Replaces the storage-backed settings, e.g. with a server command. */
+  readonly settings?: SettingsBackend;
+}
+
+export const DEFAULT_MAX_DELTA_MS = 100;
+export const DEFAULT_MAX_RENDER_FAILURES = 60;
+const DEFAULT_CONNECT_TIMEOUT_MS = 5000;
+/** Distinct render error messages logged before the runtime goes quiet. */
+const MAX_LOGGED_RENDER_ERRORS = 5;
+
 /**
- * Loads, initialises, and starts an experience. Owns the render loop.
+ * Connects to the server, then initialises, starts and renders the
+ * experience. Rejects, with the connection closed, when connecting or a
+ * lifecycle hook fails.
  */
 export async function runExperience<TState>(
   definition: ExperienceDefinition<TState>,
@@ -51,75 +98,271 @@ export async function runExperience<TState>(
     ...(options.authToken ? { authToken: options.authToken } : {}),
   });
   client.connect();
+  try {
+    await waitForConnection(
+      client,
+      options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
+      options.signal,
+    );
+  } catch (err) {
+    client.close();
+    throw err;
+  }
+  return startRuntime(definition, options, {
+    server: client,
+    frames: browserFrames(),
+    createAudioContext: () => new AudioContext(),
+  });
+}
 
-  await waitForConnection(client);
+/** Runs an experience over an already connected server. */
+export async function startRuntime<TState>(
+  definition: ExperienceDefinition<TState>,
+  options: RuntimeOptions,
+  env: RuntimeEnvironment,
+): Promise<RuntimeHandle> {
+  const { server, frames } = env;
+  const controller = new AbortController();
+  const experience = options.manifest.experiences.find((e) => e.slug === options.experienceSlug);
+  if (!experience) {
+    server.close();
+    throw new Error(`${options.appSlug} has no experience "${options.experienceSlug}"`);
+  }
 
-  const drivers = new DriverClientImpl(client, options.driverBinding ?? options.appSlug);
-  const storage = new StorageClientImpl(options.appSlug, client, options.serverBaseUrl);
-  const log = new AppLoggerImpl(`app:${options.appSlug}:${options.experienceSlug}`, client);
-  const router = new ExperienceRouterImpl(options.appSlug, client);
-  const events = new AppEventsClientImpl(options.appSlug, client);
+  const log = new AppLoggerImpl(`app:${options.appSlug}:${options.experienceSlug}`, server);
+  const drivers = new TrackedDriverClient(
+    new DriverClientImpl(server, options.driverBinding ?? options.appSlug),
+  );
+  const events = new TrackedEventsClient(new AppEventsClientImpl(options.appSlug, server));
+  const storage = new StorageClientImpl(options.appSlug, server, options.serverBaseUrl);
+  const router = new ExperienceRouterImpl(options.appSlug, server);
   router.setCurrent(options.experienceSlug);
+  const audio = new RuntimeAudio(env.createAudioContext, controller.signal);
 
   const app: AppContext = {
     appSlug: options.appSlug,
     experienceSlug: options.experienceSlug,
-    server: client,
+    manifest: options.manifest,
+    experience,
+    params: Object.freeze({ ...options.params }),
+    server,
     serverBaseUrl: options.serverBaseUrl,
   };
   const ctx: ExperienceRuntimeContext = {
     app,
     drivers,
     storage,
+    settings: createSettingsClient(
+      env.settings ?? storageSettingsBackend(options.manifest.settings, storage),
+    ),
+    assets: createAssetsClient(options.serverBaseUrl, options.appSlug),
     log,
     router,
     events,
+    signal: controller.signal,
+    get audio(): AudioContext {
+      return audio.get();
+    },
+    async ping(): Promise<number> {
+      const sent = frames.now();
+      await server.request('system:ping');
+      return frames.now() - sent;
+    },
   };
 
-  let state: TState = undefined as unknown as TState;
-  if (definition.lifecycle.init) {
-    state = await Promise.resolve(definition.lifecycle.init());
-  }
-  await Promise.resolve(definition.lifecycle.start(ctx, state));
+  let state: TState | undefined;
+  let initialized = false;
+  let stopping: Promise<void> | null = null;
+  let frameHandle: number | null = null;
 
-  let stopped = false;
-  let rafId: number | null = null;
-  let frameCount = 0;
-  let lastFrameTime = performance.now();
-
-  if (definition.lifecycle.render) {
-    const renderFn = definition.lifecycle.render;
-    const loop = (timestamp: number): void => {
-      if (stopped) return;
-      const deltaMs = timestamp - lastFrameTime;
-      lastFrameTime = timestamp;
-      const frame: FrameInfo = { timestamp, deltaMs, frameCount };
+  const stop = (): Promise<void> => {
+    stopping ??= (async () => {
+      if (frameHandle !== null) frames.cancel(frameHandle);
+      frameHandle = null;
       try {
-        renderFn(ctx, state, frame);
+        if (initialized) await definition.stop?.(ctx, state as TState);
       } catch (err) {
-        log.error('render failed', { err: String(err) });
+        log.error('stop failed', describeError(err));
+      } finally {
+        controller.abort();
+        drivers.release();
+        events.release();
+        await audio.close();
+        server.close();
+      }
+    })();
+    return stopping;
+  };
+
+  // A hook can't be interrupted, so a cancelled start is noticed between hooks.
+  const cancelled = (): boolean => options.signal?.aborted === true;
+  try {
+    if (cancelled()) throw abortError();
+    state = await definition.init?.(ctx);
+    initialized = true;
+    if (cancelled()) throw abortError();
+    await definition.start?.(ctx, state as TState);
+    if (cancelled()) throw abortError();
+  } catch (err) {
+    if (!cancelled()) log.error('start failed', describeError(err));
+    await stop();
+    throw err;
+  }
+  options.signal?.addEventListener('abort', () => void stop(), { once: true });
+
+  audio.resume();
+
+  const render = definition.render;
+  if (render) {
+    const maxDeltaMs = options.maxDeltaMs ?? DEFAULT_MAX_DELTA_MS;
+    const maxFailures = options.maxRenderFailures ?? DEFAULT_MAX_RENDER_FAILURES;
+    const loggedErrors = new Set<string>();
+    let failures = 0;
+    let frameCount = 0;
+    let last = frames.now();
+
+    const loop = (timestamp: number): void => {
+      if (stopping) return;
+      const deltaMs = Math.min(Math.max(timestamp - last, 0), maxDeltaMs);
+      last = timestamp;
+      try {
+        render(ctx, state as TState, { timestamp, deltaMs, frameCount });
+        failures = 0;
+      } catch (err) {
+        failures += 1;
+        const message = describeError(err).message;
+        if (loggedErrors.size < MAX_LOGGED_RENDER_ERRORS && !loggedErrors.has(message)) {
+          loggedErrors.add(message);
+          log.error('render failed', describeError(err));
+        }
+        if (failures >= maxFailures) {
+          log.error(`stopping after ${failures} consecutive render failures`, { message });
+          void stop();
+          options.onFatalError?.(err);
+          return;
+        }
       }
       frameCount += 1;
-      rafId = requestAnimationFrame(loop);
+      frameHandle = frames.request(loop);
     };
-    rafId = requestAnimationFrame(loop);
+    frameHandle = frames.request(loop);
   }
 
+  return { context: ctx, server, stop };
+}
+
+/** Driver client that remembers open subscriptions so the runtime can remove them. */
+class TrackedDriverClient implements DriverClient {
+  private readonly open = new Set<DriverSubscription>();
+  private released = false;
+
+  constructor(private readonly inner: DriverClient) {}
+
+  on(driver: string, event: string, listener: (data: unknown) => void): DriverSubscription {
+    if (this.released) return { unsubscribe: () => undefined };
+    const inner = this.inner.on(driver, event, listener);
+    const subscription: DriverSubscription = {
+      unsubscribe: () => {
+        if (this.open.delete(subscription)) inner.unsubscribe();
+      },
+    };
+    this.open.add(subscription);
+    return subscription;
+  }
+
+  get<T = unknown>(driver: string, event: string): Promise<T> {
+    return this.inner.get<T>(driver, event);
+  }
+
+  execute<T = unknown>(driver: string, action: string, data?: unknown): Promise<T> {
+    return this.inner.execute<T>(driver, action, data);
+  }
+
+  release(): void {
+    this.released = true;
+    for (const subscription of this.open) subscription.unsubscribe();
+  }
+}
+
+/** App events client that remembers open subscriptions so the runtime can remove them. */
+class TrackedEventsClient implements AppEventsClient {
+  private readonly open = new Set<AppEventsSubscription>();
+  private released = false;
+
+  constructor(private readonly inner: AppEventsClient) {}
+
+  emit(topic: string, data?: unknown): Promise<void> {
+    return this.inner.emit(topic, data);
+  }
+
+  on(topic: string, listener: (data: unknown) => void): AppEventsSubscription {
+    if (this.released) return { unsubscribe: () => undefined };
+    const inner = this.inner.on(topic, listener);
+    const subscription: AppEventsSubscription = {
+      unsubscribe: () => {
+        if (this.open.delete(subscription)) inner.unsubscribe();
+      },
+    };
+    this.open.add(subscription);
+    return subscription;
+  }
+
+  release(): void {
+    this.released = true;
+    for (const subscription of this.open) subscription.unsubscribe();
+  }
+}
+
+/**
+ * The runtime's AudioContext. Created on first use. Browsers may keep a new
+ * context suspended until a user gesture, so it is resumed when the
+ * experience starts and again on the first pointer or key press.
+ */
+class RuntimeAudio {
+  private context: AudioContext | null = null;
+  private started = false;
+
+  constructor(
+    private readonly create: (() => AudioContext) | undefined,
+    private readonly signal: AbortSignal,
+  ) {}
+
+  get(): AudioContext {
+    if (this.signal.aborted) throw new Error('the experience has stopped');
+    if (!this.context) {
+      if (!this.create) throw new Error('audio is not available in this runtime');
+      this.context = this.create();
+      if (this.started) this.resume();
+    }
+    return this.context;
+  }
+
+  resume(): void {
+    this.started = true;
+    const context = this.context;
+    if (!context || context.state !== 'suspended') return;
+    context.resume().catch(() => undefined);
+    if (typeof window === 'undefined') return;
+    const retry = (): void => {
+      if (context.state === 'suspended') context.resume().catch(() => undefined);
+    };
+    for (const type of ['pointerdown', 'keydown'] as const) {
+      window.addEventListener(type, retry, { once: true, signal: this.signal });
+    }
+  }
+
+  async close(): Promise<void> {
+    const context = this.context;
+    this.context = null;
+    if (context && context.state !== 'closed') await context.close().catch(() => undefined);
+  }
+}
+
+function browserFrames(): FrameScheduler {
   return {
-    context: ctx,
-    server: client,
-    async stop(): Promise<void> {
-      if (stopped) return;
-      stopped = true;
-      if (rafId !== null) cancelAnimationFrame(rafId);
-      try {
-        if (definition.lifecycle.stop) {
-          await Promise.resolve(definition.lifecycle.stop(ctx, state));
-        }
-      } finally {
-        client.close();
-      }
-    },
+    request: (callback) => requestAnimationFrame(callback),
+    cancel: (handle) => cancelAnimationFrame(handle),
+    now: () => performance.now(),
   };
 }
 
@@ -130,18 +373,45 @@ function defaultWsUrl(baseUrl: string): string {
   return url.toString();
 }
 
-async function waitForConnection(client: ServerClient): Promise<void> {
+async function waitForConnection(
+  client: ServerClient,
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+): Promise<void> {
   if (client.connected()) return;
-  await new Promise<void>((resolve, reject) => {
-    const off = client.onStatus((s) => {
-      if (s === 'connected') {
-        off();
-        resolve();
+  let offStatus = (): void => undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort = (): void => undefined;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(abortError());
+        return;
       }
+      offStatus = client.onStatus((status) => {
+        if (status === 'connected') resolve();
+      });
+      timer = setTimeout(
+        () => reject(new Error('Timed out connecting to GOSAI server')),
+        timeoutMs,
+      );
+      onAbort = () => reject(abortError());
+      signal?.addEventListener('abort', onAbort, { once: true });
     });
-    setTimeout(() => {
-      off();
-      reject(new Error('Timed out connecting to GOSAI server'));
-    }, 5000);
-  });
+  } finally {
+    offStatus();
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+  }
+}
+
+function abortError(): Error {
+  return new DOMException('The experience was stopped while starting', 'AbortError');
+}
+
+function describeError(err: unknown): { message: string; stack?: string } {
+  if (err instanceof Error) {
+    return err.stack ? { message: err.message, stack: err.stack } : { message: err.message };
+  }
+  return { message: String(err) };
 }

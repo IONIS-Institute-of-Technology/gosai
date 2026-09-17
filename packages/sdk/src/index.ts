@@ -1,15 +1,50 @@
 /**
- * @gosai/sdk - SDK for building GOSAI applications.
+ * @gosai/sdk - everything an app needs to build experiences on GOSAI.
  *
- * App authors typically only need:
- *   - `defineExperience` to declare an experience
- *   - `runExperience` (rare; usually invoked by the host)
- *   - The exported types
+ * Code that hosts experiences (the app host page, test harnesses) imports
+ * `@gosai/sdk/host`.
  */
 
 export { defineExperience } from './experience.js';
-export { runExperience } from './runtime.js';
-export type { RuntimeHandle, RuntimeOptions } from './runtime.js';
+export type {
+  AppContext,
+  AppEventsClient,
+  AppEventsSubscription,
+  AppLogger,
+  AssetsClient,
+  DriverClient,
+  DriverSubscription,
+  ExperienceContext,
+  ExperienceDefinition,
+  ExperienceRouter,
+  ExperienceRuntimeContext,
+  FrameInfo,
+  ServerConnection,
+  SettingsClient,
+  StorageClient,
+  // Manifest and server state shapes apps read.
+  AppCalibrationSchema,
+  AppManifest,
+  AppRequirements,
+  AppSettingsField,
+  AppSettingsFieldType,
+  AppSettingsGroup,
+  AppSettingsOption,
+  AppSettingsSchema,
+  AppState,
+  DriverInfo,
+  DriverInstanceInfo,
+  DriverRuntimeInfo,
+  DriverState,
+  ExperienceDescriptor,
+  ExperienceState,
+  InstalledApp,
+  LogLevel,
+  PythonConfig,
+  RunningExperience,
+} from './types.js';
+
+export { createStorageClient } from './storage.js';
 
 export {
   computeFit,
@@ -34,9 +69,15 @@ export type { Layer, LayerDefinition, LayerManagerOptions, LayerPhase } from './
 export { applyQuadWarp, clearQuadWarp } from './warp.js';
 export type { QuadWarpOptions, WarpTarget } from './warp.js';
 
-export { ServerClient } from './connection.js';
-export type { ConnectionStatus } from './connection.js';
-export { createStorageClient } from './storage.js';
+export {
+  computeCSSMatrix3d,
+  invertHomography,
+  multiplyHomographies,
+  perspectiveTransformPoint,
+  perspectiveTransformPoints,
+  quadToQuadHomography,
+} from './homography.js';
+export type { Point2D, Quad } from './homography.js';
 
 export {
   CALIBRATION_STATUS_KEY,
@@ -64,47 +105,3 @@ export type {
   SizeXY,
   SurfaceQuadDisplay,
 } from './calibration.js';
-
-export type {
-  AppContext,
-  AppEventsClient,
-  AppEventsSubscription,
-  AppLogger,
-  DriverClient,
-  DriverSubscription,
-  ExperienceDefinition,
-  ExperienceLifecycle,
-  ExperienceRouter,
-  ExperienceRuntimeContext,
-  FrameInfo,
-  ServerConnection,
-  StorageClient,
-  // re-exports from @gosai/shared
-  AppCalibrationSchema,
-  AppManifest,
-  ExperienceDescriptor,
-  PythonConfig,
-  InstalledApp,
-  RunningExperience,
-  DriverInfo,
-  DriverState,
-  LogEntry,
-  LogLevel,
-  GlobalConfig,
-  DisplayInfo,
-  ExperienceState,
-  AppState,
-} from './types.js';
-
-export { PROTOCOL_VERSION, ServerEvents, ClientCommands } from './types.js';
-
-// Homography utilities for camera/projector calibration consumers.
-export {
-  perspectiveTransformPoint,
-  perspectiveTransformPoints,
-  invertHomography,
-  quadToQuadHomography,
-  computeCSSMatrix3d,
-  multiplyHomographies,
-} from './homography.js';
-export type { Point2D, Quad } from './homography.js';

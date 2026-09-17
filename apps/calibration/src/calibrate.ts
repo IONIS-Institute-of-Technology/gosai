@@ -40,10 +40,6 @@ type State = {
 };
 
 export default defineExperience<State>({
-  slug: 'calibrate',
-  name: 'Calibration Runner',
-  description: 'Generic per-app calibration runner.',
-
   init(): State {
     const role = detectRole();
     return {
