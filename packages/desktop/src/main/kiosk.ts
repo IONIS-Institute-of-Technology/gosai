@@ -20,6 +20,7 @@ import type { ServerRunner } from './server-runner.js';
 import type { SplashWindow } from './splash.js';
 import type { KioskConfig } from './kiosk-config.js';
 import type { CalibrationOrchestrator } from './calibration.js';
+import { planKioskCalibration, usesCalibrationRunner } from './calibration-plan.js';
 import type { WindowRegistry } from './windows.js';
 
 /**
@@ -55,8 +56,7 @@ function prepareAppsDir(config: KioskConfig): string {
 
   // Built-in calibration kinds run in the built-in calibration app. For CLI
   // launches, pick it up from a sibling directory (the repo layout).
-  const calibration = config.manifest.calibration;
-  if (calibration && calibration.experience === undefined) {
+  if (usesCalibrationRunner(config.manifest.calibration)) {
     const sibling = join(dirname(config.appDir), 'calibration');
     if (existsSync(join(sibling, 'gosai.app.json'))) {
       linkApp(appsDir, 'calibration', sibling);
@@ -156,16 +156,14 @@ async function maybeCalibrate(
   displayId: number,
 ): Promise<void> {
   const appSlug = config.manifest.slug;
-  if (!config.manifest.calibration) {
-    if (config.forceCalibrate) {
-      console.error(`[gosai-kiosk] ${appSlug} declares no calibration; ignoring --kiosk-calibrate`);
-    }
-    return;
+  const plan = await planKioskCalibration(config.manifest.calibration, {
+    force: config.forceCalibrate,
+    isCalibrated: () => isCalibrated(server, appSlug),
+  });
+  if (plan === 'undeclared') {
+    console.error(`[gosai-kiosk] ${appSlug} declares no calibration; ignoring --kiosk-calibrate`);
   }
-  if (!config.forceCalibrate) {
-    if (config.manifest.calibration.required !== true) return;
-    if (await isCalibrated(server, appSlug)) return;
-  }
+  if (plan !== 'run') return;
 
   console.log(`[gosai-kiosk] running the calibration of ${appSlug}`);
   const result = await calibration.run({ appSlug, displayId });

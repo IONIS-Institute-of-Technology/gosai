@@ -12,6 +12,7 @@ import type {
   RunningExperience,
 } from '@gosai/shared';
 import { CALIBRATION_RUNNER } from '@gosai/shared/calibration';
+import { readyToStart } from '../../lib/calibration-gate.js';
 import { pickDisplayForApp } from '../../lib/displays.js';
 import { stopAllAppExperiences, stopExperienceFully } from '../../lib/stop-experience.js';
 import { useServer } from '../../lib/server-context.js';
@@ -328,8 +329,12 @@ function AppRow({
 
   const startExperience = async (experienceSlug: string): Promise<void> => {
     try {
-      // An app that requires calibration is calibrated first, and doesn't start without it.
-      if (requiresCalibration && !(await probeCalibration()) && !(await calibrate())) return;
+      const ready = await readyToStart({
+        required: requiresCalibration,
+        isCalibrated: probeCalibration,
+        calibrate,
+      });
+      if (!ready) return;
       await client.request('experience:start', { appSlug: app.manifest.slug, experienceSlug });
       const { display, mode } = await pickDisplayForApp(client, app.manifest.slug);
       if (display) {

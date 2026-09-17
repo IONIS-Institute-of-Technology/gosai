@@ -21,8 +21,8 @@ export interface AppManifest {
   slug: string;
   name?: string;
   default?: string;
-  /** Read from disk without validation; the server parses the manifest itself. */
-  calibration?: { kind?: string; required?: boolean; experience?: string };
+  /** Read from disk without validation; see calibration-plan.ts. The server parses it. */
+  calibration?: unknown;
   experiences: Array<{ slug: string; entry: string }>;
 }
 

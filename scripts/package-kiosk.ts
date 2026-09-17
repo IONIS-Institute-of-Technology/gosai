@@ -26,6 +26,7 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { usesCalibrationRunner } from '../packages/desktop/src/main/calibration-plan.js';
 import { parseDisplayIndex, parseExtras } from '../packages/desktop/src/main/launch-args.js';
 import { isValidSlug, SLUG_PATTERN } from '@gosai/shared/slug';
 import { prepareBundle } from './prepare-bundle.js';
@@ -41,7 +42,7 @@ interface Manifest {
   name?: string;
   version?: string;
   default?: string;
-  calibration?: { kind?: string; required?: boolean; experience?: string };
+  calibration?: unknown;
   experiences: Array<{ slug: string; entry: string }>;
 }
 
@@ -151,7 +152,7 @@ for (const exp of manifest.experiences) {
 // GOSAI_KIOSK_CALIBRATE=1) to save the app's calibration profile. A custom
 // flow (`calibration.experience`) is one of the app's own experiences.
 let calibrationAppDir: string | null = null;
-if (manifest.calibration && manifest.calibration.experience === undefined) {
+if (usesCalibrationRunner(manifest.calibration)) {
   calibrationAppDir = join(repoRoot, 'apps', 'calibration');
   if (!existsSync(join(calibrationAppDir, 'gosai.app.json'))) {
     fail(`app declares calibration but the runner app is missing at ${calibrationAppDir}`);
