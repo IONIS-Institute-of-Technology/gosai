@@ -8,6 +8,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { DriverInfo, DriverSchema } from '@gosai/shared';
+import { appBridgeEnv } from '../src/drivers/app-drivers.js';
 import type { BridgeHandlers, BridgeRequestSansId, DriverBridge } from '../src/drivers/bridge.js';
 import { DriverHub, type AppDriverSource } from '../src/drivers/hub.js';
 import type { DriverManifestEntry } from '../src/drivers/manager.js';
@@ -110,7 +111,12 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<voi
   }
 }
 
-function makeHub(options: { prepare?: (app: AppDriverSource) => Promise<void> } = {}) {
+function makeHub(
+  options: {
+    prepare?: (app: AppDriverSource, signal: AbortSignal) => Promise<void>;
+    prepareWaitMs?: number;
+  } = {},
+) {
   const bus = new EventBus();
   const bridges: { builtin?: StubBridge; apps: Map<string, StubBridge> } = { apps: new Map() };
   const prepared: string[] = [];
@@ -119,6 +125,7 @@ function makeHub(options: { prepare?: (app: AppDriverSource) => Promise<void> } 
     bus,
     supervisorTiming: { initialBackoffMs: 1, pingIntervalMs: 60_000 },
     bridgeReadyWaitMs: 2_000,
+    ...(options.prepareWaitMs !== undefined ? { prepareWaitMs: options.prepareWaitMs } : {}),
     createBridge: (handlers) => {
       bridges.builtin = new StubBridge(handlers, [
         { name: 'heartbeat', events: ['tick'], actions: ['echo'], dependencies: [], shared: true },
@@ -126,9 +133,9 @@ function makeHub(options: { prepare?: (app: AppDriverSource) => Promise<void> } 
       return bridges.builtin;
     },
     apps: {
-      prepare: async (app) => {
+      prepare: async (app, signal) => {
         prepared.push(app.slug);
-        await options.prepare?.(app);
+        await options.prepare?.(app, signal);
       },
       createBridge: (app, handlers) => {
         const bridge = new StubBridge(handlers, [
@@ -267,5 +274,91 @@ describe('driver hub', () => {
     expect(hub.listDrivers().map((d) => d.name)).toEqual(['heartbeat']);
     expect(lists.at(-1)).toEqual(['heartbeat']);
     expect(hub.getDriver('hello-app/counter')).toBeUndefined();
+  });
+
+  /** A prepare that runs until aborted, like a uv build, and records when it ended. */
+  function hangingPrepare(): {
+    prepare: (app: AppDriverSource, signal: AbortSignal) => Promise<void>;
+    ended: string[];
+  } {
+    const ended: string[] = [];
+    return {
+      ended,
+      prepare: (_app, signal) =>
+        new Promise<void>((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            // uv takes a moment to die.
+            setTimeout(() => {
+              ended.push('prepare');
+              reject(new Error('uv pip install was cancelled'));
+            }, 20);
+          });
+        }),
+    };
+  }
+
+  test('stopping the hub cancels an environment build and waits for it to end', async () => {
+    const { prepare, ended } = hangingPrepare();
+    const { hub, bridges } = makeHub({ prepare });
+    hub.sync([APP]);
+    await hub.start();
+
+    await hub.stop();
+    ended.push('stop');
+
+    expect(ended).toEqual(['prepare', 'stop']);
+    expect(bridges.apps.get('hello-app')?.starts).toBe(0);
+  });
+
+  test('releasing an app cancels its environment build before returning', async () => {
+    const { prepare, ended } = hangingPrepare();
+    const { hub } = makeHub({ prepare });
+    await hub.start();
+    hub.sync([APP]);
+
+    await hub.release('hello-app');
+    ended.push('released');
+
+    expect(ended).toEqual(['prepare', 'released']);
+  });
+
+  test('a subscription fails fast while the environment is still being built', async () => {
+    let finish: () => void = () => undefined;
+    const { hub, prepared } = makeHub({
+      prepareWaitMs: 50,
+      prepare: () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    });
+    await hub.start();
+    hub.sync([APP]);
+
+    const started = Date.now();
+    await expect(hub.subscribe('hello-app', 'hello-app/counter', 'count', 'c')).rejects.toThrow(
+      'Python environment for hello-app is still being prepared',
+    );
+    expect(Date.now() - started).toBeLessThan(1_000);
+
+    // The build went on; once it is done the same subscription works, without a second build.
+    finish();
+    await hub.subscribe('hello-app', 'hello-app/counter', 'count', 'c');
+    expect(prepared).toEqual(['hello-app']);
+    expect(hub.getDriver('hello-app/counter')?.state).toBe('running');
+  });
+
+  test('app bridges write bytecode into the environment, not the app', () => {
+    const app: AppDriverSource = {
+      slug: 'hello-app',
+      installPath: '/apps/hello-app',
+      builtin: true,
+      python: { drivers: 'python/hello_drivers' },
+    };
+    expect(appBridgeEnv(app, '/envs/builtin/hello-app', { data: '/data' })).toEqual({
+      GOSAI_APP_SLUG: 'hello-app',
+      GOSAI_APP_DIR: '/apps/hello-app',
+      GOSAI_APP_DATA_DIR: join('/data', 'hello-app'),
+      PYTHONPYCACHEPREFIX: join('/envs/builtin/hello-app', 'pycache'),
+    });
   });
 });

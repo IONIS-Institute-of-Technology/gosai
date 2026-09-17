@@ -156,7 +156,12 @@ describe.skipIf(!HAS_BRIDGE || !HAS_UV)('app driver bridge contract', () => {
     readonly data: { count?: number };
   }
 
-  async function startHub(): Promise<{ hub: DriverHub; events: DriverEvent[] }> {
+  async function startHub(): Promise<{
+    hub: DriverHub;
+    events: DriverEvent[];
+    appDir: string;
+    root: string;
+  }> {
     const root = mkdtempSync(join(tmpdir(), 'gosai-app-contract-'));
     const appDir = join(root, 'apps', 'contract-app');
     const python = writeDriverPackage(appDir, { 'counter.py': COUNTER_DRIVER }, 'contract_drivers');
@@ -187,16 +192,20 @@ describe.skipIf(!HAS_BRIDGE || !HAS_UV)('app driver bridge contract', () => {
     bus.on('driver:event:contract', (_event, payload) => events.push(payload as DriverEvent));
     hub.sync([app]);
     await hub.start();
-    return { hub, events };
+    return { hub, events, appDir, root };
   }
 
   test(
     'an app bridge runs its drivers next to the built-in bridge',
     async () => {
-      const { hub, events } = await startHub();
+      const { hub, events, appDir, root } = await startHub();
       try {
         await hub.subscribe('contract', 'heartbeat', 'tick', 'client');
         await hub.subscribe('contract', 'contract-app/counter', 'count', 'client');
+        // Bytecode goes to the environment: the app directory may be a signed bundle.
+        const pycache = join(root, 'python-envs', 'installed', 'contract-app', 'pycache');
+        expect(existsSync(pycache)).toBe(true);
+        expect(existsSync(join(appDir, 'python', 'contract_drivers', '__pycache__'))).toBe(false);
         await waitFor(
           () =>
             events.some((e) => e.driver === 'heartbeat') &&

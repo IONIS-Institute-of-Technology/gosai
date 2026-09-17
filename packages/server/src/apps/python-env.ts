@@ -6,7 +6,9 @@
  *   <GOSAI home>/python-envs/installed/<slug>/   apps installed from git
  *   <GOSAI home>/python-envs/builtin/<slug>/     apps bundled with GOSAI
  *
- * Each holds `.venv/`, `constraints.txt` and `gosai-env.json`.
+ * Each holds `.venv/`, `constraints.txt`, `gosai-env.json` and `pycache/`,
+ * where the app's bridge writes bytecode instead of the app directory (which
+ * may be inside a signed bundle).
  *
  * The environment is layered on GOSAI's own Python environment, the one the
  * built-in `gosai-bridge` runs in. A `.pth` file appends the base
@@ -18,6 +20,19 @@
  * app can't replace numpy under gosai_py: a conflicting requirement fails the
  * install with uv's explanation instead of breaking at runtime.
  *
+ * uv only looks at the app's own site-packages, not at packages the `.pth`
+ * file adds. A requirement that depends on a base package, such as a library
+ * needing numpy, gets another copy of it installed in the app's environment,
+ * at the base version. That costs the download (or the uv cache) and disk
+ * space, tens to hundreds of MB for numpy or OpenCV, and the app's process
+ * then imports that copy, since its own site-packages come first on
+ * `sys.path`. The built-in bridge is unaffected.
+ *
+ * Requirements are the app's business: they may name other package indexes
+ * and install modules that shadow base ones, but only inside the app's own
+ * environment and bridge process. Editable local requirements (`-e ./pkg`)
+ * are refused, since they would point into the install staging directory.
+ *
  * `gosai-env.json` records what the environment was built from: the base
  * interpreter, the base packages and the requirements file. When any of them
  * changes, for example after a GOSAI update, `ensureAppPythonEnv` builds the
@@ -28,8 +43,16 @@
  */
 
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { PythonConfig } from '@gosai/shared';
 import { assertSlug } from '@gosai/shared/slug';
 import type { ChildLogger } from '../logger/logger.js';
@@ -59,6 +82,8 @@ export interface AppEnvOptions {
   readonly logger: ChildLogger;
   readonly timeoutMs?: number;
   readonly platform?: NodeJS.Platform;
+  /** Kills uv and rejects when aborted. The environment is removed. */
+  readonly signal?: AbortSignal;
 }
 
 const STAMP_FILE = 'gosai-env.json';
@@ -85,6 +110,11 @@ export function appPythonEnvDir(
   return join(paths.root, 'python-envs', kind, assertSlug(slug, 'app slug'));
 }
 
+/** Where the app's bridge writes bytecode (`PYTHONPYCACHEPREFIX`). */
+export function appPycacheDir(envDir: string): string {
+  return join(envDir, 'pycache');
+}
+
 /** The interpreter of the venv in `envDir`. */
 export function appEnvPython(envDir: string, platform: NodeJS.Platform = process.platform): string {
   return venvPython(join(envDir, '.venv'), platform);
@@ -105,15 +135,26 @@ function sitePackages(venv: string, platform: NodeJS.Platform): string {
   return join(lib, version, 'site-packages');
 }
 
-/** A path relative to the app root, refusing any that leave it. */
+/**
+ * A path relative to the app root, with symlinks resolved, refusing any that
+ * leave the app. The Python side resolves the driver package the same way.
+ */
 export function resolveAppPath(appDir: string, path: string): string {
-  const root = resolve(appDir);
-  const full = resolve(root, path);
+  const root = realOrResolved(appDir);
+  const full = realOrResolved(resolve(root, path));
   const rel = relative(root, full);
   if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
     throw new Error(`${path} is outside the app`);
   }
   return full;
+}
+
+function realOrResolved(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
 }
 
 /** The app's driver package directory. Throws when it is missing. */
@@ -148,6 +189,7 @@ export function buildAppPythonEnv(options: AppEnvOptions): Promise<string> {
  */
 export function ensureAppPythonEnv(options: AppEnvOptions): Promise<string> {
   return serialized(options.envDir, async () => {
+    options.signal?.throwIfAborted();
     const platform = options.platform ?? process.platform;
     const python = appEnvPython(options.envDir, platform);
     const base = readBase(options.toolchain.pythonDir, platform);
@@ -168,11 +210,13 @@ export function removeAppPythonEnv(envDir: string): void {
 }
 
 async function build(options: AppEnvOptions): Promise<string> {
-  const { envDir, toolchain, logger } = options;
+  const { envDir, toolchain, logger, signal } = options;
+  signal?.throwIfAborted();
   const platform = options.platform ?? process.platform;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   appDriversDir(options.appDir, options.python);
   const requirements = requirementsPath(options);
+  if (requirements) checkRequirements(options.appDir, requirements);
   const base = readBase(toolchain.pythonDir, platform);
   const uv = findUv(toolchain.uv);
   const env: Record<string, string> = {
@@ -191,6 +235,8 @@ async function build(options: AppEnvOptions): Promise<string> {
       env,
       timeoutMs,
       logger,
+      processGroup: true,
+      ...(signal ? { signal } : {}),
     });
     writeBasePth(envDir, base.sitePackages, platform);
     const constraints = join(envDir, CONSTRAINTS_FILE);
@@ -205,6 +251,8 @@ async function build(options: AppEnvOptions): Promise<string> {
         env,
         timeoutMs,
         logger,
+        processGroup: true,
+        ...(signal ? { signal } : {}),
       });
     }
     writeFileSync(
@@ -224,6 +272,39 @@ function requirementsPath(options: AppEnvOptions): string | null {
   const path = resolveAppPath(options.appDir, declared);
   if (!existsSync(path)) throw new Error(`python.requirements ${declared} does not exist`);
   return path;
+}
+
+/** `-r`, `-c` and `-e` options with their value, in either spelling. */
+const REQUIREMENT_OPTION = /^(-r|--requirement|-c|--constraint|-e|--editable)(?:\s*=\s*|\s+)(\S+)/;
+
+/**
+ * Refuses editable local requirements, in the file or the files it includes:
+ * the environment is built while the app is in a staging directory that is
+ * renamed afterwards, so an editable install would point at a path that is
+ * gone.
+ */
+export function checkRequirements(appDir: string, file: string, seen = new Set<string>()): void {
+  if (seen.has(file)) return;
+  seen.add(file);
+  const lines = readFileSync(file, 'utf8').split(/\r?\n/);
+  for (const [index, raw] of lines.entries()) {
+    const line = raw.replace(/(^|\s)#.*$/, '').trim();
+    const match = REQUIREMENT_OPTION.exec(line);
+    if (!match) continue;
+    const [, option, value] = match as unknown as [string, string, string];
+    const where = `${relative(appDir, file) || file}:${index + 1}`;
+    if (option === '-e' || option === '--editable') {
+      if (/^file:/i.test(value) || !/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+        throw new Error(
+          `${where}: editable local requirements such as "${line}" are not supported; ` +
+            'list the package without -e',
+        );
+      }
+      continue;
+    }
+    const included = resolve(dirname(file), value);
+    if (existsSync(included)) checkRequirements(appDir, included, seen);
+  }
 }
 
 function findUv(uv: string): string {

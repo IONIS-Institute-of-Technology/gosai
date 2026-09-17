@@ -18,6 +18,12 @@ export interface FakeToolchain {
   calls(): string[];
   /** Makes `uv pip install` fail with a resolver-like message. */
   failPipInstall(fail: boolean): void;
+  /**
+   * Makes `uv pip install` hang, with a child process of its own, until killed.
+   * Their pids go to `pidFile`, one per line: uv's, then the child's.
+   */
+  hangPipInstall(hang: boolean): void;
+  readonly pidFile: string;
   /** Adds a package to the fake base environment. */
   addBasePackage(distInfo: string): void;
 }
@@ -38,6 +44,8 @@ export function fakeToolchain(root: string): FakeToolchain {
 
   const log = join(root, 'uv-calls.log');
   const failFlag = join(root, 'uv-fail-pip');
+  const hangFlag = join(root, 'uv-hang-pip');
+  const pidFile = join(root, 'uv-pids');
   const uv = join(root, 'fake-uv');
   writeFileSync(
     uv,
@@ -47,6 +55,12 @@ if [ "$1" = venv ]; then
   for venv; do :; done
   mkdir -p "$venv/bin" "$venv/lib/python3.12/site-packages"
   touch "$venv/bin/python"
+fi
+if [ "$1" = pip ] && [ -f '${hangFlag}' ]; then
+  echo $$ > '${pidFile}'
+  sleep 60 &
+  echo $! >> '${pidFile}'
+  wait
 fi
 if [ "$1" = pip ] && [ -f '${failFlag}' ]; then
   echo "No solution found: numpy==1.26.0 conflicts with numpy==2.3.1" >&2
@@ -62,8 +76,27 @@ fi
       if (fail) writeFileSync(failFlag, '');
       else rmSync(failFlag, { force: true });
     },
+    hangPipInstall: (hang) => {
+      if (hang) writeFileSync(hangFlag, '');
+      else rmSync(hangFlag, { force: true });
+    },
+    pidFile,
     addBasePackage: (distInfo) => mkdirSync(join(site, distInfo), { recursive: true }),
   };
+}
+
+/** Whether a process runs. A zombie waiting for a parent that never reaps it counts as gone. */
+export function processRuns(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  try {
+    return !/^\d+ \(.*\) Z/.test(readFileSync(`/proc/${pid}/stat`, 'utf8'));
+  } catch {
+    return true;
+  }
 }
 
 /** A tiny counter driver, plus a `crash` action that ends the bridge process. */

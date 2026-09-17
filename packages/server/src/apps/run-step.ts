@@ -17,6 +17,14 @@ export interface StepOptions {
   readonly env?: Record<string, string>;
   readonly timeoutMs: number;
   readonly logger: ChildLogger;
+  /** Kills the step when aborted, which rejects. */
+  readonly signal?: AbortSignal;
+  /**
+   * Run the step in a process group of its own and kill the whole group on
+   * timeout or abort, so tools that start their own processes (uv building a
+   * package) leave nothing behind. POSIX only.
+   */
+  readonly processGroup?: boolean;
 }
 
 export interface StepResult {
@@ -28,13 +36,15 @@ export interface StepResult {
 /**
  * Runs one install step. stdout and stderr stream to the logger line by line,
  * so a noisy step can't fill a pipe and block. The step is killed after
- * `timeoutMs`, which rejects.
+ * `timeoutMs` or when `signal` aborts, which rejects.
  */
 export async function runStep(opts: StepOptions): Promise<StepResult> {
   const env: Record<string, string | undefined> = { ...process.env, ...opts.env };
   // App build scripts are third-party code and must not see server secrets.
   delete env.GOSAI_DASHBOARD_TOKEN;
+  opts.signal?.throwIfAborted();
 
+  const group = opts.processGroup === true && process.platform !== 'win32';
   const child = Bun.spawn({
     cmd: opts.cmd,
     ...(opts.cwd ? { cwd: opts.cwd } : {}),
@@ -42,7 +52,19 @@ export async function runStep(opts: StepOptions): Promise<StepResult> {
     stdin: 'ignore',
     stdout: 'pipe',
     stderr: 'pipe',
+    ...(group ? { detached: true } : {}),
   });
+  const kill = (): void => {
+    if (group) {
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+        return;
+      } catch {
+        // The group is gone already; kill the child itself below.
+      }
+    }
+    child.kill('SIGKILL');
+  };
 
   const tail: string[] = [];
   const onLine = (line: string, stream: 'stdout' | 'stderr'): void => {
@@ -60,10 +82,17 @@ export async function runStep(opts: StepOptions): Promise<StepResult> {
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
-    child.kill('SIGKILL');
+    kill();
   }, opts.timeoutMs);
+  let aborted = false;
+  const onAbort = (): void => {
+    aborted = true;
+    kill();
+  };
+  opts.signal?.addEventListener('abort', onAbort, { once: true });
   const code = await child.exited;
   clearTimeout(timer);
+  opts.signal?.removeEventListener('abort', onAbort);
 
   // A killed step can leave grandchildren holding the pipes open, so stop
   // reading after a short grace period.
@@ -75,6 +104,7 @@ export async function runStep(opts: StepOptions): Promise<StepResult> {
   clearTimeout(graceTimer);
   for (const reader of readers) void reader.cancel().catch(() => undefined);
 
+  if (aborted) throw new Error(`${opts.label} was cancelled`);
   if (timedOut) {
     throw new Error(`${opts.label} timed out after ${Math.round(opts.timeoutMs / 1000)}s`);
   }

@@ -14,6 +14,10 @@
  *
  * Any app may use another app's drivers, like built-in ones. Access is checked
  * on the driver binding a request uses, never on the driver's name.
+ *
+ * Replacing or removing an app's bridge drops its leases. The app manager
+ * stops the experiences that use the app's drivers first (see
+ * `AppManager`), so none keeps running without events.
  */
 
 import type {
@@ -60,16 +64,38 @@ export interface AppDriverSource {
 
 /** How the app manager keeps the hub in step with the installed apps. */
 export interface AppDriverHosts {
-  /** Every app that ships drivers, after any change to the app catalogue. */
+  /**
+   * Every app that ships drivers, after any change to the app catalogue. An
+   * app whose source changed gets a new bridge; release the old one first.
+   */
   sync(apps: readonly AppDriverSource[]): void;
-  /** Stops an app's drivers, before its files are removed. */
+  /**
+   * Stops an app's drivers, and any build of its environment, before its
+   * files are removed or replaced. Every lease on them is dropped.
+   */
   release(slug: string): Promise<void>;
 }
 
+/** Identifies what an app's bridge runs; a new key means a new bridge. */
+export function appDriverSourceKey(app: AppDriverSource): string {
+  return JSON.stringify([
+    app.installPath,
+    app.builtin,
+    app.python.drivers,
+    app.python.requirements,
+  ]);
+}
+
+/** How long a subscription waits for an app's environment before failing. */
+const DEFAULT_PREPARE_WAIT_MS = 30_000;
+
 /** Runs app drivers: see `pythonAppBridges` in app-drivers.ts. */
 export interface AppBridgeProvider {
-  /** Builds or checks the app's environment. The first build can take minutes. */
-  prepare(app: AppDriverSource): Promise<void>;
+  /**
+   * Builds or checks the app's environment. The first build can take minutes.
+   * Rejects soon after `signal` aborts, with nothing left running.
+   */
+  prepare(app: AppDriverSource, signal: AbortSignal): Promise<void>;
   /** The bridge process of the app's drivers, which uses their unqualified names. */
   createBridge(app: AppDriverSource, handlers: BridgeHandlers): DriverBridge;
 }
@@ -86,6 +112,11 @@ export interface DriverHubOptions {
   readonly apps?: AppBridgeProvider;
   readonly supervisorTiming?: Partial<SupervisorTiming>;
   readonly bridgeReadyWaitMs?: number;
+  /**
+   * How long a subscription to an app's driver waits for the app's
+   * environment. The build goes on afterwards. Defaults to 30 s.
+   */
+  readonly prepareWaitMs?: number;
 }
 
 interface AppHost {
@@ -93,8 +124,12 @@ interface AppHost {
   /** Changes when the app is reinstalled, moved or declares other drivers. */
   readonly key: string;
   readonly manager: DriverManager;
-  /** Settles once the environment is ready and the bridge started, or failed to. */
+  /** Settles once the environment is ready, or failed to be. */
+  prepared: Promise<void> | null;
+  /** Settles once the environment is ready and the bridge started, or either failed. */
   ready: Promise<void> | null;
+  /** Aborts the environment build. */
+  abort: AbortController;
   /** Why the environment could not be prepared. A new subscription retries. */
   error: Error | null;
   removed: boolean;
@@ -125,9 +160,15 @@ export class DriverHub implements DriverService, AppDriverHosts {
     await this.builtin.start();
   }
 
+  /** Stops every bridge, and kills environment builds and waits for them to end. */
   async stop(): Promise<void> {
     this.active = false;
-    await Promise.all(this.managers().map((manager) => manager.stop()));
+    const hosts = Array.from(this.hosts.values());
+    for (const host of hosts) host.abort.abort();
+    await Promise.all([
+      ...this.managers().map((manager) => manager.stop()),
+      ...hosts.map((host) => host.ready),
+    ]);
   }
 
   sync(apps: readonly AppDriverSource[]): void {
@@ -136,7 +177,7 @@ export class DriverHub implements DriverService, AppDriverHosts {
     let changed = false;
     for (const [slug, host] of this.hosts) {
       const app = wanted.get(slug);
-      if (app && hostKey(app) === host.key) continue;
+      if (app && appDriverSourceKey(app) === host.key) continue;
       void this.removeHost(host);
       changed = true;
     }
@@ -232,7 +273,7 @@ export class DriverHub implements DriverService, AppDriverHosts {
     if (!provider) return;
     const host: AppHost = {
       app,
-      key: hostKey(app),
+      key: appDriverSourceKey(app),
       manager: new DriverManager({
         ...this.managerOptions(),
         logSource: `drivers:${app.slug}`,
@@ -240,7 +281,9 @@ export class DriverHub implements DriverService, AppDriverHosts {
           provider.createBridge(app, handlers),
         ),
       }),
+      prepared: null,
       ready: null,
+      abort: new AbortController(),
       error: null,
       removed: false,
     };
@@ -250,9 +293,10 @@ export class DriverHub implements DriverService, AppDriverHosts {
 
   private async removeHost(host: AppHost): Promise<void> {
     host.removed = true;
+    host.abort.abort();
     if (this.hosts.get(host.app.slug) === host) this.hosts.delete(host.app.slug);
     try {
-      await host.manager.stop();
+      await Promise.all([host.manager.stop(), host.ready]);
     } catch (err) {
       this.log.warn('stopping app drivers failed', { app: host.app.slug, err: String(err) });
     }
@@ -264,19 +308,21 @@ export class DriverHub implements DriverService, AppDriverHosts {
     if (!provider) return Promise.resolve();
     const { slug } = host.app;
     host.error = null;
-    host.ready = (async () => {
+    host.prepared = (async () => {
       try {
-        await provider.prepare(host.app);
+        await provider.prepare(host.app, host.abort.signal);
       } catch (err) {
-        if (host.removed) return;
+        if (host.removed || host.abort.signal.aborted) return;
         host.error = err instanceof Error ? err : new Error(String(err));
         this.log.error('the python environment of app drivers could not be prepared', {
           app: slug,
           err: host.error.message,
         });
-        return;
       }
-      if (host.removed || !this.active) return;
+    })();
+    host.ready = (async () => {
+      await host.prepared;
+      if (host.error || host.removed || !this.active) return;
       this.log.info('starting app drivers', { app: slug });
       await host.manager.start().catch((err: unknown) => {
         this.log.warn('app driver bridge did not start; retrying', { app: slug, err: String(err) });
@@ -285,11 +331,28 @@ export class DriverHub implements DriverService, AppDriverHosts {
     return host.ready;
   }
 
-  /** Waits for the app's environment, preparing it again after an earlier failure. */
+  /**
+   * Waits for the app's environment, preparing it again after an earlier
+   * failure. Gives up after `prepareWaitMs` while the build goes on, so a
+   * client gets a clear error instead of its own timeout.
+   */
   private async whenPrepared(host: AppHost): Promise<void> {
     if (!this.active) return;
-    if (host.error) await this.launch(host);
-    else await host.ready;
+    if (host.error) void this.launch(host);
+    const waitMs = this.options.prepareWaitMs ?? DEFAULT_PREPARE_WAIT_MS;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const prepared = await Promise.race([
+      (host.prepared ?? Promise.resolve()).then(() => true),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), waitMs);
+      }),
+    ]);
+    clearTimeout(timer);
+    if (!prepared) {
+      throw new Error(
+        `Python environment for ${host.app.slug} is still being prepared; try again when it is ready`,
+      );
+    }
     if (host.error) {
       throw new Error(`the drivers of ${host.app.slug} are unavailable: ${host.error.message}`);
     }
@@ -319,13 +382,4 @@ export class DriverHub implements DriverService, AppDriverHosts {
       'drivers',
     );
   }
-}
-
-function hostKey(app: AppDriverSource): string {
-  return JSON.stringify([
-    app.installPath,
-    app.builtin,
-    app.python.drivers,
-    app.python.requirements,
-  ]);
 }

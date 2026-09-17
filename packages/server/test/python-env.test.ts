@@ -1,11 +1,21 @@
 import { describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  appDriversDir,
   appEnvPython,
   appPythonEnvDir,
   buildAppPythonEnv,
+  checkRequirements,
   ensureAppPythonEnv,
   type AppEnvOptions,
 } from '../src/apps/python-env.js';
@@ -14,6 +24,7 @@ import {
   fakeToolchain,
   HAS_PYTHON_ENV,
   HAS_UV,
+  processRuns,
   REPO_PYTHON_DIR,
   writeDriverPackage,
   writeTinyWheel,
@@ -108,6 +119,94 @@ describe('app python environments', () => {
     await expect(
       buildAppPythonEnv({ ...options, toolchain: { ...options.toolchain, uv: '/no/uv' } }),
     ).rejects.toThrow('uv was not found at /no/uv');
+  });
+
+  test.skipIf(process.platform === 'win32')(
+    'aborting kills uv and the processes it started, and removes the environment',
+    async () => {
+      const { fake, options } = setup();
+      fake.hangPipInstall(true);
+      const controller = new AbortController();
+      const build = ensureAppPythonEnv({ ...options, signal: controller.signal });
+      const deadline = Date.now() + 5_000;
+      while (
+        !existsSync(fake.pidFile) ||
+        readFileSync(fake.pidFile, 'utf8').split('\n').length < 3
+      ) {
+        if (Date.now() > deadline) throw new Error('uv pip install did not start');
+        await Bun.sleep(10);
+      }
+      const pids = readFileSync(fake.pidFile, 'utf8').trim().split('\n').map(Number);
+
+      const started = Date.now();
+      controller.abort();
+      await expect(build).rejects.toThrow('uv pip install was cancelled');
+      expect(Date.now() - started).toBeLessThan(3_000);
+      expect(existsSync(options.envDir)).toBe(false);
+      for (const pid of pids) expect({ pid, runs: processRuns(pid) }).toEqual({ pid, runs: false });
+
+      // An aborted signal never starts a build.
+      await expect(ensureAppPythonEnv({ ...options, signal: controller.signal })).rejects.toThrow();
+      expect(fake.calls().filter((call) => call.startsWith('venv'))).toHaveLength(1);
+    },
+  );
+
+  test('refuses editable local requirements, also in included files', () => {
+    const root = mkdtempSync(join(tmpdir(), 'gosai-requirements-'));
+    const file = (name: string, text: string): string => {
+      const path = join(root, name);
+      mkdirSync(join(path, '..'), { recursive: true });
+      writeFileSync(path, text);
+      return path;
+    };
+    const fine = file(
+      'fine.txt',
+      '# comment -e ./nope\ntinydep\n./python/localpkg\n-e git+https://example.com/pkg.git#egg=pkg\n',
+    );
+    expect(() => checkRequirements(root, fine)).not.toThrow();
+    for (const line of [
+      '-e ./python/localpkg',
+      '--editable=python/localpkg',
+      '-e file:///abs/pkg',
+    ]) {
+      const path = file('editable.txt', `tinydep\n${line}\n`);
+      expect(() => checkRequirements(root, path)).toThrow(
+        `editable.txt:2: editable local requirements such as "${line}" are not supported`,
+      );
+    }
+    file('python/more.txt', '-e .\n');
+    const nested = file('nested.txt', '-r python/more.txt\n');
+    expect(() => checkRequirements(root, nested)).toThrow('more.txt:1: editable local');
+    // Including each other doesn't loop.
+    file('a.txt', '-r b.txt\n');
+    const b = file('b.txt', '-r a.txt\n');
+    expect(() => checkRequirements(root, b)).not.toThrow();
+  });
+
+  test('a build refuses editable requirements before running uv', async () => {
+    const { fake, appDir, options } = setup();
+    writeFileSync(join(appDir, 'requirements.txt'), '-e ./python/test_drivers\n');
+    await expect(buildAppPythonEnv(options)).rejects.toThrow('editable local requirements');
+    expect(fake.calls()).toEqual([]);
+  });
+
+  test('driver and requirement paths may not leave the app through a symlink', async () => {
+    const { root, appDir, options } = setup();
+    mkdirSync(join(root, 'outside'));
+    writeFileSync(join(root, 'outside', 'requirements.txt'), 'tinydep\n');
+    symlinkSync(join(root, 'outside'), join(appDir, 'linked'));
+    expect(() => appDriversDir(appDir, { drivers: 'linked' })).toThrow('linked is outside the app');
+    await expect(
+      buildAppPythonEnv({
+        ...options,
+        python: { ...options.python, requirements: 'linked/requirements.txt' },
+      }),
+    ).rejects.toThrow('linked/requirements.txt is outside the app');
+    // A symlink that stays inside is fine.
+    symlinkSync(join(appDir, 'python', 'test_drivers'), join(appDir, 'alias'));
+    expect(appDriversDir(appDir, { drivers: 'alias' })).toBe(
+      join(realpathSync(appDir), 'python', 'test_drivers'),
+    );
   });
 
   test.skipIf(!HAS_PYTHON_ENV || !HAS_UV)(
