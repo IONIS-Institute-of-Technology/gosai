@@ -1,21 +1,19 @@
 /**
  * Sign Game: a sign-language visual novel.
  *
- * Ports the legacy `sign_game` app (a custom VN engine + `script.txt`). The
- * story is authored in a small scripting language (`$bg`, `$show`, `$menu`,
+ * The story is authored in a small scripting language (`$bg`, `$show`, `$menu`,
  * `$if`, dialog lines, ...). The player advances dialog by making the "ok"
  * sign and picks menu choices by performing the matching sign; the avatar
  * demonstrates each option via its sign-animation videos.
  *
- * This is a clean re-implementation of the engine in TypeScript + Canvas2D,
- * preserving the script format and the sign-driven interaction.
+ * The engine keeps the legacy script format and sign-driven interaction.
  */
 
-import { drawText, fillRect } from '../shared/canvas.js';
 import type { LayerDeps } from '../shared/deps.js';
-import { ensureVideoPlaying, getImage, getVideo, imageReady } from '../shared/media.js';
-import { SignTracker, SIGN_COUNT_THRESHOLD } from '../shared/sign.js';
-import { REF_HEIGHT, REF_WIDTH, type FrameContext, type Layer } from '../shared/types.js';
+import { drawText, fillRect } from '../shared/draw.js';
+import { createMediaCache, MediaCache } from '../shared/media.js';
+import { SIGN_COUNT_THRESHOLD, SignTracker } from '../shared/sign.js';
+import { REF_HEIGHT, REF_WIDTH, type Layer } from '../shared/types.js';
 
 type Pos = 'LEFT' | 'CENTER' | 'RIGHT';
 
@@ -41,9 +39,11 @@ interface CharState {
 
 const ADVANCE_COOLDOWN_MS = 1500;
 const POS_X: Record<Pos, number> = { LEFT: 320, CENTER: 540, RIGHT: 760 };
+const FONT_FAMILY = 'PressStart2P';
 
 export function createSignGameLayer(deps: LayerDeps): Layer {
   const tracker = new SignTracker();
+  const media = createMediaCache();
   let program: Element[] = [];
   const tagMap = new Map<string, number>();
   const imageDefs = new Map<string, string>();
@@ -62,12 +62,11 @@ export function createSignGameLayer(deps: LayerDeps): Layer {
 
   function imageUrl(id: string): string | null {
     const file = imageDefs.get(id);
-    return file ? deps.assetUrl(`sign-game/backgrounds/${file}`) : null;
+    return file ? deps.asset(`sign-game/backgrounds/${file}`) : null;
   }
   const spriteUrl = (name: string, sprite: string): string =>
-    deps.assetUrl(`sign-game/characters/${name}/sprites/${sprite}.png`);
-  const animUrl = (name: string, anim: string): string =>
-    deps.assetUrl(`signs/${name}/${anim}.webm`);
+    deps.asset(`sign-game/characters/${name}/sprites/${sprite}.png`);
+  const animUrl = (name: string, anim: string): string => deps.asset(`signs/${name}/${anim}.webm`);
 
   function ensureChar(name: string): CharState {
     let c = chars.get(name);
@@ -189,9 +188,9 @@ export function createSignGameLayer(deps: LayerDeps): Layer {
   return {
     async preload(): Promise<void> {
       try {
-        const resp = await fetch(deps.assetUrl('sign-game/script.txt'));
-        const text = await resp.text();
-        const parsed = parseScript(text);
+        const resp = await fetch(deps.asset('sign-game/script.txt'));
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const parsed = parseScript(await resp.text());
         program = parsed.program;
         for (const [k, v] of parsed.tags) tagMap.set(k, v);
         for (const [k, v] of parsed.images) imageDefs.set(k, v);
@@ -200,24 +199,22 @@ export function createSignGameLayer(deps: LayerDeps): Layer {
         deps.rt.log.warn('sign-game: failed to load script', { err: String(err) });
       }
       try {
-        const url = deps.assetUrl('sign-game/fonts/PressStart2P.ttf');
-        const face = new FontFace('PressStart2P', `url(${url})`);
+        const url = deps.asset('sign-game/fonts/PressStart2P.ttf');
+        const face = new FontFace(FONT_FAMILY, `url(${url})`);
         await face.load();
-        (document.fonts as unknown as { add(f: FontFace): void }).add(face);
+        document.fonts.add(face);
         fontLoaded = true;
-      } catch {
-        fontLoaded = false;
+      } catch (err) {
+        deps.rt.log.warn('sign-game: failed to load the font', { err: String(err) });
       }
     },
 
     start(): void {
-      window.addEventListener('pointerdown', onPointer);
+      window.addEventListener('pointerdown', onPointer, { signal: deps.rt.signal });
       resetStory();
     },
 
-    render(frame: FrameContext): void {
-      const { ctx, timestamp } = frame;
-
+    render({ ctx, timestamp }): void {
       if (tracker.update(deps.feed)) {
         if (mode === 'dialog' && tracker.held('ok')) onAdvanceDialog(timestamp);
         else if (mode === 'menu') {
@@ -232,8 +229,8 @@ export function createSignGameLayer(deps: LayerDeps): Layer {
 
       // Background.
       if (bg) {
-        const img = getImage(bg);
-        if (imageReady(img)) ctx.drawImage(img, 0, 0, REF_WIDTH, REF_HEIGHT);
+        const img = media.image(bg);
+        if (MediaCache.imageReady(img)) ctx.drawImage(img, 0, 0, REF_WIDTH, REF_HEIGHT);
         else fillRect(ctx, 0, 0, REF_WIDTH, REF_HEIGHT, '#101018');
       } else {
         fillRect(ctx, 0, 0, REF_WIDTH, REF_HEIGHT, '#000000');
@@ -244,10 +241,16 @@ export function createSignGameLayer(deps: LayerDeps): Layer {
       if (mode === 'menu') drawMenu(ctx);
       else if (mode === 'dialog') drawDialog(ctx, timestamp);
       else if (mode === 'end') drawEnd(ctx);
+      media.pauseUnused();
+    },
+
+    suspend(): void {
+      media.pauseAll();
     },
 
     stop(): void {
       window.removeEventListener('pointerdown', onPointer);
+      media.release();
       tracker.reset();
     },
   };
@@ -256,12 +259,12 @@ export function createSignGameLayer(deps: LayerDeps): Layer {
     for (const [name, c] of chars) {
       if (!c.visible) continue;
       if (c.anim) {
-        const v = getVideo(animUrl(name, c.anim));
-        if (ensureVideoPlaying(v))
+        const v = media.video(animUrl(name, c.anim));
+        if (media.playing(v))
           drawContain(ctx, v, v.videoWidth, v.videoHeight, POS_X[c.pos], 560, 460, 460);
       } else if (c.sprite) {
-        const img = getImage(spriteUrl(name, c.sprite));
-        if (imageReady(img))
+        const img = media.image(spriteUrl(name, c.sprite));
+        if (MediaCache.imageReady(img))
           drawContain(ctx, img, img.naturalWidth, img.naturalHeight, POS_X[c.pos], 620, 520, 760);
       }
     }
@@ -286,7 +289,7 @@ export function createSignGameLayer(deps: LayerDeps): Layer {
       );
       y += 60;
     }
-    wrapText(ctx, lastDialog.text, 80, y, REF_WIDTH - 160, 44, 26, '#fff');
+    wrapText(ctx, lastDialog.text, 80, y, REF_WIDTH - 160, 44, 26, '#fff', font());
 
     if (now - lastInteraction > 4000) {
       drawText(
@@ -307,7 +310,7 @@ export function createSignGameLayer(deps: LayerDeps): Layer {
   function drawMenu(ctx: CanvasRenderingContext2D): void {
     if (lastDialog) {
       drawTextBox(ctx);
-      wrapText(ctx, lastDialog.text, 80, 1500, REF_WIDTH - 160, 44, 26, '#fff');
+      wrapText(ctx, lastDialog.text, 80, 1500, REF_WIDTH - 160, 44, 26, '#fff', font());
     }
     const n = currentMenu.length;
     const w = (REF_WIDTH - 80) / n - 20;
@@ -322,8 +325,8 @@ export function createSignGameLayer(deps: LayerDeps): Layer {
       ctx.strokeRect(x, 950, w, 360);
       fillRect(ctx, x, 950, w * progress, 8, '#ff8100');
 
-      const vid = getVideo(animUrl(currentMenuChar, item.sign));
-      if (ensureVideoPlaying(vid))
+      const vid = media.video(animUrl(currentMenuChar, item.sign));
+      if (media.playing(vid))
         drawContain(ctx, vid, vid.videoWidth, vid.videoHeight, x + w / 2, 1110, w - 30, 280);
       drawText(
         ctx,
@@ -365,7 +368,7 @@ export function createSignGameLayer(deps: LayerDeps): Layer {
     );
     drawText(
       ctx,
-      'Make the "goodbye"... or reopen from the menu',
+      'Open Sign Game from the menu to play again',
       REF_WIDTH / 2,
       REF_HEIGHT / 2 + 60,
       24,
@@ -392,7 +395,7 @@ export function createSignGameLayer(deps: LayerDeps): Layer {
   }
 
   function font(): string {
-    return fontLoaded ? 'PressStart2P, monospace' : 'monospace';
+    return fontLoaded ? `${FONT_FAMILY}, monospace` : 'monospace';
   }
 }
 
@@ -433,9 +436,10 @@ function wrapText(
   lineHeight: number,
   fontPx: number,
   color: string,
+  font: string,
 ): void {
   ctx.fillStyle = color;
-  ctx.font = `${fontPx}px PressStart2P, monospace`;
+  ctx.font = `${fontPx}px ${font}`;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
   const words = text.split(' ');
@@ -503,7 +507,6 @@ function parseScript(text: string): ParseResult {
 }
 
 const RE_QUOTED = /"([^"]*)"/g;
-const RE_IDENT = /([A-Za-z_][A-Za-z0-9_]*)/g;
 
 function parseCommand(
   line: string,
@@ -569,25 +572,13 @@ function parseCommand(
 }
 
 function parseMenu(line: string): Element {
-  const quoted = [...line.matchAll(RE_QUOTED)].map((m) => m[1]!);
-  const char = quoted[0] ?? 'Aria';
-  // After char and menu name, items alternate "sign" (quoted) and tag (identifier).
-  // Quoted strings: [char, menuName, sign1, sign2, ...]; identifiers between commas are tags.
-  const signs = quoted.slice(2);
-  // Tags are the identifiers following each sign; capture identifiers that are not keywords/char names.
-  const idents = [...line.matchAll(RE_IDENT)].map((m) => m[1]!);
-  // Reconstruct items by walking the argument list textually.
-  const argsStart = line.indexOf('(');
-  const args = splitArgs(line.slice(argsStart + 1, line.lastIndexOf(')')));
+  // $menu("char", "menu name", count, "sign1", tag1, "sign2", tag2, ...)
+  const args = splitArgs(line.slice(line.indexOf('(') + 1, line.lastIndexOf(')')));
+  const char = stripQuotes(args[0] ?? '"Aria"');
   const items: Array<{ sign: string; tag: string }> = [];
-  // args: charName, menuName, count, sign1, tag1, sign2, tag2, ...
   for (let i = 3; i + 1 < args.length; i += 2) {
-    const sign = stripQuotes(args[i]!);
-    const tag = args[i + 1]!.trim();
-    items.push({ sign, tag });
+    items.push({ sign: stripQuotes(args[i]!), tag: args[i + 1]!.trim() });
   }
-  void signs;
-  void idents;
   return { type: 'menu', char, items };
 }
 

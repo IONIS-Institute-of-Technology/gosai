@@ -5,6 +5,10 @@
  * none, so the drivers work on a clean machine. Linux x64 machines with an
  * NVIDIA driver 580 or newer also get the `gpu` extra. Needs network on the
  * first launch only.
+ *
+ * uv's cache is `~/.gosai-runtime/uv-cache` (or `UV_CACHE_DIR`). The server
+ * uses the same cache, and the same uv, for the Python environments of apps
+ * that ship drivers, so their packages that match the runtime's come from it.
  */
 
 import { spawn } from 'node:child_process';
@@ -47,7 +51,7 @@ export async function ensurePythonRuntime(
   const { extras, gpuReason } = pythonExtras(options.extras ?? [], currentPythonHost());
   if (gpuReason) console.log(`[gosai-python] ${gpuReason}`);
 
-  const runtimeRoot = join(homedir(), '.gosai-runtime');
+  const runtimeRoot = defaultRuntimeRoot();
   const name = runtimeName(info, extras);
   const uv = bundledUv(resources);
   const onStatus = options.onStatus ?? (() => undefined);
@@ -78,6 +82,15 @@ export async function ensurePythonRuntime(
     console.warn(`[gosai-python] could not remove old runtimes: ${String(err)}`);
   }
   return pythonDir;
+}
+
+function defaultRuntimeRoot(): string {
+  return join(homedir(), '.gosai-runtime');
+}
+
+/** The uv cache of packaged builds. */
+export function uvCacheDir(): string {
+  return process.env.UV_CACHE_DIR || join(defaultRuntimeRoot(), 'uv-cache');
 }
 
 /**
@@ -113,7 +126,7 @@ function runUv(
     console.log(`[gosai-python] $ uv ${args.join(' ')}`);
     const child = spawn(uv, args, {
       cwd,
-      env: { ...process.env, UV_PYTHON_INSTALL_DIR: pythonInstallDir },
+      env: { ...process.env, UV_PYTHON_INSTALL_DIR: pythonInstallDir, UV_CACHE_DIR: uvCacheDir() },
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     });

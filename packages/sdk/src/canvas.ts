@@ -43,18 +43,20 @@ export function computeFit(target: Size, reference: Size, mode: FitMode = 'conta
 }
 
 /** The parts of a canvas `fitCanvas` needs. */
-export type FittableCanvas = Pick<HTMLCanvasElement, 'width' | 'height' | 'getBoundingClientRect'>;
+export type FittableCanvas = Pick<HTMLCanvasElement, 'width' | 'height' | 'getBoundingClientRect'> &
+  Partial<Pick<HTMLCanvasElement, 'clientWidth' | 'clientHeight'>>;
 
 /**
  * Sizes the backing store to the canvas's CSS box times the device pixel
  * ratio. Assigning `width` or `height` clears the canvas and resets its
  * context state, so this only assigns them when the size changed. Returns
- * whether it did.
+ * whether it did. The box is the size before CSS transforms, so a canvas
+ * warped with `applyQuadWarp` keeps the resolution of its own box.
  */
 export function fitCanvas(canvas: FittableCanvas, dpr = defaultDpr()): boolean {
-  const rect = canvas.getBoundingClientRect();
-  const width = Math.max(1, Math.round(rect.width * dpr));
-  const height = Math.max(1, Math.round(rect.height * dpr));
+  const box = cssBox(canvas);
+  const width = Math.max(1, Math.round(box.width * dpr));
+  const height = Math.max(1, Math.round(box.height * dpr));
   if (canvas.width === width && canvas.height === height) return false;
   canvas.width = width;
   canvas.height = height;
@@ -163,6 +165,21 @@ export function fullscreenContainer(): HTMLElement {
   el.style.overflow = 'hidden';
   document.body.appendChild(el);
   return el;
+}
+
+/**
+ * `getBoundingClientRect` keeps fractional pixels but measures the box after
+ * CSS transforms, which for a warped canvas is the bounding box of the quad.
+ * `clientWidth` and `clientHeight` ignore transforms but are rounded, so they
+ * win only when the two disagree by a pixel or more.
+ */
+function cssBox(canvas: FittableCanvas): { width: number; height: number } {
+  const rect = canvas.getBoundingClientRect();
+  const { clientWidth, clientHeight } = canvas;
+  if (!clientWidth || !clientHeight) return rect;
+  const transformed =
+    Math.abs(rect.width - clientWidth) >= 1 || Math.abs(rect.height - clientHeight) >= 1;
+  return transformed ? { width: clientWidth, height: clientHeight } : rect;
 }
 
 function defaultDpr(): number {

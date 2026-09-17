@@ -119,16 +119,33 @@ export interface ExperienceDescriptor {
   readonly name: string;
   readonly description?: string;
   readonly entry: string;
-  readonly python?: string;
+  /**
+   * Drivers kept running while the experience runs: built-in names such as
+   * `hand_pose`, and app drivers named `<app slug>/<driver>`.
+   */
   readonly drivers: readonly string[];
   readonly exclusive: boolean;
   readonly allowed?: readonly string[];
   readonly required?: readonly string[];
 }
 
+/**
+ * Python drivers an app ships. They run in a bridge process of their own, in a
+ * Python environment GOSAI builds for the app with uv, and are named
+ * `<app slug>/<driver>`.
+ */
 export interface PythonConfig {
+  /**
+   * Package directory, relative to the app root, whose modules define the
+   * drivers. Its name must be a Python identifier.
+   */
+  readonly drivers: string;
+  /**
+   * A requirements file, relative to the app root, installed into the app's
+   * environment. Packages GOSAI's own environment has are pinned to its
+   * versions.
+   */
   readonly requirements?: string;
-  readonly module?: string;
 }
 
 export interface AppManifest {
@@ -151,7 +168,7 @@ export interface AppManifest {
    * used. Must reference an existing experience slug.
    */
   readonly default?: string;
-  /** Python integration for app-provided drivers. Reserved; the installer reads `requirements`. */
+  /** Python drivers the app ships. */
   readonly python?: PythonConfig;
   /**
    * Experiences to start when the server boots, for apps listed in

@@ -20,7 +20,11 @@
  * installer embedding Electron, the compiled server, uv, the Python tree, and
  * only this app, plus a kiosk.json marker that makes the shell boot straight
  * into it. On first launch the kiosk creates its own data directory under
- * ~/.gosai-kiosks/<slug> and picks a free port automatically.
+ * ~/.gosai-kiosks/<slug> and picks a free port automatically, and builds the
+ * Python environment of the app's own drivers when it ships some.
+ *
+ * The manifest is validated like the server does, including its `sdk` range
+ * against the SDK the bundle serves.
  */
 
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -28,7 +32,9 @@ import { basename, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { usesCalibrationRunner } from '../packages/desktop/src/main/calibration-plan.js';
 import { parseDisplayIndex, parseExtras } from '../packages/desktop/src/main/launch-args.js';
-import { isValidSlug, SLUG_PATTERN } from '@gosai/shared/slug';
+import { ManifestError, parseManifest } from '../packages/server/src/apps/manifest.js';
+import { appDriversDir } from '../packages/server/src/apps/python-env.js';
+import { sdkIncompatibility } from '../packages/server/src/apps/sdk-version.js';
 import { prepareBundle } from './prepare-bundle.js';
 import { hostTarget, parseTarget, TARGETS } from './targets.js';
 
@@ -36,15 +42,6 @@ const repoRoot = resolve(import.meta.dir, '..');
 const desktopDir = join(repoRoot, 'packages', 'desktop');
 
 const USAGE = 'usage: bun run package:kiosk -- <app-dir> [--target <name>] [--skip-build]';
-
-interface Manifest {
-  slug: string;
-  name?: string;
-  version?: string;
-  default?: string;
-  calibration?: unknown;
-  experiences: Array<{ slug: string; entry: string }>;
-}
 
 function fail(message: string): never {
   console.error(`[package-kiosk] ${message}`);
@@ -105,10 +102,26 @@ function parseCliArgs() {
 const { appDir, target, experience, displayIndex, pythonExtras, windowed, skipBuild } = parsed;
 const manifestPath = join(appDir, 'gosai.app.json');
 if (!existsSync(manifestPath)) fail(`not a GOSAI app: ${manifestPath} not found`);
-const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Manifest;
-// The slug names staging and output directories that get deleted.
-if (!isValidSlug(manifest.slug)) {
-  fail(`manifest slug must match ${SLUG_PATTERN.source} (got ${JSON.stringify(manifest.slug)})`);
+// The slug, which names staging and output directories that get deleted, is validated here too.
+let manifest: ReturnType<typeof parseManifest>;
+try {
+  manifest = parseManifest(manifestPath, (warning) =>
+    console.warn(`[package-kiosk] manifest warning: ${warning}`),
+  );
+} catch (err) {
+  fail(err instanceof ManifestError ? err.message : String(err));
+}
+const incompatible = sdkIncompatibility(manifest);
+if (incompatible) fail(incompatible);
+if (manifest.python) {
+  try {
+    appDriversDir(appDir, manifest.python);
+  } catch (err) {
+    fail(err instanceof Error ? err.message : String(err));
+  }
+  console.log(
+    `[package-kiosk] ${manifest.slug} ships Python drivers; the kiosk builds their environment on first launch`,
+  );
 }
 if (experience && !manifest.experiences.some((e) => e.slug === experience)) {
   fail(`experience "${experience}" not declared in ${manifest.slug}`);

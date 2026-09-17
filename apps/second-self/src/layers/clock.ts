@@ -5,7 +5,6 @@
  * and anchored in the top-right corner.
  */
 
-import type { LayerDeps } from '../shared/deps.js';
 import { REF_WIDTH, type Layer } from '../shared/types.js';
 
 const R = 90;
@@ -13,7 +12,7 @@ const EC = 14;
 const CENTER_X = REF_WIDTH - 180;
 const CENTER_Y = 200;
 
-export function createClockLayer(_deps: LayerDeps): Layer {
+export function createClockLayer(): Layer {
   return {
     render({ ctx }): void {
       const now = new Date();

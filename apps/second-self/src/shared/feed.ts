@@ -1,38 +1,28 @@
 /**
- * Shared, mutable real-time data snapshots.
+ * The latest driver payloads, shared by every layer.
  *
- * The compositor subscribes to drivers once and writes the latest payloads into
- * this feed in place (no per-frame allocations). Layers read from the feed every
- * frame and must never mutate its contents.
+ * The compositor subscribes to each driver once and stores each payload as it
+ * arrives, without copying it. Layers read the feed every frame and must never
+ * mutate it.
  */
 
 import type { FrequencyData, MirroredData, RawPoseData, SignData } from './types.js';
 
-export interface MirrorSnapshot {
-  data: MirroredData;
-  lastUpdate: number;
-}
+/** Camera frame size assumed until the `pose` driver reports the real one. */
+export const DEFAULT_FRAME_WIDTH = 1280;
+export const DEFAULT_FRAME_HEIGHT = 720;
 
-export interface RawPoseSnapshot {
-  data: RawPoseData;
-  lastUpdate: number;
-}
-
-export interface FrequencySnapshot {
-  data: FrequencyData;
-  lastUpdate: number;
-}
-
-export interface SignSnapshot {
-  data: SignData;
+export interface Snapshot<T> {
+  data: T;
+  /** `performance.now()` when `data` arrived; 0 before the first payload. */
   lastUpdate: number;
 }
 
 export interface MirrorFeed {
-  readonly mirror: MirrorSnapshot;
-  readonly raw: RawPoseSnapshot;
-  readonly frequency: FrequencySnapshot;
-  readonly sign: SignSnapshot;
+  readonly mirror: Snapshot<MirroredData>;
+  readonly raw: Snapshot<RawPoseData>;
+  readonly frequency: Snapshot<FrequencyData>;
+  readonly sign: Snapshot<SignData>;
 }
 
 export function createMirrorFeed(): MirrorFeed {
@@ -44,6 +34,7 @@ export function createMirrorFeed(): MirrorFeed {
         left_hand_pose: [],
         face_mesh: [],
         body_world_pose: [],
+        ts: 0,
       },
       lastUpdate: 0,
     },
@@ -54,13 +45,15 @@ export function createMirrorFeed(): MirrorFeed {
         left_hand_pose: [],
         face_mesh: [],
         body_world_pose: [],
-        frame_width: 1280,
-        frame_height: 720,
+        frame_width: DEFAULT_FRAME_WIDTH,
+        frame_height: DEFAULT_FRAME_HEIGHT,
+        ts: 0,
+        inference_ms: 0,
       },
       lastUpdate: 0,
     },
     frequency: {
-      data: { max_frequency: 0, amplitude: 0, rfft: [] },
+      data: { max_frequency: 0, amplitude: 0, rfft: [], blocksize: 0, samplerate: 0 },
       lastUpdate: 0,
     },
     sign: {

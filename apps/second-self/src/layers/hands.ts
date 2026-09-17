@@ -1,8 +1,4 @@
-/**
- * Hands overlay: draws both hand skeletons from the mirrored feed.
- *
- * Ports the legacy `hands` app (components/hand.js) onto Canvas2D.
- */
+/** Hands overlay: draws both hand skeletons from the mirrored feed. */
 
 import type { LayerDeps } from '../shared/deps.js';
 import { drawHand } from '../shared/mirror.js';

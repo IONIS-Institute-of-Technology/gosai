@@ -146,3 +146,40 @@ def test_compute_homographies_recovers_a_perspective_transform() -> None:
     assert result.error_max < 1e-3
     assert result.surface is not None
     assert warp_points(result.surface, [[640, 480]])[0] == pytest.approx([64, 48])
+
+
+# w = 1 - x / 640: camera points on the column x = 640 map to infinity.
+TOWARDS_INFINITY = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [-1 / 640, 0.0, 1.0]])
+
+
+def test_warp_points_returns_nan_for_points_at_infinity() -> None:
+    warped = warp_points(TOWARDS_INFINITY, [[320, 100], [640, 100]])
+
+    assert warped[0] == pytest.approx([640, 200])
+    assert np.isnan(warped[1]).all()
+    assert warp_points(TOWARDS_INFINITY, np.empty((0, 2))).shape == (0, 2)
+
+
+def test_surface_quad_display_is_null_when_a_corner_maps_to_infinity() -> None:
+    layout = [MarkerPlacement(id=i, x=100.0 + 150 * i, y=100.0 + 50 * (i % 2), size=40.0) for i in range(4)]
+    inverse = np.linalg.inv(TOWARDS_INFINITY)
+    detections = {m.id: warp_points(inverse, m.corners()) for m in layout}
+
+    result = compute_homographies(
+        layout, detections, focus_quad=[[0, 0], [1, 0], [1, 1], [0, 1]], frame_size=(640, 480)
+    )
+
+    assert result.surface is not None
+    assert result.surface_quad_display is None
+
+
+def test_reprojection_reports_points_at_infinity() -> None:
+    driver = CalibrationDriver(RecordingContext())
+    driver._display = TOWARDS_INFINITY
+
+    with pytest.raises(ValueError, match="maps to infinity"):
+        driver.execute("reproject_point", {"x": 640, "y": 10})
+    points = check_result(
+        CalibrationDriver, "reproject_points", driver.execute("reproject_points", {"points": [[320, 0], [640, 0]]})
+    )
+    assert points["points"] == [{"x": 640.0, "y": 0.0}, None]

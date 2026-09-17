@@ -157,6 +157,32 @@ describe('generating types', () => {
     ).toThrow('namespace');
   });
 
+  test('types app drivers under their qualified names', () => {
+    const drivers = readDriverSchemas({
+      drivers: [{ name: 'hello-app/sensor', schema: SENSOR.schema }],
+    });
+    const text = driverTypesModule(drivers, {
+      kind: 'augment',
+      module: '@gosai/sdk',
+      namespace: 'AppDriverTypes',
+    });
+    expect(text).toContain('  export namespace sensor {');
+    expect(text).toContain('    "hello-app/sensor": {');
+    expect(text).toContain('        reading: AppDriverTypes.sensor.Reading;');
+    expect(driverReference(drivers)).toContain('- [`hello-app/sensor`](#hello-appsensor)');
+
+    const clash = readDriverSchemas({
+      drivers: [
+        { name: 'sensor', schema: null },
+        { name: 'hello-app/sensor', schema: null },
+      ],
+    });
+    expect(() => driverTypesModule(clash, { kind: 'builtin' })).toThrow('--drivers');
+    expect(() =>
+      readDriverSchemas({ drivers: [{ name: 'hello-app/sensor/x', schema: null }] }),
+    ).toThrow('driver name');
+  });
+
   test('writes a Markdown reference', () => {
     const text = driverReference([SENSOR]);
     expect(text).toContain('- [`sensor`](#sensor): A test sensor.');

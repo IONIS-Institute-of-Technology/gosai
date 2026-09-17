@@ -14,8 +14,7 @@
  * Right triangles (any angle == 90) draw in blue instead of white.
  */
 
-import { type FrameContext, type Layer } from '../shared/types.js';
-import { strokeLine, strokeRect } from '../shared/canvas-utils.js';
+import { strokeLine, strokeRect } from '../shared/draw.js';
 import {
   dist,
   lineIntersection,
@@ -25,7 +24,7 @@ import {
   triangleAngleDeg,
   type Vec2,
 } from '../shared/math.js';
-import type { PoolFeed } from '../shared/feed.js';
+import type { PoolFrame, PoolLayer } from '../shared/types.js';
 
 const MAX_TRIANGLES = 3;
 
@@ -63,26 +62,20 @@ interface DerivedTriangle {
   isRight: boolean;
 }
 
-export function createTrianglesLayer(feed: PoolFeed): Layer {
+export function createTrianglesLayer(): PoolLayer {
   return {
-    render(frame: FrameContext): void {
-      const { ctx } = frame;
-
+    render({ ctx, tracking }: PoolFrame): void {
       // Toggle state for the four feature buttons: ON while any ball covers
       // the button rectangle that frame.
       const boxes = [false, false, false, false];
       const vertices: Vec2[] = [];
-      for (const ball of feed.balls.balls) {
-        let hit = false;
-        for (let i = 0; i < BUTTON_COORDS.length; i++) {
-          const [bx, by, bw, bh] = BUTTON_COORDS[i]!;
-          if (ball.x >= bx && ball.x <= bx + bw && ball.y >= by && ball.y <= by + bh) {
-            boxes[i] = true;
-            hit = true;
-            break;
-          }
-        }
-        if (!hit) vertices.push({ x: ball.x, y: ball.y });
+      for (const ball of tracking.balls) {
+        const button = BUTTON_COORDS.findIndex(
+          ([bx, by, bw, bh]) =>
+            ball.x >= bx && ball.x <= bx + bw && ball.y >= by && ball.y <= by + bh,
+        );
+        if (button === -1) vertices.push({ x: ball.x, y: ball.y });
+        else boxes[button] = true;
       }
 
       drawButtons(ctx, boxes);
@@ -125,11 +118,9 @@ export function createTrianglesLayer(feed: PoolFeed): Layer {
 // ---------------------------------------------------------------------------
 
 function drawButtons(ctx: CanvasRenderingContext2D, boxes: readonly boolean[]): void {
-  for (let i = 0; i < BUTTON_COORDS.length; i++) {
-    const [x, y, w, h] = BUTTON_COORDS[i]!;
-    const colour = boxes[i] ? '#00ff00' : WHITE;
-    strokeRect(ctx, x, y, w, h, 5, colour);
-  }
+  BUTTON_COORDS.forEach(([x, y, w, h], i) => {
+    strokeRect(ctx, x, y, w, h, 5, boxes[i] ? '#00ff00' : WHITE);
+  });
 }
 
 // ---------------------------------------------------------------------------

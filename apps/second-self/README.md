@@ -8,8 +8,9 @@ reflection.
 This is a clean, type-safe port of the legacy `second-self` app pack. Where the
 legacy version was many separate p5.js apps coordinated over Socket.IO, this is
 a **single composited experience**: one fullscreen canvas, one driver feed, and
-internal **layers** (one per legacy experience) toggled by an in-process menu
-controller (mirrors the [interactive-pool](../interactive-pool) architecture).
+internal **layers** (one per legacy experience) run by the SDK's `LayerManager`
+and toggled from a gesture menu. The app imports only the public `@gosai/sdk`
+entry, like any third-party app.
 
 ## Experiences (layers)
 
@@ -32,9 +33,10 @@ controller (mirrors the [interactive-pool](../interactive-pool) architecture).
 | `aria`           | VRM avatar puppeted by your pose/hands/face (three.js + Kalidokit)       |
 | `calibrate`      | Guided mirror-calibration wizard; saving switches to reflection mode     |
 
-The menu controller enforces per-layer `exclusive` / `allowed` / `required`
-relationships (ported from the legacy `processing.py` app-manager rules) and
-per-layer options (the old `sub-menu.json` toggles become in-process options).
+The `LayerManager` enforces per-layer `exclusive` / `allowed` / `required`
+relationships (ported from the legacy `processing.py` app-manager rules); the
+menu is `persistent`. Per-layer menu options (the old `sub-menu.json` toggles)
+live in `src/shared/layers.ts`.
 
 ## Drivers used
 
@@ -51,8 +53,12 @@ webcam-only — there is no RealSense dependency. See
 [`python/src/gosai_py/drivers/README.md`](../../python/src/gosai_py/drivers/README.md)
 for driver notes, and the docstrings in `pose_to_mirror.py` / `slr.py`.
 
-Audio synthesis (the legacy `synthesizer` driver) is done **in-browser** via the
-Web Audio API in `src/shared/synth.ts` — no Python round-trip.
+Audio synthesis (the legacy `synthesizer` driver) is done in the browser on the
+runtime's `rt.audio` context in `src/shared/synth.ts`, with no Python round-trip.
+The runtime resumes the context on start, so sound plays without a click.
+
+The drivers only send the 478-point face mesh while a layer needs it: the raw
+`pose` stream while `aria` runs, the mirrored stream while `face` runs.
 
 ## Architecture
 
@@ -64,21 +70,26 @@ mic ────────────▶ frequency_analysis (frequency)──
                                                       ▼
                                             main.ts compositor + feed
                                                       │
-                                              MenuController
+                                               SDK LayerManager
                                                       │
                                    layers ──▶ 1080x1920 portrait canvas
-                                   theremine/music ──▶ shared/synth.ts (Web Audio)
-                                   aria ──▶ own transparent WebGL canvas
+                                   theremine/music ──▶ shared/synth.ts (rt.audio)
+                                   aria ──▶ WebGL canvas stacked below
 ```
 
-- `src/main.ts` — compositor: owns the canvas, subscribes to drivers once into a
-  shared `MirrorFeed`, pushes mirror geometry + SLR action set on start, and runs
-  the `LayerManager` render loop.
-- `src/shared/` — `types.ts`, `feed.ts`, `canvas.ts` (reference transform),
-  `mirror.ts` (skeleton topology + drawing), `synth.ts` (Web Audio), `music.ts`,
-  `particles.ts`, `media.ts`, `sign.ts`, `menu-controller.ts`, `assets.ts`,
-  `deps.ts`.
-- `src/layers/` — one file per experience.
+- `src/main.ts`: the compositor. It owns the SDK fullscreen canvas, subscribes
+  to the drivers once into a shared `MirrorFeed`, applies the mirror projection
+  and the SLR action set on start, runs the layers and suspends them while the
+  display sleeps.
+- `src/shared/`: `types.ts` (driver payload types come from the SDK),
+  `feed.ts`, `layers.ts` (layer definitions and menu options), `deps.ts`,
+  `config.ts` (settings), `projection.ts` (mirror projection and calibration
+  profile), `draw.ts`, `ui.ts` (cursor, dwell buttons, progress rings),
+  `mirror.ts` (skeleton topology and drawing), `align.ts`, `synth.ts`,
+  `music.ts`, `particles.ts`, `media.ts` (per-layer images and videos),
+  `sign.ts`, `sleep.ts`.
+- `src/layers/`: one file per experience.
+- `test/`: unit tests for the pure parts.
 - `assets/` — copied from the legacy app (dance choreography + animated webp,
   music scores, sign-game backgrounds/characters/font/script, Aria's sign videos
   in `signs/` shared by sign-game and sign-training, sign-training's own
@@ -91,6 +102,7 @@ bun install
 bun run build         # one-shot bundle into dist/main.js
 bun run dev           # watch mode (a dev watcher is normally already running)
 bun run typecheck     # tsc --noEmit
+bun run test          # bun test
 ```
 
 The app is registered in the repo root `build:apps` script.
@@ -114,7 +126,7 @@ wizard:
 When nobody is detected in front of the mirror for `sleepDelaySec`, the display
 falls completely dark with a "magic veil" animation: a soft opacity gradient
 closes over the screen from the center, trailing sparkles. While dark, layer
-rendering is skipped entirely. Someone standing in front for 2 seconds straight
+layers are suspended: they stop drawing, and sound and videos stop. Someone standing in front for 2 seconds straight
 (passers-by are ignored) wakes it with the reverse reveal plus expanding water
 ripples. Presence is derived from the visibility of the core body landmarks
 (nose/shoulders/hips) in the raw `pose` feed, gated by the person's estimated
@@ -122,10 +134,11 @@ distance (weak-perspective shoulder-span estimate, same math as
 `pose_to_mirror`), smoothed and hysteresis-gated so the mirror never flickers
 between states.
 
-It lives in the app's key/value storage under `config` (edit via the app's
+The fields are declared in `gosai.app.json`, which also holds their defaults
+and bounds. The app reads them through `rt.settings`. Edit them with the app's
 **Settings** button in the dashboard, or send the server's `app:settings:set`
 command with `{ "appSlug": "second-self", "values": { "projection.mode":
-"reflection" } }`).
+"reflection" } }`.
 
 Everything else adapts by itself:
 
@@ -153,7 +166,8 @@ Everything else adapts by itself:
    for a dwell-to-confirm **Save / Redo**.
 3. **Saving switches the app to reflection mode** automatically and persists
    both the mode and the fitted profile (`mirror_calibration` in app storage);
-   the profile is pushed to the driver on every start. An app already in
+   the profile is pushed to the driver on every start. Leaving the wizard
+   without saving puts the saved projection back. An app already in
    reflection mode with no profile walks straight into the wizard on launch.
    Re-run the wizard whenever the camera or display moves.
 

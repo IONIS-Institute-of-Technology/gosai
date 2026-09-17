@@ -1,14 +1,13 @@
 /**
- * In-browser audio synthesis (Web Audio).
+ * Audio synthesis on the runtime's AudioContext (`rt.audio`).
  *
- * Replaces the legacy Python `synthesizer` driver, which mixed sine waves on
- * the server and streamed them to the speaker. Doing it in the browser removes
- * the audio round-trip and the Python dependency:
- *
- * - {@link Synth.setLive} drives a continuously-running sine oscillator for the
- *   theremin (frequency + amplitude follow the hands every frame).
+ * - {@link Synth.setLive} drives a continuously running sine oscillator for the
+ *   theremin: frequency and amplitude follow the hands every frame.
  * - {@link Synth.playScore} schedules a queue of notes for score playback
- *   (e.g. "La Vie En Rose"), mirroring the legacy `add_to_queue` behavior.
+ *   (e.g. "La Vie En Rose").
+ *
+ * The runtime creates, resumes and closes the context; the synth only owns
+ * its nodes.
  */
 
 export interface Note {
@@ -24,69 +23,43 @@ const MAX_GAIN = 0.25;
 const SMOOTHING_S = 0.02;
 
 export class Synth {
-  private ctx: AudioContext | null = null;
-  private liveOsc: OscillatorNode | null = null;
-  private liveGain: GainNode | null = null;
+  private readonly liveOsc: OscillatorNode;
+  private readonly liveGain: GainNode;
   private scoreOsc: OscillatorNode | null = null;
   private scoreGain: GainNode | null = null;
-  private muted = false;
 
-  /** Create the AudioContext + live oscillator. Safe to call repeatedly. */
-  ensure(): void {
-    if (this.ctx) return;
-    const Ctor =
-      window.AudioContext ??
-      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!Ctor) return;
-    this.ctx = new Ctor();
-
-    this.liveGain = this.ctx.createGain();
+  constructor(private readonly ctx: AudioContext) {
+    this.liveGain = ctx.createGain();
     this.liveGain.gain.value = 0;
-    this.liveGain.connect(this.ctx.destination);
+    this.liveGain.connect(ctx.destination);
 
-    this.liveOsc = this.ctx.createOscillator();
+    this.liveOsc = ctx.createOscillator();
     this.liveOsc.type = 'sine';
     this.liveOsc.frequency.value = 440;
     this.liveOsc.connect(this.liveGain);
     this.liveOsc.start();
   }
 
-  /** Resume the context (required after a user gesture by autoplay policies). */
-  async resume(): Promise<void> {
-    this.ensure();
-    if (this.ctx && this.ctx.state === 'suspended') {
-      try {
-        await this.ctx.resume();
-      } catch {
-        // ignored; will retry on the next gesture.
-      }
-    }
-  }
-
-  setMuted(muted: boolean): void {
-    this.muted = muted;
-    if (muted) this.setLive(0, 0);
-  }
-
-  isMuted(): boolean {
-    return this.muted;
-  }
-
-  /** Update the live theremin tone. amplitude/frequency <= 0 silences it. */
+  /** Updates the live theremin tone. A non-positive amplitude or frequency silences it. */
   setLive(frequency: number, amplitude: number): void {
-    if (!this.ctx || !this.liveOsc || !this.liveGain) return;
     const now = this.ctx.currentTime;
-    const wantGain =
-      this.muted || frequency <= 0 || amplitude <= 0 ? 0 : clamp(amplitude) * MAX_GAIN;
-    if (frequency > 0) {
-      this.liveOsc.frequency.setTargetAtTime(frequency, now, SMOOTHING_S);
-    }
-    this.liveGain.gain.setTargetAtTime(wantGain, now, SMOOTHING_S);
+    const gain = frequency <= 0 || amplitude <= 0 ? 0 : clamp(amplitude) * MAX_GAIN;
+    if (frequency > 0) this.liveOsc.frequency.setTargetAtTime(frequency, now, SMOOTHING_S);
+    this.liveGain.gain.setTargetAtTime(gain, now, SMOOTHING_S);
   }
 
-  /** Schedule a sequence of notes. Cancels any score currently playing. */
-  playScore(notes: readonly Note[]): void {
-    if (!this.ctx || this.muted || notes.length === 0) return;
+  /** The audio clock the synth schedules on, in seconds. */
+  get currentTime(): number {
+    return this.ctx.currentTime;
+  }
+
+  /**
+   * Schedules a sequence of notes. Cancels any score currently playing.
+   * Returns the {@link currentTime} the first note starts at.
+   */
+  playScore(notes: readonly Note[]): number {
+    const start = this.ctx.currentTime + 0.05;
+    if (notes.length === 0) return start;
     this.stopScore();
 
     const gain = this.ctx.createGain();
@@ -97,7 +70,7 @@ export class Synth {
     osc.type = 'sine';
     osc.connect(gain);
 
-    let t = this.ctx.currentTime + 0.05;
+    let t = start;
     for (const note of notes) {
       const dur = Math.max(note.duration, 0.001);
       if (note.frequency > 0 && note.amplitude > 0) {
@@ -117,62 +90,34 @@ export class Synth {
     this.scoreOsc = osc;
     this.scoreGain = gain;
     osc.onended = (): void => {
-      try {
-        gain.disconnect();
-      } catch {
-        // already disconnected.
-      }
+      gain.disconnect();
       if (this.scoreOsc === osc) {
         this.scoreOsc = null;
         this.scoreGain = null;
       }
     };
+    return start;
   }
 
   stopScore(): void {
-    if (this.scoreOsc) {
-      try {
-        this.scoreOsc.stop();
-        this.scoreOsc.disconnect();
-      } catch {
-        // already stopped.
-      }
-      this.scoreOsc = null;
+    const osc = this.scoreOsc;
+    const gain = this.scoreGain;
+    this.scoreOsc = null;
+    this.scoreGain = null;
+    if (osc) {
+      osc.onended = null;
+      osc.stop();
+      osc.disconnect();
     }
-    if (this.scoreGain) {
-      try {
-        this.scoreGain.disconnect();
-      } catch {
-        // already disconnected.
-      }
-      this.scoreGain = null;
-    }
+    gain?.disconnect();
   }
 
-  /** Tear everything down. */
+  /** Stops and disconnects every node. The runtime closes the context itself. */
   dispose(): void {
     this.stopScore();
-    if (this.liveOsc) {
-      try {
-        this.liveOsc.stop();
-        this.liveOsc.disconnect();
-      } catch {
-        // ignore
-      }
-      this.liveOsc = null;
-    }
-    if (this.liveGain) {
-      try {
-        this.liveGain.disconnect();
-      } catch {
-        // ignore
-      }
-      this.liveGain = null;
-    }
-    if (this.ctx) {
-      void this.ctx.close().catch(() => undefined);
-      this.ctx = null;
-    }
+    this.liveOsc.stop();
+    this.liveOsc.disconnect();
+    this.liveGain.disconnect();
   }
 }
 

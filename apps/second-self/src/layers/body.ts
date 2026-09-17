@@ -1,14 +1,13 @@
 /**
  * Body overlay: draws the torso/limb skeleton from the mirrored feed.
  *
- * Ports the legacy `body` app (components/body.js). Head and wrist detail are
- * hidden by default for a cleaner mirror, matching the legacy defaults.
+ * Head and wrist detail are hidden for a cleaner mirror.
  */
 
 import type { LayerDeps } from '../shared/deps.js';
+import { strokeLine } from '../shared/draw.js';
 import { drawBody, isValid } from '../shared/mirror.js';
-import { strokeLine } from '../shared/canvas.js';
-import { REF_HEIGHT, REF_WIDTH, type Layer } from '../shared/types.js';
+import { REF_HEIGHT, REF_WIDTH, type Landmark, type Layer } from '../shared/types.js';
 
 export function createBodyLayer(deps: LayerDeps): Layer {
   return {
@@ -21,7 +20,7 @@ export function createBodyLayer(deps: LayerDeps): Layer {
 }
 
 /** Arrow hints toward a user who has stepped off the left/right edge. */
-function drawOffscreenIndicators(ctx: CanvasRenderingContext2D, pose: number[][]): void {
+function drawOffscreenIndicators(ctx: CanvasRenderingContext2D, pose: readonly Landmark[]): void {
   const nose = pose[0];
   if (!isValid(nose)) return;
   const off = 20;

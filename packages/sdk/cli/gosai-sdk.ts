@@ -16,13 +16,14 @@ const USAGE = `Usage: gosai-sdk gen-driver-types --schemas <file|-> [options]
 Writes TypeScript types for rt.drivers from driver schemas, so driver event
 payloads and action params and results are typed in your app.
 
-The schemas are the output of \`python -m gosai_py.schemas\` or the reply to
-the server's drivers:schema command. Pass - to read them from stdin.
+The schemas are the output of \`python -m gosai_py.schemas --app <app dir>\` for
+an app's own drivers, of \`python -m gosai_py.schemas\` for the built-in ones, or
+the reply to the server's drivers:schema command. Pass - to read them from stdin.
 
 Options:
   --out <file>        Write the types here instead of to stdout.
   --docs <file>       Also write a Markdown reference of the drivers.
-  --drivers <a,b>     Only these drivers, for example the ones your app provides.
+  --drivers <a,b>     Only these drivers, for example my-app/counter.
   --namespace <Name>  Namespace that holds the payload types (default AppDriverTypes).
   --module <name>     Module whose DriverRegistry the types extend (default @gosai/sdk).
   --builtin           Write the SDK's own built-in driver file instead.

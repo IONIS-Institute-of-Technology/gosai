@@ -25,6 +25,7 @@ import {
   type CameraProjectorSurfaceOptions,
 } from './calibration.js';
 import { CAPABILITY_INFO, isCapability, type Capability } from './capabilities.js';
+import { APP_DRIVER_NAME_PATTERN, DRIVER_NAME_PATTERN } from './driver-names.js';
 import { isSemverRange } from './semver-range.js';
 import { isReservedSlug, isValidSlug, SLUG_PATTERN } from './slug.js';
 import type {
@@ -68,10 +69,13 @@ export const storageKeySchema = z
   .string()
   .regex(STORAGE_KEY_PATTERN, `must match ${STORAGE_KEY_PATTERN.source}`);
 
-/** Python driver names, e.g. `hand_pose`. */
+/** Driver names: built-in, e.g. `hand_pose`, or an app's, e.g. `my-app/my_driver`. */
 export const driverNameSchema = z
   .string()
-  .regex(/^[a-z][a-z0-9_]*$/, 'must be a driver name like hand_pose');
+  .regex(
+    new RegExp(`${DRIVER_NAME_PATTERN.source}|${APP_DRIVER_NAME_PATTERN.source}`),
+    'must be a driver name like hand_pose or my-app/my_driver',
+  );
 
 const nonEmpty = z.string().min(1);
 
@@ -99,11 +103,12 @@ const experienceSchema = z.strictObject({
   entry: appPathSchema.describe(
     'ES module, relative to the app root, that default-exports the experience.',
   ),
-  python: z.string().optional().describe('Reserved for app-provided Python drivers.'),
   drivers: z
     .array(driverNameSchema)
     .default([])
-    .describe('Drivers kept running while the experience runs.'),
+    .describe(
+      'Drivers kept running while the experience runs: built-in ones such as hand_pose, and app drivers named <app slug>/<driver>.',
+    ),
   exclusive: z
     .boolean()
     .default(false)
@@ -115,9 +120,23 @@ const experienceSchema = z.strictObject({
     .describe('Experiences that start first, with the same driver binding.'),
 }) satisfies z.ZodType<ExperienceDescriptor>;
 
+/** A package directory's name becomes its import name. */
+const PYTHON_PACKAGE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 const pythonSchema = z.strictObject({
-  requirements: appPathSchema.optional(),
-  module: z.string().optional(),
+  drivers: appPathSchema
+    .refine((path) => {
+      const name = path.split('/').filter(Boolean).at(-1) ?? '';
+      return PYTHON_PACKAGE_NAME.test(name) && name !== 'gosai_py';
+    }, 'must be a package directory named like a Python module, such as python/my_drivers')
+    .describe(
+      "Package directory, relative to the app root, whose modules define the app's drivers.",
+    ),
+  requirements: appPathSchema
+    .optional()
+    .describe(
+      "Requirements file, relative to the app root, that uv installs into the app's Python environment.",
+    ),
 }) satisfies z.ZodType<PythonConfig>;
 
 const requirementsSchema = z.strictObject({
@@ -398,7 +417,11 @@ export const appManifestSchema = z
     default: slugSchema
       .optional()
       .describe("Experience the dashboard's primary button starts. Defaults to the first."),
-    python: pythonSchema.optional().describe('Reserved for app-provided Python drivers.'),
+    python: pythonSchema
+      .optional()
+      .describe(
+        'Python drivers the app ships. They run in their own process and environment, named <app slug>/<driver>.',
+      ),
     startup: z
       .array(slugSchema)
       .optional()
@@ -480,8 +503,9 @@ export const appManifestSchema = z
 /**
  * Parsed manifest, without `$schema`. A `calibration` object in its
  * pre-kind shape is converted first (see `upgradeLegacyCalibration`), with a
- * warning, so older apps keep working; the schema itself only describes the
- * current shape.
+ * warning, and the placeholder `python` fields that existed before app drivers
+ * did are dropped with a warning, so older apps keep working; the schema itself
+ * only describes the current shape.
  */
 export function parseAppManifest(
   value: unknown,
@@ -507,17 +531,57 @@ function upgradeLegacyManifest(value: unknown): {
   value: unknown;
   warnings: readonly string[];
 } {
-  if (typeof value !== 'object' || value === null || !('calibration' in value)) {
-    return { value, warnings: [] };
-  }
-  const { calibration, ...rest } = value as Record<string, unknown>;
+  if (!isPlainRecord(value)) return { value, warnings: [] };
+  const python = dropLegacyPython(value);
+  if (!('calibration' in python.value)) return python;
+  const { calibration, ...rest } = python.value;
   const upgraded = upgradeLegacyCalibration(calibration);
-  if (upgraded.warnings.length === 0) return { value, warnings: [] };
+  if (upgraded.warnings.length === 0) return python;
   return {
     value:
       upgraded.calibration === undefined ? rest : { ...rest, calibration: upgraded.calibration },
-    warnings: upgraded.warnings,
+    warnings: [...python.warnings, ...upgraded.warnings],
   };
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Before app drivers existed the manifest reserved `python.requirements`,
+ * `python.module` and a per-experience `python` string, and nothing read them.
+ * A `python` object without `drivers` and the per-experience strings are
+ * dropped with a warning.
+ */
+function dropLegacyPython(manifest: Record<string, unknown>): {
+  value: Record<string, unknown>;
+  warnings: string[];
+} {
+  const warnings: string[] = [];
+  let value = manifest;
+  const { python } = manifest;
+  if (
+    isPlainRecord(python) &&
+    !('drivers' in python) &&
+    Object.keys(python).every((key) => key === 'requirements' || key === 'module')
+  ) {
+    const { python: _python, ...rest } = value;
+    value = rest;
+    warnings.push(
+      '`python` without `drivers` is ignored; name the package with your drivers in `python.drivers`',
+    );
+  }
+  if (Array.isArray(value.experiences)) {
+    const experiences = value.experiences.map((experience: unknown, index) => {
+      if (!isPlainRecord(experience) || typeof experience.python !== 'string') return experience;
+      warnings.push(`\`experiences[${index}].python\` is ignored`);
+      const { python: _python, ...rest } = experience;
+      return rest;
+    });
+    if (warnings.length > 0) value = { ...value, experiences };
+  }
+  return { value, warnings };
 }
 
 /** The first `required` cycle among experiences, as a slug path, or `null`. */

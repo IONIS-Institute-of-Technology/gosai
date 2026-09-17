@@ -13,6 +13,8 @@ from numpy.typing import ArrayLike, NDArray
 
 MIN_MARKERS = 4
 RANSAC_THRESHOLD_PX = 5.0
+# A warped point is at infinity when |w| is at most this fraction of the sum of its terms.
+INFINITY_TOLERANCE = 1e-6
 
 type Matrix = NDArray[Any]
 
@@ -35,11 +37,23 @@ def inverse(matrix: Matrix) -> Matrix:
 
 
 def warp_points(matrix: Matrix, points: ArrayLike) -> NDArray[Any]:
-    """Apply a homography to (N, 2) points."""
-    array = np.asarray(points, dtype=np.float64).reshape(-1, 1, 2)
+    """Apply a homography to (N, 2) points.
+
+    A point the homography sends to infinity comes back as a row of NaN, where
+    `cv2.perspectiveTransform` reports (0, 0) and the point looks real. Check
+    with `np.isfinite`. The homogeneous w counts as zero when it cancels to
+    under `INFINITY_TOLERANCE` of its terms, which keeps the test independent
+    of the matrix scale and holds for fitted matrices that are never exact.
+    """
+    array = np.asarray(points, dtype=np.float64).reshape(-1, 2)
     if array.shape[0] == 0:
         return np.empty((0, 2), dtype=np.float64)
-    return cv2.perspectiveTransform(array, matrix).reshape(-1, 2)
+    h = np.asarray(matrix, dtype=np.float64).reshape(3, 3)
+    projected = array @ h[:, :2].T + h[:, 2]
+    w = projected[:, 2]
+    scale = np.abs(array) @ np.abs(h[2, :2]) + abs(h[2, 2])
+    at_infinity = np.abs(w) <= INFINITY_TOLERANCE * scale
+    return projected[:, :2] / np.where(at_infinity, np.nan, w)[:, None]
 
 
 class MarkerPlacement(msgspec.Struct, kw_only=True):
@@ -70,7 +84,8 @@ class Homographies:
     display_inverse: Matrix
     surface: Matrix | None
     surface_inverse: Matrix | None
-    # The focus quad in display pixels, (4, 2), when a surface was computed.
+    # The focus quad in display pixels, (4, 2), when a surface was computed and
+    # no corner maps to infinity on the display.
     surface_quad_display: NDArray[Any] | None
     samples: int
     markers: int
@@ -128,6 +143,8 @@ def compute_homographies(
         if surface is not None:
             surface_inverse = inverse(surface)
             quad_display = warp_points(matrix, quad)
+            if not np.isfinite(quad_display).all():
+                quad_display = None
 
     return Homographies(
         display=matrix,

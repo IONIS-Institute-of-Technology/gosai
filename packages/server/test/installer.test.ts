@@ -16,6 +16,7 @@ import type { DriverManager } from '../src/drivers/manager.js';
 import { EventBus } from '../src/ipc/bus.js';
 import { Logger } from '../src/logger/logger.js';
 import type { GosaiPaths } from '../src/paths.js';
+import { COUNTER_DRIVER, fakeToolchain } from './python-fixtures.js';
 
 function makePaths(): GosaiPaths {
   const tmp = mkdtempSync(join(tmpdir(), 'gosai-installer-'));
@@ -50,7 +51,7 @@ function makeRepo(
   root: string,
   slug: string,
   buildScript: string,
-  extra: { manifest?: object; packageJson?: object } = {},
+  extra: { manifest?: object; packageJson?: object; files?: Record<string, string> } = {},
 ): string {
   const repo = join(root, `repo-${slug}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(repo, { recursive: true });
@@ -73,6 +74,10 @@ function makeRepo(
       ...extra.packageJson,
     }),
   );
+  for (const [path, content] of Object.entries(extra.files ?? {})) {
+    mkdirSync(join(repo, path, '..'), { recursive: true });
+    writeFileSync(join(repo, path), content);
+  }
   git(['init', '-q'], repo);
   git(['add', '.'], repo);
   git(['commit', '-q', '-m', 'init'], repo);
@@ -423,6 +428,97 @@ describe('installer', () => {
         ),
       },
     ]);
+  });
+
+  describe('apps with python drivers', () => {
+    const pythonApp = (paths: GosaiPaths, slug: string, requirements = 'tinydep\n'): string =>
+      makeRepo(paths.root, slug, 'true', {
+        manifest: {
+          python: { drivers: 'python/app_drivers', requirements: 'python/requirements.txt' },
+          experiences: [
+            { slug: 'main', name: 'Main', entry: 'dist/main.js', drivers: [`${slug}/counter`] },
+          ],
+        },
+        files: {
+          'python/app_drivers/__init__.py': '',
+          'python/app_drivers/counter.py': COUNTER_DRIVER,
+          'python/requirements.txt': requirements,
+        },
+      });
+
+    test('builds the environment with uv, and uninstall removes it', async () => {
+      const paths = makePaths();
+      const fake = fakeToolchain(paths.root);
+      const envDir = join(paths.root, 'python-envs', 'installed', 'py-app');
+      await installApp({
+        source: pythonApp(paths, 'py-app'),
+        paths,
+        logger: logger.child('install'),
+        allowFileSources: true,
+        python: fake.toolchain,
+      });
+      expect(fake.calls().map((call) => call.split(' ').slice(0, 2).join(' '))).toEqual([
+        'venv --no-project',
+        'pip install',
+      ]);
+      // Built from the staging checkout, and still valid once the app moved.
+      expect(fake.calls()[1]).toContain(join(paths.apps, '.staging'));
+      expect(existsSync(join(envDir, 'gosai-env.json'))).toBe(true);
+
+      await uninstallApp('py-app', paths);
+      expect(existsSync(envDir)).toBe(false);
+    });
+
+    test('refuses the app when python is unavailable', async () => {
+      const paths = makePaths();
+      await expect(
+        installApp({
+          source: pythonApp(paths, 'no-python'),
+          paths,
+          logger: logger.child('install'),
+          allowFileSources: true,
+        }),
+      ).rejects.toThrow(
+        "no-python ships Python drivers, but GOSAI's Python runtime is not available",
+      );
+      expect(existsSync(join(paths.apps, 'no-python'))).toBe(false);
+    });
+
+    test('a failed requirements install leaves no app, staging or environment', async () => {
+      const paths = makePaths();
+      const fake = fakeToolchain(paths.root);
+      fake.failPipInstall(true);
+      await expect(
+        installApp({
+          source: pythonApp(paths, 'conflict-app', 'numpy==1.26.0\n'),
+          paths,
+          logger: logger.child('install'),
+          allowFileSources: true,
+          python: fake.toolchain,
+        }),
+      ).rejects.toThrow(/uv pip install failed[\s\S]*conflicts with numpy/);
+      expect(existsSync(join(paths.apps, 'conflict-app'))).toBe(false);
+      expect(existsSync(join(paths.root, 'python-envs', 'installed', 'conflict-app'))).toBe(false);
+      expect(stagingEntries(paths)).toEqual([]);
+    });
+
+    test('refuses a manifest whose driver package is missing, before building', async () => {
+      const paths = makePaths();
+      const fake = fakeToolchain(paths.root);
+      const source = makeRepo(paths.root, 'missing-drivers', 'echo built > built.txt', {
+        manifest: { python: { drivers: 'python/nowhere' } },
+      });
+      await expect(
+        installApp({
+          source,
+          paths,
+          logger: logger.child('install'),
+          allowFileSources: true,
+          python: fake.toolchain,
+        }),
+      ).rejects.toThrow('python.drivers python/nowhere does not exist');
+      expect(fake.calls()).toEqual([]);
+    });
   });
 
   test('uninstall validates the slug', async () => {

@@ -1,8 +1,6 @@
 /**
- * Vector and geometry helpers shared between layers (affine, triangles, etc).
- *
- * Ported from the legacy p5 helpers (`dist`, `createVector`, `intersect_point`,
- * `calculateAngle`) but framework-agnostic.
+ * Vector and geometry helpers for the affine and triangles layers, ported
+ * from the legacy p5 helpers (`dist`, `intersect_point`, `calculateAngle`).
  */
 
 export interface Vec2 {
@@ -12,19 +10,12 @@ export interface Vec2 {
 
 /** Euclidean distance between two points. */
 export function dist(a: Vec2, b: Vec2): number {
-  const dx = a.x - b.x;
-  const dy = a.y - b.y;
-  return Math.hypot(dx, dy);
+  return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
 /** Round to 5 decimal places (matches legacy `round(value, 5)`). */
 export function round5(value: number): number {
   return Math.round(value * 1e5) / 1e5;
-}
-
-/** Round to nearest integer (legacy `round(value)`). */
-export function roundInt(value: number): number {
-  return Math.round(value);
 }
 
 /** Midpoint of segment [a, b]. */
@@ -55,8 +46,7 @@ export function triangleAngleDeg(prev: Vec2, at: Vec2, next: Vec2): number {
 export function perpendicularExtremity(mid: Vec2, vertex: Vec2): Vec2 {
   const u = { x: vertex.x - mid.x, y: vertex.y - mid.y };
   // Rotate 90deg counter-clockwise.
-  const v = { x: -u.y, y: u.x };
-  return { x: v.x + mid.x, y: v.y + mid.y };
+  return { x: -u.y + mid.x, y: u.x + mid.y };
 }
 
 /**
@@ -83,13 +73,7 @@ export function rand(min: number, max: number): number {
   return min + Math.random() * (max - min);
 }
 
-/** Pick a random element from a non-empty array. */
-export function pick<T>(arr: readonly T[]): T {
-  if (arr.length === 0) throw new Error('pick: empty array');
-  return arr[Math.floor(Math.random() * arr.length)]!;
-}
-
-/** Clamp `v` to [lo, hi]. */
-export function clamp(v: number, lo: number, hi: number): number {
-  return Math.max(lo, Math.min(hi, v));
+/** A random element of `items`. */
+export function pick<T>(items: readonly [T, ...T[]]): T {
+  return items[Math.floor(Math.random() * items.length)] ?? items[0];
 }

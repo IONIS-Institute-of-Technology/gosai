@@ -7,7 +7,8 @@
  * (`{ "drivers": [{ name, description, schema, ... }] }`) or the reply to the
  * server's `drivers:schema` command (`{ "schemas": { <name>: { schema } } }`).
  * Each driver's `$ref`s resolve against its own `$defs`, so every driver gets
- * its own namespace.
+ * its own namespace. Drivers an app ships are named `<app slug>/<driver>`;
+ * their namespace is the part after the slash.
  */
 
 /** A JSON Schema, as far as the generator reads it. */
@@ -55,7 +56,8 @@ export type DriverTypesTarget =
   /** An app's file: exports `namespace` and adds its drivers to `module`'s `DriverRegistry`. */
   | { readonly kind: 'augment'; readonly module: string; readonly namespace: string };
 
-const DRIVER_NAME = /^[a-z][a-z0-9_]*$/;
+/** `hand_pose`, or `<app slug>/<driver>` for a driver an app ships. */
+const DRIVER_NAME = /^(?:[a-z][a-z0-9-]*\/)?[a-z][a-z0-9_]*$/;
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const RESERVED = new Set(
   (
@@ -96,7 +98,7 @@ export function readDriverSchemas(input: unknown): DriverDescription[] {
   }
   for (const driver of drivers) {
     if (!DRIVER_NAME.test(driver.name)) {
-      throw new Error(`"${driver.name}" is not a driver name like hand_pose`);
+      throw new Error(`"${driver.name}" is not a driver name like hand_pose or my-app/my_driver`);
     }
   }
   return drivers.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
@@ -118,6 +120,17 @@ export function driverTypesModule(
   const root = target.kind === 'builtin' ? 'DriverTypes' : target.namespace;
   if (!IDENTIFIER.test(root) || RESERVED.has(root)) {
     throw new Error(`"${root}" can't be a namespace name`);
+  }
+  const namespaces = new Map<string, string>();
+  for (const driver of drivers) {
+    const namespace = namespaceName(driver.name);
+    const other = namespaces.get(namespace);
+    if (other !== undefined) {
+      throw new Error(
+        `${other} and ${driver.name} would share the namespace ${namespace}; pick one with --drivers`,
+      );
+    }
+    namespaces.set(namespace, driver.name);
   }
   const out: string[] = [];
   out.push(
@@ -311,7 +324,7 @@ export function driverReference(
   const out: string[] = [`# ${options.title ?? 'Driver reference'}`, ''];
   if (options.intro) out.push(options.intro, '');
   for (const driver of drivers) {
-    out.push(`- [\`${driver.name}\`](#${driver.name})${summary(driver.description)}`);
+    out.push(`- [\`${driver.name}\`](#${anchor(driver.name)})${summary(driver.description)}`);
   }
   for (const driver of drivers) {
     out.push('', `## ${driver.name}`, '');
@@ -401,8 +414,15 @@ function isPlainObject(schema: { readonly [keyword: string]: unknown }): boolean
   );
 }
 
+/** The driver's name, without the app prefix of an app driver. */
 function namespaceName(driver: string): string {
-  return RESERVED.has(driver) ? `${driver}_` : driver;
+  const name = driver.slice(driver.indexOf('/') + 1);
+  return RESERVED.has(name) ? `${name}_` : name;
+}
+
+/** The id GitHub gives the `## <driver>` heading. */
+function anchor(driver: string): string {
+  return driver.replace(/[^a-z0-9_-]/g, '');
 }
 
 function typeName(name: string): string {

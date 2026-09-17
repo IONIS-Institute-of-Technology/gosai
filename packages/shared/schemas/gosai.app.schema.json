@@ -61,17 +61,13 @@
             "minLength": 1,
             "description": "ES module, relative to the app root, that default-exports the experience."
           },
-          "python": {
-            "description": "Reserved for app-provided Python drivers.",
-            "type": "string"
-          },
           "drivers": {
             "default": [],
-            "description": "Drivers kept running while the experience runs.",
+            "description": "Drivers kept running while the experience runs: built-in ones such as hand_pose, and app drivers named <app slug>/<driver>.",
             "type": "array",
             "items": {
               "type": "string",
-              "pattern": "^[a-z][a-z0-9_]*$"
+              "pattern": "^[a-z][a-z0-9_]*$|^[a-z][a-z0-9-]*\\/[a-z][a-z0-9_]*$"
             }
           },
           "exclusive": {
@@ -105,17 +101,21 @@
       "pattern": "^[a-z][a-z0-9-]*$"
     },
     "python": {
-      "description": "Reserved for app-provided Python drivers.",
+      "description": "Python drivers the app ships. They run in their own process and environment, named <app slug>/<driver>.",
       "type": "object",
       "properties": {
+        "drivers": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Package directory, relative to the app root, whose modules define the app's drivers."
+        },
         "requirements": {
+          "description": "Requirements file, relative to the app root, that uv installs into the app's Python environment.",
           "type": "string",
           "minLength": 1
-        },
-        "module": {
-          "type": "string"
         }
       },
+      "required": ["drivers"],
       "additionalProperties": false
     },
     "startup": {

@@ -1,11 +1,13 @@
 /**
  * Node-side handle for one Python bridge process. Spawns
- * `python/.venv/bin/gosai-bridge`, reads newline-delimited JSON from its
- * stdout, and forwards JSON requests to its stdin.
+ * `python/.venv/bin/gosai-bridge`, or the command it is given, reads
+ * newline-delimited JSON from its stdout, and forwards JSON requests to its
+ * stdin.
  *
- * One process hosts every driver instance as threads. Requests are multiplexed
- * with `id`s. Restarting a dead process is the supervisor's job
- * (`supervisor.ts`); this class only manages a single process lifetime.
+ * One process hosts every driver instance of the built-in drivers, or of one
+ * app's drivers, as threads. Requests are multiplexed with `id`s. Restarting a
+ * dead process is the supervisor's job (`supervisor.ts`); this class only
+ * manages a single process lifetime.
  */
 
 import { existsSync } from 'node:fs';
@@ -71,7 +73,14 @@ export interface DriverBridge {
 export type DriverBridgeFactory = (handlers: BridgeHandlers) => DriverBridge;
 
 export interface PythonBridgeOptions {
-  readonly pythonDir: string;
+  /** The Python project whose `.venv` has `gosai-bridge`. Unused with `command`. */
+  readonly pythonDir?: string;
+  /** Runs this instead of `gosai-bridge`, such as an app's bridge in the app's environment. */
+  readonly command?: readonly string[];
+  /** Working directory. Defaults to `pythonDir`. */
+  readonly cwd?: string;
+  /** Variables added to the environment of the process. */
+  readonly env?: Readonly<Record<string, string>>;
   readonly logger: ChildLogger;
   readonly handlers: BridgeHandlers;
   readonly readyTimeoutMs?: number;
@@ -126,10 +135,13 @@ export class PythonBridge implements DriverBridge {
 
   async start(): Promise<void> {
     if (this.process) throw new Error('Python bridge is already running');
-    const bridgeBin = bridgeExecutable(this.options.pythonDir);
-    if (!existsSync(bridgeBin)) {
+    const cmd = this.options.command ?? [bridgeExecutable(this.options.pythonDir ?? '')];
+    const executable = cmd[0] ?? '';
+    if (!existsSync(executable)) {
       throw new Error(
-        `gosai-bridge not found at ${bridgeBin}. Run \`uv sync\` inside the python/ directory.`,
+        this.options.command
+          ? `${executable} not found`
+          : `gosai-bridge not found at ${executable}. Run \`uv sync\` inside the python/ directory.`,
       );
     }
 
@@ -140,6 +152,7 @@ export class PythonBridge implements DriverBridge {
 
     const env: Record<string, string | undefined> = {
       ...process.env,
+      ...this.options.env,
       PYTHONUNBUFFERED: '1',
       // MediaPipe / TensorFlow write verbose native logs to stderr.
       GLOG_minloglevel: '2',
@@ -148,9 +161,10 @@ export class PythonBridge implements DriverBridge {
     // Python drivers must not see the server's secret.
     delete env.GOSAI_DASHBOARD_TOKEN;
 
+    const cwd = this.options.cwd ?? this.options.pythonDir;
     const proc = Bun.spawn({
-      cmd: [bridgeBin],
-      cwd: this.options.pythonDir,
+      cmd: [...cmd],
+      ...(cwd ? { cwd } : {}),
       env,
       stdin: 'pipe',
       stdout: 'pipe',

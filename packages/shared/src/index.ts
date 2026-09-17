@@ -6,4 +6,5 @@ export * from './capabilities.js';
 export * from './app-settings.js';
 export * from './log-format.js';
 export * from './slug.js';
+export * from './driver-names.js';
 export * from './calibration.js';
