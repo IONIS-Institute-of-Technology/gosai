@@ -85,6 +85,9 @@ export function uvSyncArgs(extras: readonly string[], python: string): string[][
     'sync',
     '--frozen',
     '--no-dev',
+    // A copy of the project, not a link to the source tree, so the runtime
+    // directory can be renamed after the install.
+    '--no-editable',
     '--python',
     python,
     ...extras.flatMap((extra) => ['--extra', extra]),

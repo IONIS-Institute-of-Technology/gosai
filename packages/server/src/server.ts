@@ -9,7 +9,7 @@ import type { GosaiPaths } from './paths.js';
 import { Logger } from './logger/index.js';
 import { EventBus, WebSocketGateway, type ClientData } from './ipc/index.js';
 import { AppSettingsStore, ConfigStore } from './config/index.js';
-import { DriverManager, SYSTEM_BINDING } from './drivers/index.js';
+import { bridgeExecutable, DriverManager, SYSTEM_BINDING } from './drivers/index.js';
 import {
   applyAppDeviceSettings,
   applyGlobalCameraSettings,
@@ -22,7 +22,6 @@ import { canAccessApp, commandDenial } from './access/policy.js';
 import { readBearerToken, RequestGuard } from './access/request-guard.js';
 import { resolveStaticFile } from './apps/static-files.js';
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
 
 const SERVER_VERSION = '0.1.0';
 
@@ -537,5 +536,5 @@ function resolvePythonDir(override?: string): string {
 }
 
 function pythonHasBridge(pythonDir: string): boolean {
-  return existsSync(join(pythonDir, '.venv', 'bin', 'gosai-bridge'));
+  return existsSync(bridgeExecutable(pythonDir));
 }

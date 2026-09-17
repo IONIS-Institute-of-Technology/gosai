@@ -1,0 +1,77 @@
+name: Release
+
+# Builds the desktop packages on each supported platform and keeps them as
+# workflow artifacts. Nothing is published: attach the artifacts to a
+# GitHub release by hand.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Package (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            os: ubuntu-latest
+            script: package:linux
+            artifacts: packages/desktop/release/*.AppImage
+            experimental: false
+          - name: macOS arm64
+            os: macos-latest
+            script: package:mac
+            artifacts: packages/desktop/release/*.dmg
+            experimental: false
+          # Best effort: a failure here doesn't fail the workflow.
+          - name: Windows x64
+            os: windows-latest
+            script: package:win
+            artifacts: packages/desktop/release/*.exe
+            experimental: true
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    env:
+      # Unsigned builds; electron-builder must not look for signing identities.
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          lfs: false
+      # The bundles need the ONNX models and app assets, not the training data.
+      - name: Fetch the LFS files that ship
+        run: |
+          git lfs install --local
+          git lfs pull --include="python/**,apps/**"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - run: bun install --frozen-lockfile
+      - name: Cache verified uv downloads
+        uses: actions/cache@v6
+        with:
+          path: packages/desktop/release/cache
+          key: uv-${{ runner.os }}-${{ hashFiles('scripts/fetch-uv.ts') }}
+      - name: Cache Electron downloads
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/electron
+            ~/Library/Caches/electron
+            ~/AppData/Local/electron/Cache
+          key: electron-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+      - run: bun run ${{ matrix.script }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gosai-${{ matrix.os }}
+          path: ${{ matrix.artifacts }}
+          if-no-files-found: error

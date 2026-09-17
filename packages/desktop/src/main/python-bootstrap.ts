@@ -1,162 +1,124 @@
 /**
- * First-run Python runtime bootstrap for packaged builds.
- *
- * Packaged bundles (regular desktop and kiosks) ship the Python source tree
- * and a `uv` binary under the read-only resources directory. Because a venv
- * cannot be created there (AppImages are read-only mounts), the tree is
- * copied on first launch to a writable, content-addressed runtime directory:
- *
- *   ~/.gosai-runtime/python-<hash>/python/        the tree + .venv
- *   ~/.gosai-runtime/python-<hash>/cpython/       uv-managed interpreters
- *
- * `uv sync` then materialises the venv, downloading a managed CPython 3.12
- * if the machine has none - so the CV drivers (camera, pose, hand_pose,
- * ball, ...) work out of the box on a clean machine. Linux x64 machines with
- * an NVIDIA driver 580 or newer also get the `gpu` extra (CUDA onnxruntime).
- * A marker file records that every step finished. The hash covers
- * pyproject.toml, uv.lock, and the extras, so kiosks with the same
- * requirements share one runtime and upgrades rebuild cleanly. Needs network
- * on the very first launch only.
+ * First-launch Python runtime of packaged builds (regular desktop and
+ * kiosks). See python-runtime.ts for the layout. `uv` ships in the bundle
+ * under resources/bin and installs a managed CPython when the machine has
+ * none, so the drivers work on a clean machine. Linux x64 machines with an
+ * NVIDIA driver 580 or newer also get the `gpu` extra. Needs network on the
+ * first launch only.
  */
 
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 import { app } from 'electron';
 import { currentPythonHost, pythonExtras, uvSyncArgs } from './python-extras.js';
-
-/** Written into the runtime's python directory once every install step succeeded. */
-const COMPLETE_MARKER = '.gosai-runtime-complete';
+import {
+  cleanStaleRuntimes,
+  materializeRuntime,
+  readPythonRuntimeInfo,
+  releaseInUse,
+  runtimeName,
+} from './python-runtime.js';
 
 export interface PythonBootstrapOptions {
   /** Optional dependency extras to install (e.g. ["speech", "realsense"]). `gpu` is added automatically. */
-  readonly extras?: string[];
-  /** Progress callback; only invoked when an actual installation runs. */
+  readonly extras?: readonly string[];
+  /** Progress messages for the splash window. */
   readonly onStatus?: (message: string) => void;
 }
 
 /**
- * Returns the python directory the server should use, or null when the
- * default resolution is fine (dev mode). Throws when a required first-run
- * installation fails.
+ * Returns the python directory the server should use, or null when running
+ * from source, where the server finds the repository's python/ itself.
+ * Throws when the runtime can't be installed.
  */
 export async function ensurePythonRuntime(
   options: PythonBootstrapOptions = {},
 ): Promise<string | null> {
   if (!app.isPackaged) return null;
 
-  const resourcesPython = join(process.resourcesPath, 'python');
-  if (!existsSync(join(resourcesPython, 'pyproject.toml'))) {
-    console.warn('[gosai-python] no python tree in resources; skipping bootstrap');
-    return null;
+  const resources = process.resourcesPath;
+  const sourceDir = join(resources, 'python');
+  if (!existsSync(join(sourceDir, 'pyproject.toml'))) {
+    throw new Error(`the bundle has no Python tree at ${sourceDir}`);
   }
-
+  const info = readPythonRuntimeInfo(join(resources, 'python-runtime.json'));
   const { extras, gpuReason } = pythonExtras(options.extras ?? [], currentPythonHost());
   if (gpuReason) console.log(`[gosai-python] ${gpuReason}`);
-  const hash = runtimeHash(resourcesPython, extras);
-  const runtimeDir = join(homedir(), '.gosai-runtime', `python-${hash}`);
-  const pythonDir = join(runtimeDir, 'python');
 
-  if (hasBridge(pythonDir) && existsSync(join(pythonDir, COMPLETE_MARKER))) return pythonDir;
-
+  const runtimeRoot = join(homedir(), '.gosai-runtime');
+  const name = runtimeName(info, extras);
+  const uv = bundledUv(resources);
   const onStatus = options.onStatus ?? (() => undefined);
-  onStatus('Preparing the Python runtime (first launch)…');
-  console.log(`[gosai-python] materialising runtime at ${runtimeDir}`);
-
-  // Re-copy from scratch so a previously interrupted attempt cannot leave a
-  // half-populated tree behind.
-  rmSync(pythonDir, { recursive: true, force: true });
-  mkdirSync(runtimeDir, { recursive: true });
-  cpSync(resourcesPython, pythonDir, {
-    recursive: true,
-    filter: (src) => {
-      const name = basename(src);
-      return name !== '.venv' && name !== '__pycache__' && name !== '.pytest_cache';
-    },
+  // Upgrades of this bundle with these extras replace each other's runtime.
+  const family = `${bundleIdentity(resources)}\n${extras.join(',')}`;
+  const pythonDir = await materializeRuntime({
+    sourceDir,
+    runtimeRoot,
+    name,
+    family,
+    commands: [
+      // Relocatable, so the staged runtime still works after the rename.
+      ['venv', '--relocatable', '--python', info.python, '.venv'],
+      ...uvSyncArgs(extras, info.python),
+    ],
+    runUv: (args, cwd) => runUv(uv, args, cwd, join(runtimeRoot, 'cpython'), onStatus),
+    onStatus,
   });
+  console.log(`[gosai-python] using ${pythonDir}`);
 
-  const uv = resolveUv();
-  onStatus('Installing Python and the CV driver dependencies…');
-  for (const args of uvSyncArgs(extras, '3.12')) {
-    await runUv(uv, args, pythonDir, join(runtimeDir, 'cpython'), onStatus);
+  // Best effort: cleanup also ignores users whose process is gone.
+  process.once('exit', () => releaseInUse(runtimeRoot, name));
+  try {
+    for (const removed of cleanStaleRuntimes({ runtimeRoot, keep: name, family })) {
+      console.log(`[gosai-python] removed the unused runtime ${removed}`);
+    }
+  } catch (err) {
+    console.warn(`[gosai-python] could not remove old runtimes: ${String(err)}`);
   }
-
-  if (!hasBridge(pythonDir)) {
-    throw new Error('uv sync completed but the gosai-bridge entry point is missing');
-  }
-  writeFileSync(join(pythonDir, COMPLETE_MARKER), '');
-  onStatus('Python runtime ready.');
-  console.log('[gosai-python] runtime ready');
   return pythonDir;
 }
 
-function hasBridge(pythonDir: string): boolean {
-  return existsSync(join(pythonDir, '.venv', 'bin', 'gosai-bridge'));
-}
-
-function runtimeHash(resourcesPython: string, extras: string[]): string {
-  const hash = createHash('sha256');
-  hashPythonTree(hash, resourcesPython, resourcesPython);
-  hash.update(extras.join(','));
-  return hash.digest('hex').slice(0, 12);
-}
-
-function hashPythonTree(
-  hash: ReturnType<typeof createHash>,
-  root: string,
-  directory: string,
-): void {
-  for (const name of readdirSync(directory).sort()) {
-    if (name === '.venv' || name === '__pycache__' || name === '.pytest_cache') continue;
-    const path = join(directory, name);
-    const stat = statSync(path);
-    if (stat.isDirectory()) {
-      hashPythonTree(hash, root, path);
-    } else if (stat.isFile()) {
-      hash.update(path.slice(root.length));
-      hash.update(readFileSync(path));
-    }
+/**
+ * `kiosk:<slug>` for a kiosk bundle, `desktop` otherwise. Every bundle
+ * reports the same app name, so it can't tell them apart.
+ */
+function bundleIdentity(resources: string): string {
+  try {
+    const { appSlug } = JSON.parse(readFileSync(join(resources, 'kiosk.json'), 'utf8')) as {
+      appSlug?: unknown;
+    };
+    if (typeof appSlug === 'string') return `kiosk:${appSlug}`;
+  } catch {
+    // Not a kiosk bundle.
   }
+  return 'desktop';
 }
 
-function resolveUv(): string {
-  const binDir = join(process.resourcesPath, 'bin');
-  for (const candidate of [join(binDir, 'uv'), join(binDir, `uv-${process.arch}`)]) {
-    if (existsSync(candidate)) return candidate;
-  }
-  // Last resort: a uv already installed on the machine.
-  return 'uv';
+function bundledUv(resources: string): string {
+  const uv = join(resources, 'bin', process.platform === 'win32' ? 'uv.exe' : 'uv');
+  if (!existsSync(uv)) throw new Error(`the bundle is missing uv at ${uv}`);
+  return uv;
 }
 
 function runUv(
   uv: string,
-  args: string[],
+  args: readonly string[],
   cwd: string,
   pythonInstallDir: string,
   onStatus: (message: string) => void,
 ): Promise<void> {
   return new Promise((resolvePromise, rejectPromise) => {
-    console.log(`[gosai-python] $ ${uv} ${args.join(' ')}`);
+    console.log(`[gosai-python] $ uv ${args.join(' ')}`);
     const child = spawn(uv, args, {
       cwd,
-      env: {
-        ...process.env,
-        UV_PYTHON_INSTALL_DIR: pythonInstallDir,
-      },
+      env: { ...process.env, UV_PYTHON_INSTALL_DIR: pythonInstallDir },
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     });
 
+    let lastLine = '';
     const forward = (chunk: Buffer): void => {
       const text = chunk.toString('utf8');
       process.stdout.write(text);
@@ -165,21 +127,18 @@ function runUv(
         .map((l) => l.trim())
         .filter(Boolean)
         .pop();
-      if (line) onStatus(line);
+      if (line) {
+        lastLine = line;
+        onStatus(line);
+      }
     };
     child.stdout.on('data', forward);
     child.stderr.on('data', forward);
 
-    child.on('error', (err) => {
-      rejectPromise(
-        new Error(
-          `could not run uv (${String(err)}). The bundle should ship it under resources/bin.`,
-        ),
-      );
-    });
+    child.on('error', (err) => rejectPromise(new Error(`could not run uv: ${String(err)}`)));
     child.on('exit', (code) => {
       if (code === 0) resolvePromise();
-      else rejectPromise(new Error(`uv sync failed with exit code ${code}`));
+      else rejectPromise(new Error(`uv ${args[0]} failed with exit code ${code}: ${lastLine}`));
     });
   });
 }
