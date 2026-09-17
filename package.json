@@ -18,6 +18,8 @@
     "build:sdk": "bun run --filter @gosai/sdk build",
     "build:desktop": "bun run --filter @gosai/desktop build",
     "build:apps": "bun run --filter './apps/*' build",
+    "drivers:types": "bun scripts/driver-types.ts",
+    "drivers:types:check": "bun scripts/driver-types.ts --check",
     "bundle:prepare": "bun scripts/prepare-bundle.ts",
     "package:linux": "bun run build && bun run build:apps && bun run --filter @gosai/desktop dist:linux",
     "package:mac": "bun run build && bun run build:apps && bun run --filter @gosai/desktop dist:mac",

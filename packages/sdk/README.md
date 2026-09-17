@@ -127,7 +127,7 @@ export default defineExperience<State>({
   // Runs when the experience becomes active.
   start(rt, state) {
     rt.drivers.on('hand_pose', 'raw_data', (data) => {
-      state.hands = (data as { hands_landmarks?: unknown[] }).hands_landmarks?.length ?? 0;
+      state.hands = data.hands_landmarks.length;
     });
   },
 
@@ -185,9 +185,9 @@ Release other resources (WebGL renderers, media elements) in `stop`.
 | `rt.app.appSlug`, `rt.app.experienceSlug`      | Identity.                                                                                                                                |
 | `rt.app.manifest`, `rt.app.experience`         | The parsed manifest and this experience's entry in it.                                                                                   |
 | `rt.app.params`                                | Launch parameters of the window, such as `role` and `target` for calibration.                                                            |
-| `rt.drivers.on(driver, event, listener)`       | Subscribe to a driver event. Returns `{ unsubscribe() }`.                                                                                |
-| `rt.drivers.get<T>(driver, event)`             | Latest value of a driver event.                                                                                                          |
-| `rt.drivers.execute<T>(driver, action, data?)` | Run a driver action and get its result.                                                                                                  |
+| `rt.drivers.on(driver, event, listener)`       | Subscribe to a driver event, or to all of them with `'*'`. Returns `{ unsubscribe() }`. See [Driver data](#driver-data).                 |
+| `rt.drivers.get(driver, event)`                | Latest value of a driver event, or `null` before the first one.                                                                          |
+| `rt.drivers.execute(driver, action, params?)`  | Run a driver action and get its result.                                                                                                  |
 | `rt.storage.get<T>(key, fallback?)`            | Read a JSON value. Returns `T` when you pass a fallback, `T \| undefined` otherwise.                                                     |
 | `rt.storage.set(key, value)`, `remove`, `list` | Per-app key/value storage.                                                                                                               |
 | `rt.settings.get<T>()`                         | Settings from the manifest schema: stored values merged over the defaults.                                                               |
@@ -303,14 +303,38 @@ storage. Read it back with `loadCameraProjectorSurfaceCalibration(rt)`.
 
 ## Driver data
 
-Driver payloads are untyped for now; cast them to the shape the driver emits.
-The `heartbeat` driver ticks steadily and is handy for testing:
+`rt.drivers` is typed from the drivers' schemas. The
+[driver reference](https://github.com/IONIS-Institute-of-Technology/gosai/blob/master/docs/drivers.md)
+lists every built-in driver with its events, actions and types.
 
 ```ts
-rt.drivers.on('heartbeat', 'tick', (data) => {
-  const { count } = data as { count: number; now: number };
+rt.drivers.on('pose', 'raw_data', (data) => {
+  data.body_pose; // number[][]
 });
+
+const marker = await rt.drivers.execute('calibration', 'render_marker', { id: 3, size: 200 });
+marker.png_base64; // string
+
+const latest = await rt.drivers.get('heartbeat', 'tick'); // null before the first tick
 ```
+
+Misspelled events and actions and wrong params don't compile. The payload types are
+exported as `DriverTypes`, e.g. `DriverTypes.pose.RawPosePayload`, and the
+helpers `DriverEventData<'pose', 'raw_data'>`, `DriverActionParams` and
+`DriverActionResult` name them from driver and event or action names.
+
+A driver the SDK doesn't know still works, with `unknown` data. To type your
+own drivers, generate a module augmentation from their schemas, the JSON that
+`python -m gosai_py.schemas` prints or the server's `drivers:schema` reply:
+
+```bash
+bunx gosai-sdk gen-driver-types --schemas schemas.json --drivers my_driver \
+  --out src/driver-types.ts --docs DRIVERS.md
+```
+
+The file adds `my_driver` to `DriverRegistry`, so `rt.drivers.on('my_driver', ...)`
+is typed wherever the file is part of your TypeScript project. The `heartbeat`
+driver ticks steadily and is handy for testing.
 
 ## Building
 

@@ -47,6 +47,19 @@ export type {
   RunningExperience,
 } from './types.js';
 
+export type {
+  DriverAction,
+  DriverActionArgs,
+  DriverActionParams,
+  DriverActionResult,
+  DriverEvent,
+  DriverEventData,
+  DriverName,
+  DriverRegistry,
+  DriverTypes,
+  KnownDriverName,
+} from './driver-types.js';
+
 export { createStorageClient } from './storage.js';
 
 // Errors `rt.drivers`, `rt.storage` and `rt.app.server` requests reject with.

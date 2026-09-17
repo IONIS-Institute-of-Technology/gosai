@@ -10,6 +10,14 @@ import { forwardCspViolations } from './csp-violations.js';
 import { ServerClient } from '@gosai/shared/client';
 import { AppConfigClientImpl } from './app-config.js';
 import { DriverClientImpl } from './driver-client.js';
+import type {
+  DriverAction,
+  DriverActionArgs,
+  DriverActionResult,
+  DriverEvent,
+  DriverEventData,
+  DriverName,
+} from './driver-types.js';
 import { AppEventsClientImpl } from './events-client.js';
 import { ExperienceRouterImpl } from './experience-router.js';
 import { AppLoggerImpl } from './logger.js';
@@ -278,7 +286,11 @@ class TrackedDriverClient implements DriverClient {
 
   constructor(private readonly inner: DriverClient) {}
 
-  on(driver: string, event: string, listener: (data: unknown) => void): DriverSubscription {
+  on<D extends DriverName, E extends DriverEvent<D> | '*'>(
+    driver: D,
+    event: E,
+    listener: (data: DriverEventData<D, E>) => void,
+  ): DriverSubscription {
     if (this.released) return { ready: Promise.resolve(), unsubscribe: () => undefined };
     const inner = this.inner.on(driver, event, listener);
     const subscription: DriverSubscription = {
@@ -291,12 +303,19 @@ class TrackedDriverClient implements DriverClient {
     return subscription;
   }
 
-  get<T = unknown>(driver: string, event: string): Promise<T> {
-    return this.inner.get<T>(driver, event);
+  get<D extends DriverName, E extends DriverEvent<D>>(
+    driver: D,
+    event: E,
+  ): Promise<DriverEventData<D, E> | null> {
+    return this.inner.get(driver, event);
   }
 
-  execute<T = unknown>(driver: string, action: string, data?: unknown): Promise<T> {
-    return this.inner.execute<T>(driver, action, data);
+  execute<D extends DriverName, A extends DriverAction<D>>(
+    driver: D,
+    action: A,
+    ...params: DriverActionArgs<D, A>
+  ): Promise<DriverActionResult<D, A>> {
+    return this.inner.execute(driver, action, ...params);
   }
 
   release(): void {

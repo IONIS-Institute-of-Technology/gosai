@@ -262,7 +262,7 @@ describe('listener cleanup on stop', () => {
     const { server, env } = environment();
     const handle = await startRuntime({}, runtimeOptions({ driverBinding: 'pool' }), env);
     handle.context.drivers.on('camera', 'frame', () => undefined);
-    await handle.context.drivers.execute('camera', 'snap');
+    await handle.context.drivers.execute('camera', 'snapshot');
     expect(server.listeners.has('driver:event:pool')).toBe(true);
     expect(server.requestsOf('driver:execute')[0]?.payload).toMatchObject({ binding: 'pool' });
     await handle.stop();

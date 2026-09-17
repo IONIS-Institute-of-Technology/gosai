@@ -31,6 +31,9 @@
     "./package.json": "./package.json"
   },
   "types": "./dist/index.d.ts",
+  "bin": {
+    "gosai-sdk": "./dist/cli/gosai-sdk.js"
+  },
   "files": [
     "dist",
     "CHANGELOG.md"

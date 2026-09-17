@@ -61,6 +61,9 @@
     "packages/sdk": {
       "name": "@gosai/sdk",
       "version": "0.1.0",
+      "bin": {
+        "gosai-sdk": "./dist/cli/gosai-sdk.js",
+      },
       "devDependencies": {
         "@gosai/shared": "workspace:*",
         "rollup": "^4.60.4",

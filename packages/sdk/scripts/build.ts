@@ -5,6 +5,7 @@
  *   with `@gosai/shared` bundled in. The server serves these to app windows.
  * - `index.d.ts` and `host.d.ts` with the `@gosai/shared` types inlined.
  * - `gosai.app.schema.json`, the manifest JSON Schema.
+ * - `cli/gosai-sdk.js`, the `gosai-sdk` command for Node.
  *
  * The package has no runtime dependencies, so the build fails when an output
  * still refers to `@gosai/shared` or zod.
@@ -30,6 +31,17 @@ const js = await Bun.build({
 if (!js.success) {
   for (const log of js.logs) console.error(log);
   throw new Error('bundling the SDK failed');
+}
+
+const cli = await Bun.build({
+  entrypoints: [join(packageDir, 'cli', 'gosai-sdk.ts')],
+  outdir: join(dist, 'cli'),
+  target: 'node',
+  format: 'esm',
+});
+if (!cli.success) {
+  for (const log of cli.logs) console.error(log);
+  throw new Error('bundling the gosai-sdk command failed');
 }
 
 const types = await rollup({

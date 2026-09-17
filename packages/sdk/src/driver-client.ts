@@ -1,4 +1,12 @@
 import { driverEventName } from '@gosai/shared/events';
+import type {
+  DriverAction,
+  DriverActionArgs,
+  DriverActionResult,
+  DriverEvent,
+  DriverEventData,
+  DriverName,
+} from './driver-types.js';
 import type { DriverClient, DriverSubscription, ServerConnection } from './types.js';
 
 /**
@@ -17,7 +25,11 @@ export class DriverClientImpl implements DriverClient {
     private readonly binding: string,
   ) {}
 
-  on(driver: string, event: string, listener: (data: unknown) => void): DriverSubscription {
+  on<D extends DriverName, E extends DriverEvent<D> | '*'>(
+    driver: D,
+    event: E,
+    listener: (data: DriverEventData<D, E>) => void,
+  ): DriverSubscription {
     const target = { driver, event, binding: this.binding };
     const held = this.server.retain(`driver:${this.binding}:${driver}:${event}`, {
       acquire: async () => {
@@ -30,7 +42,7 @@ export class DriverClientImpl implements DriverClient {
     const off = this.server.on(driverEventName(this.binding), (payload) => {
       if (payload.driver !== driver) return;
       if (event !== '*' && payload.event !== event) return;
-      listener(payload.data);
+      listener(payload.data as DriverEventData<D, E>);
     });
 
     let active = true;
@@ -45,20 +57,28 @@ export class DriverClientImpl implements DriverClient {
     };
   }
 
-  async get<T = unknown>(driver: string, event: string): Promise<T> {
-    return (await this.server.request('driver:get-data', {
+  async get<D extends DriverName, E extends DriverEvent<D>>(
+    driver: D,
+    event: E,
+  ): Promise<DriverEventData<D, E> | null> {
+    const data = await this.server.request('driver:get-data', {
       driver,
       event,
       binding: this.binding,
-    })) as T;
+    });
+    return (data ?? null) as DriverEventData<D, E> | null;
   }
 
-  async execute<T = unknown>(driver: string, action: string, data?: unknown): Promise<T> {
+  async execute<D extends DriverName, A extends DriverAction<D>>(
+    driver: D,
+    action: A,
+    ...params: DriverActionArgs<D, A>
+  ): Promise<DriverActionResult<D, A>> {
     return (await this.server.request('driver:execute', {
       driver,
       action,
-      data,
+      data: params[0],
       binding: this.binding,
-    })) as T;
+    })) as DriverActionResult<D, A>;
   }
 }
