@@ -21,7 +21,7 @@ import {
   type FullscreenCanvas,
 } from '@gosai/sdk';
 
-import { loadConfig, loadMirrorProfile } from './shared/config.js';
+import { DEFAULT_CONFIG, loadConfig, loadMirrorProfile, mergeConfig } from './shared/config.js';
 import type { LayerDeps } from './shared/deps.js';
 import { createMirrorFeed, type MirrorFeed, type Snapshot } from './shared/feed.js';
 import { MenuOptions, type LayerDef, type Layers } from './shared/layers.js';
@@ -272,7 +272,18 @@ export default defineExperience<State>({
       LAYERS.map(({ factory, ...spec }) => ({ ...spec, create: () => factory(deps) })),
       { onError },
     );
-    state.session = { layers, synth, sleep: new SleepController(config.sleep, state.feed) };
+    const sleep = new SleepController(config.sleep, state.feed);
+    state.session = { layers, synth, sleep };
+
+    // Follow changes made from the dashboard while the experience runs.
+    rt.settings.onChange((values) => {
+      const next = mergeConfig(DEFAULT_CONFIG, values);
+      sleep.configure(next.sleep);
+      // The wizard owns the driver's projection while it runs.
+      if (projection.configure(next) && !layers?.isRunning('calibrate')) {
+        warnOnFailure(rt, 'set_mirror_config', projection.apply());
+      }
+    });
 
     for (const spec of LAYERS) if (spec.overlay) void layers.start(spec.slug);
 

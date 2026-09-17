@@ -87,11 +87,16 @@ export class SleepController {
   private ripples: Ripple[] = [];
 
   constructor(
-    private readonly cfg: SleepConfig,
+    private cfg: SleepConfig,
     private readonly feed: MirrorFeed,
   ) {}
 
-  /** True while fully dark: the compositor can skip layer rendering. */
+  /** Applies changed settings. The current phase carries on under them. */
+  configure(cfg: SleepConfig): void {
+    this.cfg = cfg;
+  }
+
+  /** True while fully dark: the compositor can suspend the layers. */
   dormant(): boolean {
     return (
       this.cfg.enabled &&

@@ -13,18 +13,27 @@ interface Recorded {
 
 const DRIVER_SETTINGS = { mode: 'direct', tilt_deg: 17, scale: 1, affine: null, face_mesh: true };
 
-function fakeRuntime(): Recorded {
+function fakeRuntime(
+  driver: Record<string, unknown> = { ...DRIVER_SETTINGS },
+  hooks: { onStorage?: () => void } = {},
+): Recorded {
   const executed: Recorded['executed'] = [];
   const stored = new Map<string, unknown>();
   const settings: Recorded['settings'] = [];
   const rt = {
     drivers: {
-      execute: async (driver: string, action: string, params?: unknown) => {
-        executed.push({ driver, action, params });
-        return { ...DRIVER_SETTINGS, ...(params as object) };
+      execute: async (name: string, action: string, params?: unknown) => {
+        executed.push({ driver: name, action, params });
+        Object.assign(driver, params ?? {});
+        return { ...driver };
       },
     },
-    storage: { set: async (key: string, value: unknown) => void stored.set(key, value) },
+    storage: {
+      set: async (key: string, value: unknown) => {
+        stored.set(key, value);
+        hooks.onStorage?.();
+      },
+    },
     settings: { set: async (values: Record<string, unknown>) => void settings.push(values) },
   };
   return { rt: rt as unknown as ExperienceRuntimeContext, executed, stored, settings };
@@ -54,6 +63,38 @@ describe('Projection', () => {
     });
   });
 
+  test('restore without a profile uses the snapshot taken when the wizard started', async () => {
+    // The startup apply never completed, but the driver holds a fit.
+    const driver = { ...DRIVER_SETTINGS, tilt_deg: 12, scale: 1.3, affine: [5, 6, 7, 8] };
+    const { rt, executed } = fakeRuntime(driver);
+    const projection = new Projection(rt, DEFAULT_CONFIG, null);
+    await projection.snapshot();
+    expect(executed.at(-1)).toEqual({
+      driver: 'pose_to_mirror',
+      action: 'set_mirror_config',
+      params: undefined,
+    });
+    // The wizard's solve replaces the fit.
+    Object.assign(driver, { tilt_deg: 30, scale: 2, affine: [0, 0, 0, 0] });
+    await projection.restore();
+    expect(executed.at(-1)?.params).toMatchObject({
+      tilt_deg: 12,
+      scale: 1.3,
+      affine: [5, 6, 7, 8],
+    });
+  });
+
+  test('configure reports projection changes only', () => {
+    const { rt } = fakeRuntime();
+    const projection = new Projection(rt, DEFAULT_CONFIG, null);
+    const sleepier = mergeConfig(DEFAULT_CONFIG, { sleep: { sleepDelaySec: 30 } });
+    expect(projection.configure(sleepier)).toBe(false);
+    expect(projection.configure(mergeConfig(sleepier, { projection: { mirror: false } }))).toBe(
+      true,
+    );
+    expect(projection.config.projection.mirror).toBe(false);
+  });
+
   test('restore puts the saved profile back', async () => {
     const { rt, executed } = fakeRuntime();
     const reflection = mergeConfig(DEFAULT_CONFIG, { projection: { mode: 'reflection' } });
@@ -79,6 +120,27 @@ describe('Projection', () => {
     // Already in reflection mode: only the profile changes.
     await projection.saveCalibration({ ...PROFILE, scale: 2 });
     expect(settings).toHaveLength(1);
+  });
+
+  test('an aborted save skips the steps that had not started', async () => {
+    const controller = new AbortController();
+    const { rt, executed, stored, settings } = fakeRuntime(undefined, {
+      onStorage: () => controller.abort(),
+    });
+    const projection = new Projection(rt, DEFAULT_CONFIG, null);
+    expect(await projection.saveCalibration(PROFILE, controller.signal)).toBe(false);
+    expect(stored.has('mirror_calibration')).toBe(true);
+    expect(settings).toEqual([]);
+    expect(executed).toEqual([]);
+    expect(projection.config.projection.mode).toBe('direct');
+
+    const aborted = new AbortController();
+    aborted.abort();
+    const fresh = fakeRuntime();
+    expect(
+      await new Projection(fresh.rt, DEFAULT_CONFIG, null).saveCalibration(PROFILE, aborted.signal),
+    ).toBe(false);
+    expect(fresh.stored.size).toBe(0);
   });
 });
 

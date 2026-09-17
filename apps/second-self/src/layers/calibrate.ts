@@ -105,6 +105,8 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
    * that settles afterwards can tell it belongs to an abandoned run.
    */
   let run = 0;
+  /** Aborts the remaining steps of a save when the run resets or the layer stops. */
+  let saving: AbortController | null = null;
 
   // Stability window over the raw fingertip: [x, y, timestamp].
   let holdWindow: Array<[number, number, number]> = [];
@@ -134,6 +136,8 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
 
   function reset(): void {
     run += 1;
+    saving?.abort();
+    saving = null;
     phase = 'intro';
     round = 1;
     targetIdx = 0;
@@ -377,11 +381,15 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
     };
     phase = 'saving';
     const saveRun = run;
+    const controller = new AbortController();
+    saving = controller;
     // Saving also switches the app to reflection mode, so kiosks never need
-    // the dashboard to get there.
-    deps.projection.saveCalibration(profile).then(
-      () => {
-        if (saveRun !== run) return;
+    // the dashboard to get there. Leaving during the save skips the steps
+    // that haven't started, so the restore on stop wins.
+    deps.projection.saveCalibration(profile, controller.signal).then(
+      (completed) => {
+        if (!completed || saveRun !== run) return;
+        saving = null;
         saved = true;
         deps.rt.log.info('calibrate: profile saved', { ...profile });
         void deps.layers.stop('calibrate');
@@ -403,6 +411,9 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
       saved = false;
       targetShownAt = performance.now();
       clearSamples();
+      deps.projection.snapshot().catch((err: unknown) => {
+        deps.rt.log.warn('calibrate: reading the mirror settings failed', { err: String(err) });
+      });
     },
 
     render({ ctx, timestamp, deltaMs }): void {
