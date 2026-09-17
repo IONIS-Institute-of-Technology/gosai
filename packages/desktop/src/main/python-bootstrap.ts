@@ -8,7 +8,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { app } from 'electron';
@@ -51,8 +51,8 @@ export async function ensurePythonRuntime(
   const name = runtimeName(info, extras);
   const uv = bundledUv(resources);
   const onStatus = options.onStatus ?? (() => undefined);
-  // Upgrades of this app with these extras replace each other's runtime.
-  const family = `${app.getName()}\n${extras.join(',')}`;
+  // Upgrades of this bundle with these extras replace each other's runtime.
+  const family = `${bundleIdentity(resources)}\n${extras.join(',')}`;
   const pythonDir = await materializeRuntime({
     sourceDir,
     runtimeRoot,
@@ -78,6 +78,22 @@ export async function ensurePythonRuntime(
     console.warn(`[gosai-python] could not remove old runtimes: ${String(err)}`);
   }
   return pythonDir;
+}
+
+/**
+ * `kiosk:<slug>` for a kiosk bundle, `desktop` otherwise. Every bundle
+ * reports the same app name, so it can't tell them apart.
+ */
+function bundleIdentity(resources: string): string {
+  try {
+    const { appSlug } = JSON.parse(readFileSync(join(resources, 'kiosk.json'), 'utf8')) as {
+      appSlug?: unknown;
+    };
+    if (typeof appSlug === 'string') return `kiosk:${appSlug}`;
+  } catch {
+    // Not a kiosk bundle.
+  }
+  return 'desktop';
 }
 
 function bundledUv(resources: string): string {
