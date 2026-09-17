@@ -1,16 +1,14 @@
 """Model discovery and per-model paths.
 
 Each trainable model lives under ``training/models/<name>/`` with a ``model.yaml``
-manifest, a ``configs/`` folder, and a ``data/`` folder. Generated artifacts
-(raw/merged datasets, runs, exports) live under the same model folder and are
-git-ignored. A :class:`ModelContext` resolves all of these paths for a pipeline.
+manifest, a ``configs/`` folder and a ``data/`` folder. Generated artifacts (raw and
+merged datasets, runs, exports) live in the same model folder and are git-ignored.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from .util import load_yaml
 
@@ -19,125 +17,39 @@ TRAINING_ROOT = Path(__file__).resolve().parents[2]
 REPO_ROOT = TRAINING_ROOT.parent
 MODELS_ROOT = TRAINING_ROOT / "models"
 
-DEFAULT_TYPE = "yolo-detect"
+_REQUIRED_KEYS = ("type", "class_name", "install_path")
 
 
 @dataclass(frozen=True)
 class ModelContext:
-    """Resolved paths and manifest for a single trainable model."""
+    """Manifest values and resolved paths for one trainable model."""
 
     name: str
+    type: str
+    class_name: str
+    install_path: Path
     model_dir: Path
-    manifest: dict[str, Any]
 
-    # ── manifest-derived ──
-    @property
-    def type(self) -> str:
-        return str(self.manifest.get("type", DEFAULT_TYPE))
+    datasets_config: Path
+    classes_config: Path
+    negatives_config: Path
+    train_config: Path
 
-    @property
-    def class_name(self) -> str:
-        """Single target class name written into the merged dataset."""
-        return str(self.manifest.get("class_name", "object"))
+    custom_images: Path
+    custom_labels: Path
+    custom_videos: Path
+    dropin_neg_dir: Path
+    golden_dir: Path
 
-    @property
-    def map_all_classes(self) -> bool:
-        """If true, every source class is treated as the target (no heuristic)."""
-        return bool(self.manifest.get("map_all_classes", False))
-
-    @property
-    def install_path(self) -> Path:
-        rel = self.manifest.get("install_path")
-        if not rel:
-            raise SystemExit(f"model {self.name!r}: model.yaml is missing `install_path`")
-        return REPO_ROOT / rel
-
-    @property
-    def export_name(self) -> str:
-        """Filename for the exported model (matches the install target)."""
-        return self.install_path.name
-
-    # ── config files ──
-    @property
-    def configs_dir(self) -> Path:
-        return self.model_dir / "configs"
-
-    @property
-    def datasets_config(self) -> Path:
-        return self.configs_dir / "datasets.yaml"
-
-    @property
-    def classes_config(self) -> Path:
-        return self.configs_dir / "classes.yaml"
-
-    @property
-    def negatives_config(self) -> Path:
-        return self.configs_dir / "negatives.yaml"
-
-    @property
-    def train_config(self) -> Path:
-        return self.configs_dir / "train.yaml"
-
-    @property
-    def classes_lock(self) -> Path:
-        """Generated keep/drop decisions (review file; overrides live in classes.yaml)."""
-        return self.configs_dir / "classes.lock.yaml"
-
-    # ── data (inputs) ──
-    @property
-    def data_dir(self) -> Path:
-        return self.model_dir / "data"
-
-    @property
-    def custom_images(self) -> Path:
-        return self.data_dir / "custom" / "images"
-
-    @property
-    def custom_labels(self) -> Path:
-        return self.data_dir / "custom" / "labels"
-
-    @property
-    def custom_videos(self) -> Path:
-        return self.data_dir / "custom" / "videos"
-
-    @property
-    def dropin_neg_dir(self) -> Path:
-        return self.data_dir / "negatives"
-
-    @property
-    def golden_dir(self) -> Path:
-        """Held-out own-camera eval set (never trained on): images/ + labels/."""
-        return self.data_dir / "golden"
-
-    # ── data / artifacts (generated) ──
-    @property
-    def raw_dir(self) -> Path:
-        return self.data_dir / "raw"
-
-    @property
-    def merged_dir(self) -> Path:
-        return self.data_dir / "merged"
-
-    @property
-    def neg_pool_dir(self) -> Path:
-        return self.data_dir / "negatives_pool"
-
-    @property
-    def mining_dir(self) -> Path:
-        """Output of `mine`: frames where the model fired, for FP review."""
-        return self.data_dir / "mining"
-
-    @property
-    def runs_dir(self) -> Path:
-        return self.model_dir / "runs"
-
-    @property
-    def exports_dir(self) -> Path:
-        return self.model_dir / "exports"
-
-    @property
-    def export_path(self) -> Path:
-        return self.exports_dir / self.export_name
+    raw_dir: Path
+    merged_dir: Path
+    neg_pool_dir: Path
+    mining_dir: Path
+    custom_previews: Path
+    runs_dir: Path
+    exports_dir: Path
+    export_path: Path
+    classes_lock: Path
 
 
 def discover_models() -> list[str]:
@@ -152,13 +64,44 @@ def load_context(name: str) -> ModelContext:
     if not manifest_path.exists():
         available = ", ".join(discover_models()) or "(none)"
         raise SystemExit(f"unknown model {name!r}. Available: {available}")
-    return ModelContext(name=name, model_dir=model_dir, manifest=load_yaml(manifest_path))
+    manifest = load_yaml(manifest_path)
+    missing = [key for key in _REQUIRED_KEYS if not manifest.get(key)]
+    if missing:
+        raise SystemExit(f"{manifest_path} is missing {', '.join(missing)}")
+
+    install_path = REPO_ROOT / str(manifest["install_path"])
+    configs = model_dir / "configs"
+    data = model_dir / "data"
+    runs = model_dir / "runs"
+    exports = model_dir / "exports"
+    return ModelContext(
+        name=name,
+        type=str(manifest["type"]),
+        class_name=str(manifest["class_name"]),
+        install_path=install_path,
+        model_dir=model_dir,
+        datasets_config=configs / "datasets.yaml",
+        classes_config=configs / "classes.yaml",
+        negatives_config=configs / "negatives.yaml",
+        train_config=configs / "train.yaml",
+        custom_images=data / "custom" / "images",
+        custom_labels=data / "custom" / "labels",
+        custom_videos=data / "custom" / "videos",
+        dropin_neg_dir=data / "negatives",
+        golden_dir=data / "golden",
+        raw_dir=data / "raw",
+        merged_dir=data / "merged",
+        neg_pool_dir=data / "negatives_pool",
+        mining_dir=data / "mining",
+        custom_previews=data / "custom" / "previews",
+        runs_dir=runs,
+        exports_dir=exports,
+        export_path=exports / install_path.name,
+        classes_lock=runs / "classes.lock.yaml",
+    )
 
 
 def default_model() -> str | None:
+    """The only model, or None when there are several (then `--model` is required)."""
     models = discover_models()
-    if "ball" in models:
-        return "ball"
-    if len(models) == 1:
-        return models[0]
-    return None
+    return models[0] if len(models) == 1 else None

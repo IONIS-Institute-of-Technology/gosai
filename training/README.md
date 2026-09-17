@@ -1,92 +1,84 @@
 # GOSAI model training
 
 A multi-model training workspace for GOSAI driver models. Each model lives under
-`models/<name>/` and is built by a shared, reusable pipeline. The first model is
-**`ball`** — the single-class billiard-ball detector for the `ball` driver.
+`models/<name>/` and is built by a shared pipeline. The first model is **`ball`**,
+the single-class billiard-ball detector for the `ball` driver.
 
-It is optimized for both Apple Silicon (MPS/Metal training, CoreML export) and
-NVIDIA (CUDA training, TensorRT export), with device auto-detection. It runs
-natively on macOS, Linux, and Windows: `uv sync` installs the right PyTorch
-build per platform (on Windows the CUDA 12.8 wheels are pulled automatically —
-PyPI only ships CPU-only torch there).
+Training runs on NVIDIA (CUDA) and Apple Silicon (MPS) with device auto-detection,
+and on CPU if nothing else is available. `uv sync` installs the right PyTorch build
+per platform (on Windows it pulls the CUDA 12.8 wheels, since PyPI only ships
+CPU-only torch there).
 
 ## Quick start (ball model)
 
 ```bash
 cd training
 
-# 1. Roboflow API key (https://app.roboflow.com/settings/api)
-export ROBOFLOW_API_KEY=...        # or copy .env.example to .env and fill it in
+# 1. Install dependencies (creates .venv)
+uv sync
 
-# 2. Install dependencies (creates .venv via uv)
-make setup
+# 2. Roboflow API key (https://app.roboflow.com/settings/api)
+cp .env.example .env               # then fill in ROBOFLOW_API_KEY
 
-# 3. Run the whole pipeline for the default model (ball)
-make all
+# 3. Run the whole pipeline
+uv run --env-file .env gosai-train all
 ```
 
-`make all` runs: `download -> negatives -> prepare -> train -> export -> install`.
-When it finishes, commit the produced model so it ships with the app:
+`all` runs `download`, `negatives`, `prepare`, `train`, `export` and `install`. When
+it finishes, commit the model and its metadata so they ship with the app:
 
 ```bash
-git add python/src/gosai_py/drivers/ball_models/ball.onnx
+git add python/src/gosai_py/drivers/ball_models/ball.onnx python/src/gosai_py/drivers/ball_models/ball.onnx.json
 ```
 
-> Requirements: [uv](https://docs.astral.sh/uv/) and Python 3.12. Training needs
-> a GPU (NVIDIA) or Apple Silicon for reasonable speed; CPU works but is slow.
+The API key is only needed while a dataset is missing from `models/<m>/data/raw/`;
+once they are downloaded, `download` and `all` skip them and run without
+`--env-file .env`. Exporting `ROBOFLOW_API_KEY` in your shell works too.
 
-### Windows
+> Requirements: [uv](https://docs.astral.sh/uv/) and Python 3.12. Training needs an
+> NVIDIA GPU or Apple Silicon for reasonable speed; CPU works but is slow.
 
-The pipeline runs natively on Windows (no WSL needed). `make.bat` mirrors the
-Makefile, so from cmd or PowerShell:
+On Windows the same commands work from cmd or PowerShell. Before a long run, check
+that the GPU is visible (`train` also warns when it falls back to CPU):
 
-```bat
-make setup
-make all
-make train ball        :: model as optional second argument
+```bash
+uv run python -c "import torch; print(torch.cuda.is_available())"
 ```
 
-`uv sync` installs the CUDA 12.8 torch build automatically (supports RTX 50xx).
-Before a long run, confirm the GPU is seen — `train` also warns if it falls
-back to CPU:
-
-```bat
-uv run python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
-```
-
-Everything works except the native CoreML export (`--formats coreml`), which
-requires macOS; the ONNX artifact the driver uses exports on any platform.
+The CoreML export (`--formats coreml`) needs macOS. The ONNX file the driver uses
+exports on any platform.
 
 ## Choosing a model
 
-Every command targets one model. Pick it with `MODEL=` (Make) or `--model` (CLI);
-the default is `ball`.
+Every command targets one model. With a single model under `models/` it is picked
+automatically; with several, pass `--model`:
 
 ```bash
-make all                      # ball
-make train MODEL=ball         # explicit
-uv run gosai-train models     # list available models
+uv run gosai-train models                 # list available models
 uv run gosai-train --model ball all
 ```
 
 ## Single steps
 
 ```bash
-make download     # fetch Roboflow datasets        -> models/<m>/data/raw/
-make negatives    # optional external negatives     -> models/<m>/data/negatives_pool/
-make prepare      # merge/dedup/motion-blur         -> models/<m>/data/merged/
-make train        # fine-tune                       -> models/<m>/runs/<name>-<timestamp>/
-make eval         # metrics: test split, golden set, FP rate on no-ball frames
-make mine         # hard-negative mining: frames where the model fires, for review
-make export       # ONNX (+optional coreml/engine)  -> models/<m>/exports/
-make install      # copy into the driver package    -> (model's install_path)
+uv run gosai-train download    # fetch Roboflow datasets        -> models/<m>/data/raw/
+uv run gosai-train negatives   # glare + optional external negs -> models/<m>/data/negatives_pool/
+uv run gosai-train prepare     # merge/dedup/motion-blur         -> models/<m>/data/merged/
+uv run gosai-train train       # fine-tune                       -> models/<m>/runs/<name>-<timestamp>/
+uv run gosai-train eval        # metrics: test split, golden set, FP rate on no-ball frames
+uv run gosai-train mine        # hard-negative mining: frames where the model fires, for review
+uv run gosai-train export      # ONNX (+optional coreml/engine)  -> models/<m>/exports/
+uv run gosai-train install     # copy into the driver package    -> (model's install_path)
+uv run gosai-train clean       # delete generated data, previews, runs and exports
 ```
 
-Every `train` creates a fresh timestamped run folder (nothing is overwritten);
-`export` and `eval` pick the newest `best.pt` and print which weights (and
-training date) they used, so a stale model can't be shipped silently.
+Run `uv run gosai-train <command> --help` for each command's options.
 
-## Make it work on YOUR table (the highest-impact loop)
+Every `train` creates a fresh timestamped run folder, so nothing is overwritten.
+`export` and `eval` pick the newest `best.pt` and print which weights (and training
+date) they used, so a stale model can't be shipped silently.
+
+## Make it work on your table
 
 Public datasets get the model in the ballpark; footage from your actual rig
 (top-down camera, your lighting, your table) is what makes it reliable. Three
@@ -95,16 +87,16 @@ feedback loops, all optional but strongly recommended:
 ### 1. Add labelled footage from your rig
 
 ```bash
-# Drop short clips into models/ball/data/custom/videos/ -- vary lighting,
-# crowded racks, fast shots, balls near/in pockets.
-make frames                # extract frames -> data/custom/images/
+# Drop short clips into models/ball/data/custom/videos/: vary lighting,
+# crowded racks, fast shots, balls near or in pockets.
+uv run gosai-train frames      # extract frames -> data/custom/images/
 
 # Auto-draft labels with your latest model (or a base model). Also writes
 # annotated previews to data/custom/previews/ for a fast visual check.
-make autolabel
+uv run gosai-train autolabel
 
-# Fix wrong/missing boxes (Label Studio, labelImg, or Roboflow), then retrain.
-make all
+# Fix wrong or missing boxes (Label Studio, labelImg, or Roboflow), then retrain.
+uv run gosai-train all
 ```
 
 Frames from one video always land on the same side of the train/val split, so
@@ -114,50 +106,47 @@ You can also drop pre-labelled images straight into `data/custom/images/` +
 `data/custom/labels/` (YOLO format; the class index is forced to `0`), and
 negative/background images (no balls) into `data/negatives/`.
 
-### 2. Mine hard negatives (kills false positives)
+### 2. Mine hard negatives
 
-When the detector fires on pockets, glare, or a ball sunk in a hole, feed
-those mistakes back as training signal:
+When the detector fires on pockets, glare, or a ball sunk in a hole, feed those
+mistakes back as training signal:
 
 ```bash
-make mine                                   # scans data/custom/videos
+uv run gosai-train mine                     # scans data/custom/videos
 uv run gosai-train mine --source ~/clips    # or any videos/images folder
 ```
 
-Review `data/mining/previews/`; for every frame with a WRONG detection, move
-the same-named file from `data/mining/images/` into `data/negatives/`, then
-`make prepare train`. (Policy: a ball fully inside a pocket counts as "no
-ball" -- mine those frames as negatives.)
+Review `data/mining/previews/`; for every frame with a wrong detection, move the
+same-named file from `data/mining/images/` into `data/negatives/`, then run
+`prepare` and `train` again. A ball fully inside a pocket counts as "no ball", so
+mine those frames as negatives.
 
 ### 3. Keep a golden test set
 
 Put labelled frames from your rig into `data/golden/images` + `data/golden/labels`
-(and some no-ball frames with empty label files). They are **never trained on**;
-`make eval` reports mAP/precision/recall on them plus the false-positive rate
-on no-ball images -- the numbers that actually match "does it work on our
-table". Use it to compare runs or base models (`yolo26s` vs `yolo26m`).
+(and some no-ball frames with empty label files). They are never trained on;
+`eval` reports mAP, precision and recall on them plus the false-positive rate on
+no-ball images. Use it to compare runs or base models (`yolo26s` vs `yolo26m`).
 
 ## Repository layout
 
 ```
 training/
-├── Makefile                     MODEL ?= ball; thin wrapper over the CLI
 ├── pyproject.toml               uv project (ultralytics, roboflow, onnx, ...)
 ├── src/gosai_train/
 │   ├── cli.py                   `gosai-train [--model NAME] <command>`
 │   ├── context.py               ModelContext: per-model paths + manifest
 │   ├── registry.py              model `type` -> pipeline
-│   ├── devices.py               CUDA / MPS / CPU auto-detect
+│   ├── devices.py               CUDA / MPS / CPU selection
 │   ├── util.py                  shared IO helpers
 │   └── pipelines/
-│       └── yolo_detect/         download/negatives/prepare/frames/autolabel/
-│                                train/eval/mine/export/install stages
-│                                (sources.py = shared sample collection)
+│       └── yolo_detect/         one module per command, plus shared
+│                                sources, weights and provenance helpers
+├── tests/                       unit tests (`uv run pytest`)
 └── models/
     └── ball/
-        ├── model.yaml           manifest (type, class_name, install_path, ...)
+        ├── model.yaml           manifest (type, class_name, install_path)
         ├── configs/             datasets / classes / negatives / train
-        │                        (+ generated classes.lock.yaml for review)
         └── data/                custom/, negatives/, golden/
                                  (+ generated raw/merged/mining/...)
 ```
@@ -168,82 +157,54 @@ training/
 
    ```yaml
    name: <name>
-   type: yolo-detect # reuses the YOLO detector pipeline
+   type: yolo-detect # the only pipeline type so far
    class_name: <thing> # single class written into the dataset
-   map_all_classes:
-     true # true: every labelled class IS the target;
-     # false: use configs/classes.yaml + heuristic
    install_path: python/src/gosai_py/drivers/<driver>_models/<name>.onnx
    ```
 
 2. Add `models/<name>/configs/` (`datasets.yaml`, `classes.yaml`, `negatives.yaml`,
-   `train.yaml`) — copy the `ball` ones as a starting point.
+   `train.yaml`). Copy the `ball` ones as a starting point.
 3. Create `models/<name>/data/{custom/{images,labels,videos},negatives}/` with
    `.gitkeep` files.
 4. If the driver loads bundled models, add the artifact glob in
    `python/pyproject.toml` (like `ball_models/*.onnx`).
-5. Run it: `make all MODEL=<name>`.
+5. Run it: `uv run --env-file .env gosai-train --model <name> all`.
 
-For a fundamentally different task (e.g. pose or classification), add a new
-pipeline package under `src/gosai_train/pipelines/` and register its `type` in
-`registry.py`.
+For a different task (for example pose or classification), add a pipeline package
+under `src/gosai_train/pipelines/` and register its `type` in `registry.py`.
 
 ## Configuration (per model, under `models/<name>/configs/`)
 
-| File                | What                                                                                 |
-| ------------------- | ------------------------------------------------------------------------------------ |
-| `datasets.yaml`     | Roboflow datasets to download/merge; per-dataset `cap` / `enabled`.                  |
-| `classes.yaml`      | Manual `overrides:` for class `keep`/`drop` decisions.                               |
-| `classes.lock.yaml` | Generated: every discovered class and its decision -- review after adding a dataset. |
-| `negatives.yaml`    | Negative ratio + optional external negative sources.                                 |
-| `train.yaml`        | Model size, epochs, image size, device, caching, augmentation, motion blur.          |
+| File             | What                                                                                                      |
+| ---------------- | --------------------------------------------------------------------------------------------------------- |
+| `datasets.yaml`  | Roboflow datasets to download and merge, each with a `version` (pin it; `latest` warns); `cap`/`enabled`. |
+| `classes.yaml`   | Manual `overrides:` for class `keep`/`drop` decisions.                                                    |
+| `negatives.yaml` | Negative ratio, glare synthesis, optional external negative sources.                                      |
+| `train.yaml`     | Base weights and their sha256, epochs, image size, device, augmentation, motion blur.                     |
 
 Tips:
 
 - Resolution: `train.yaml` has `imgsz` (square training resolution) and
   `infer_imgsz: [h, w]` (the exported ONNX input). The `ball` model trains at
-  `1280` and exports `[736, 1280]` to match real-world 720p 16:9 feeds with
-  almost no letterbox padding. Lower `imgsz` to `960` if training is too slow.
-- Crowded scenes / tiny objects benefit from higher `imgsz` (slower).
-- Force a class decision: add it under `overrides` in `classes.yaml`, e.g.
-  `cue: drop` (check `classes.lock.yaml` for what was discovered).
-- One dataset dominating the merge? Give it a `cap:` in `datasets.yaml`
-  (the snooker set is capped by default -- broadcast snooker is off-domain for
-  a top-down pool camera).
-- Moving balls: `prepare` synthesizes motion-blurred copies of a fraction of
-  train positives (see `motion_blur:` in `train.yaml`). `prepare` also removes
-  near-duplicate frames and prints a per-source composition table.
-
-## Runtime backends (inference)
-
-Training always runs in PyTorch (CUDA on NVIDIA, MPS/Metal on Apple) — TensorRT
-and CoreML are **not** training backends, they are inference/export targets, so
-there is only ever one trained model.
-
-For inference, the driver ships a **single ONNX model** and runs it under the
-fastest available ONNX Runtime _execution provider_. This keeps all the
-pre/post-processing code shared and lets one artifact run everywhere:
-
-| Host                | Auto backend                     | Notes                                 |
-| ------------------- | -------------------------------- | ------------------------------------- |
-| NVIDIA              | TensorRT EP → CUDA EP            | TensorRT compiles+caches on first run |
-| Apple Silicon (mac) | CoreML EP (Neural Engine/GPU)    | falls back to CPU for unsupported ops |
-| other               | CPU (only if explicitly allowed) | `GOSAI_ALLOW_CPU_FALLBACK=1`          |
-
-Override with `GOSAI_ACCELERATOR=auto|tensorrt|cuda|coreml|dml|cpu`. TensorRT
-caches engines under `GOSAI_TRT_CACHE_DIR` (default `~/.cache/gosai/trt`).
-
-This EP approach captures most of the TensorRT/CoreML speedup with zero extra
-runtime code or dependencies. If you want to benchmark the **native** engines
-(marginally faster, but device/version-specific and heavier), export them too —
-they are written to `models/<m>/exports/` and are not auto-installed:
-
-```bash
-# Native CoreML package (Apple):
-uv run gosai-train --model ball export --formats onnx,coreml
-# Native TensorRT engine (NVIDIA; Ultralytics installs tensorrt on demand):
-uv run gosai-train --model ball export --formats onnx,engine
-```
+  `1280` and exports `[736, 1280]` to match 720p 16:9 feeds with almost no
+  letterbox padding. Lower `imgsz` to `960` if training is too slow.
+- `train.yaml` keys other than `model`, `model_sha256`, `device`, `infer_imgsz`
+  and `motion_blur` are passed to Ultralytics as-is, so any
+  [training argument](https://docs.ultralytics.com/modes/train/#train-settings)
+  works. Ultralytics rejects unknown keys.
+- Changing the base weights means updating `model_sha256`. Ultralytics publishes
+  the digests with its `ultralytics/assets` releases.
+- Force a class decision: add it under `overrides` in `classes.yaml`, for example
+  `cue: drop`. `prepare` writes every discovered class and its decision to
+  `runs/classes.lock.yaml` for review.
+- One dataset dominating the merge? Give it a `cap:` in `datasets.yaml` (the
+  snooker set is capped by default, since broadcast snooker is off-domain for a
+  top-down pool camera).
+- Moving balls: `prepare` synthesizes motion-blurred copies of a fraction of train
+  positives (see `motion_blur:` in `train.yaml`). It also removes near-duplicate
+  frames and prints a per-source composition table.
+- External negative sources in `negatives.yaml` need the extra dependencies:
+  `uv sync --extra negatives`.
 
 ## How it works (yolo-detect)
 
@@ -261,6 +222,28 @@ negatives ─────────┘        │
    <driver>_models/<name>.onnx  <── install <── exports/<name>.onnx <── export (ONNX)
 ```
 
-The exported ONNX uses YOLO26's NMS-free end-to-end head: output
-`(1, 300, 6)` = `[x1, y1, x2, y2, confidence, class_id]`. The driver loads this
-directly, with no NMS at runtime.
+The exported ONNX uses YOLO26's NMS-free end-to-end head: output `(1, 300, 6)` =
+`[x1, y1, x2, y2, confidence, class_id]`. The driver loads it directly, with no NMS
+at runtime. How the driver picks an ONNX Runtime backend is described in
+[`python/src/gosai_py/drivers/README.md`](../python/src/gosai_py/drivers/README.md#ball-runtime-backends).
+
+## Model metadata
+
+`install` writes `<model>.onnx.json` next to the installed model. `export` builds it
+from what `prepare` and `train` recorded, and `install` refuses a file whose sha256
+does not match.
+
+| Field            | Meaning                                                                                                                                                                                  |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `schema_version` | `1`                                                                                                                                                                                      |
+| `model`          | Model name under `training/models/`                                                                                                                                                      |
+| `sha256`         | Hex sha256 of the ONNX file                                                                                                                                                              |
+| `input`          | `{ "height", "width" }` of the fixed ONNX input, from `infer_imgsz`                                                                                                                      |
+| `class_names`    | Class names by index                                                                                                                                                                     |
+| `run`            | Training run folder name, or `null` for weights not trained here                                                                                                                         |
+| `base_weights`   | Base checkpoint the run started from, or `null`                                                                                                                                          |
+| `git_sha`        | Commit checked out when training started, or `null`                                                                                                                                      |
+| `git_dirty`      | Whether that checkout had uncommitted changes, or `null`                                                                                                                                 |
+| `datasets`       | Dataset name to Roboflow version used by `prepare`, or `null`                                                                                                                            |
+| `metrics`        | ONNX scores on the merged test split (val if test is empty): `split` (`test` or `val`), `images`, `map50`, `map50_95`, `precision`, `recall`; `null` without labelled test or val images |
+| `exported_at`    | UTC timestamp, ISO 8601                                                                                                                                                                  |
