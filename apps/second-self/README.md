@@ -30,7 +30,7 @@ controller (mirrors the [interactive-pool](../interactive-pool) architecture).
 | `sign-game`      | Sign-language visual novel (script-driven, choices made by signing)      |
 | `sign-training`  | Guided sign tutor: mimic a reference video, then trace a correction pose |
 | `aria`           | VRM avatar puppeted by your pose/hands/face (three.js + Kalidokit)       |
-| `calibrate`      | Guided mirror-calibration wizard (reflection mode only)                  |
+| `calibrate`      | Guided mirror-calibration wizard; saving switches to reflection mode     |
 
 The menu controller enforces per-layer `exclusive` / `allowed` / `required`
 relationships (ported from the legacy `processing.py` app-manager rules) and
@@ -38,12 +38,12 @@ per-layer options (the old `sub-menu.json` toggles become in-process options).
 
 ## Drivers used
 
-| Driver               | Why                                                                                           |
-| -------------------- | --------------------------------------------------------------------------------------------- |
-| `pose`               | MediaPipe Holistic landmarks (2D + metric 3D world landmarks); `raw_data` feeds aria directly |
-| `pose_to_mirror`     | Projects landmarks into mirror pixel space (`mirrored_data`)                                  |
-| `frequency_analysis` | Microphone pitch/amplitude/FFT (`frequency`)                                                  |
-| `slr`                | Sign-language recognition over a 30-frame window (`new_sign`)                                 |
+| Driver               | Why                                                                                          |
+| -------------------- | -------------------------------------------------------------------------------------------- |
+| `pose`               | MediaPipe Holistic landmarks (2D + metric 3D world); `raw_data` feeds aria, sleep, calibrate |
+| `pose_to_mirror`     | Projects landmarks into mirror pixel space (`mirrored_data`)                                 |
+| `frequency_analysis` | Microphone pitch/amplitude/FFT (`frequency`)                                                 |
+| `slr`                | Sign-language recognition over a 30-frame window (`new_sign`)                                |
 
 `pose_to_mirror` and `slr` are **new built-in drivers** added to `gosai/python`
 for this app (the legacy platform had them; the new one did not). They are
@@ -59,7 +59,7 @@ Web Audio API in `src/shared/synth.ts` — no Python round-trip.
 ```
 webcam ─▶ pose ─┬─▶ pose_to_mirror ─(mirrored_data)─┐
                 ├─▶ slr ─────────────(new_sign)──────┤
-                └────────────────────(raw_data)──────┤  (aria only)
+                └────────────────────(raw_data)──────┤  (aria, sleep, calibrate)
 mic ────────────▶ frequency_analysis (frequency)─────┤
                                                       ▼
                                             main.ts compositor + feed
@@ -79,8 +79,9 @@ mic ────────────▶ frequency_analysis (frequency)──
   `particles.ts`, `media.ts`, `sign.ts`, `menu-controller.ts`, `assets.ts`,
   `deps.ts`.
 - `src/layers/` — one file per experience.
-- `assets/` — copied from the legacy app (menu icons, dance choreography + gif,
-  music scores, sign-game backgrounds/characters/font/script, sign-training
+- `assets/` — copied from the legacy app (dance choreography + animated webp,
+  music scores, sign-game backgrounds/characters/font/script, Aria's sign videos
+  in `signs/` shared by sign-game and sign-training, sign-training's own
   reference videos + `slr_samples`, the `aria` VRM model).
 
 ## Build
@@ -96,8 +97,9 @@ The app is registered in the repo root `build:apps` script.
 
 ## Configuration
 
-Configuration is intentionally minimal — two fields, everything else automatic
-or produced by the in-app calibration wizard:
+Configuration is intentionally minimal: two projection fields and the sleep
+settings. Everything else is automatic or produced by the in-app calibration
+wizard:
 
 | Field                   | Values                  | Meaning                                                                        |
 | ----------------------- | ----------------------- | ------------------------------------------------------------------------------ |
@@ -163,5 +165,5 @@ No millimetres, offsets, FOVs or tilt angles are ever entered by hand.
   is missing it renders a labelled placeholder instead of failing.
 - `sign-game` / `sign-training` require the SLR ONNX models bundled with the
   `slr` driver; the 16-sign action set is configured by `main.ts`.
-- Large media (sign videos, dance gif, menu svg icons) were pulled via Git LFS
-  from the legacy repo when copying assets.
+- Large media (sign videos, sprites, backgrounds, the dance animation and the
+  VRM model) is stored with Git LFS.

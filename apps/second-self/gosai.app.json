@@ -6,7 +6,7 @@
   "author": "GOSAI",
   "default": "main",
   "builtin": true,
-  "requirements": { "display": true, "camera": true, "microphone": true, "speaker": false },
+  "requirements": { "display": true, "camera": true, "microphone": true, "speaker": true },
   "calibration": { "required": false },
   "experiences": [
     {

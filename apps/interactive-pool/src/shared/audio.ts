@@ -1,8 +1,7 @@
 /**
  * Graceful audio loader. Attempts to fetch a sound file from the app's
- * static assets; if the file is missing or fails to decode the playback
- * helper becomes a no-op. The user can drop matching .mp3/.wav files into
- * `assets/audio/` later without code changes.
+ * static assets (the menu sounds ship in `assets/audio/`); if the file is
+ * missing or fails to decode the playback helper becomes a no-op.
  *
  * Why `import.meta.url`? When the bundle is dynamic-imported by the app-host
  * from `/v1/apps/<slug>/static/dist/main.js`, `import.meta.url` resolves to

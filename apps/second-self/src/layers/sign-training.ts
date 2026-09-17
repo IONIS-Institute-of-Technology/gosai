@@ -36,6 +36,11 @@ const PROBABILITY_THRESHOLD = 0.9;
 const MATCH_HOLD = 10;
 const REPLAY_MS = 15000;
 const CORRECTION_IDLE_MS = 15000;
+/**
+ * Signs with their own recording in `sign-training/videos/`. Every other
+ * reference video is Aria's sign animation in `signs/Aria/`, shared with sign-game.
+ */
+const TRAINING_VIDEOS = new Set(['hello', 'left', 'ok', 'right']);
 
 interface SampleFrame {
   body: Array<[number, number]>;
@@ -87,7 +92,10 @@ export function createSignTrainingLayer(deps: LayerDeps): Layer {
   const target = (): string => actions[targetIdx] ?? '';
 
   function videoUrl(sign: string): string {
-    return deps.assetUrl(`sign-training/videos/${sign.replace(/ /g, '_')}.webm`);
+    const file = `${sign.replace(/ /g, '_')}.webm`;
+    return deps.assetUrl(
+      TRAINING_VIDEOS.has(sign) ? `sign-training/videos/${file}` : `signs/Aria/${file}`,
+    );
   }
 
   function startMimic(now: number): void {
