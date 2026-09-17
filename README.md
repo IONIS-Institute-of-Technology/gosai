@@ -234,6 +234,12 @@ The packaged app bundles:
 
 See [`docs/deployment.md`](docs/deployment.md) for the full packaging guide.
 
+## Credits
+
+GOSAI began as a fork of [GOSAI-DVIC/gosai](https://github.com/GOSAI-DVIC/gosai).
+The codebase has since been rewritten from scratch and shares no history or code
+with the original — thanks to the original project for the starting point.
+
 ## License
 
 GPL-3.0
