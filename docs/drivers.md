@@ -144,8 +144,8 @@ Types: `DriverTypes.calibration`.
 | `clear`             | none                           | `Ok`                | Forget accumulated detections.                                                         |
 | `render_marker`     | `number \| RenderMarkerParams` | `MarkerImage`       | Render an ArUco marker as a PNG. Accepts {id, size} or a bare id.                      |
 | `get_latest_frame`  | none                           | `LatestFrame`       | The latest camera frame as a base64 JPEG.                                              |
-| `reproject_point`   | `ReprojectPointParams`         | `ReprojectedPoint`  | Warp a camera pixel into display or surface space.                                     |
-| `reproject_points`  | `ReprojectPointsParams`        | `ReprojectedPoints` | Warp camera pixels into display or surface space.                                      |
+| `reproject_point`   | `ReprojectPointParams`         | `ReprojectedPoint`  | Warp a camera pixel into display or surface space. Fails when it maps to infinity.     |
+| `reproject_points`  | `ReprojectPointsParams`        | `ReprojectedPoints` | Warp camera pixels into display or surface space, null where one maps to infinity.     |
 
 ### Types
 
@@ -242,6 +242,7 @@ export interface ComputeResult {
   inverse: number[];
   surface_matrix: number[] | null;
   surface_inverse: number[] | null;
+  /** The surface corners TL, TR, BR, BL in display pixels. Null without a focus quad, or when a corner maps to infinity on the display. */
   surface_quad_display: Point[] | null;
   surface_size: Size;
   frame_size: null | Size;
@@ -287,7 +288,7 @@ export interface ReprojectedPoint {
 export interface ReprojectedPoints {
   /** @default true */
   ok: boolean;
-  points: Point[];
+  points: (null | Point)[];
 }
 ```
 

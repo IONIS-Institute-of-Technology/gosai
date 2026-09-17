@@ -186,9 +186,11 @@ def _warp_detections(
     radii = (
         np.linalg.norm(horizontal - centers, axis=1) + np.linalg.norm(vertical - centers, axis=1)
     ) / 2.0
+    # A detection that maps to infinity has no place on the surface.
     return [
         _Detection(float(x), float(y), float(r), d.score)
         for (x, y), r, d in zip(centers, radii, detections, strict=True)
+        if np.isfinite(x) and np.isfinite(y) and np.isfinite(r)
     ]
 
 
