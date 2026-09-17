@@ -3,5 +3,10 @@
   "compilerOptions": {
     "types": ["node", "electron"]
   },
-  "include": ["src/main/**/*.ts", "src/preload/**/*.ts", "electron.vite.config.ts"]
+  "include": [
+    "src/main/**/*.ts",
+    "src/preload/**/*.ts",
+    "src/ipc-contract.ts",
+    "electron.vite.config.ts"
+  ]
 }

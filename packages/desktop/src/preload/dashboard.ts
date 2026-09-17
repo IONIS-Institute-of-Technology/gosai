@@ -1,72 +1,17 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { CalibrationResult } from '@gosai/shared/calibration';
-import { IPC_CHANNELS } from '../main/channels.js';
+import { createDashboardApi, type IpcTransport } from './api.js';
 
-interface DisplaySummary {
-  id: number;
-  label: string;
-  bounds: { x: number; y: number; width: number; height: number };
-  workArea: { x: number; y: number; width: number; height: number };
-  scaleFactor: number;
-  primary: boolean;
-  internal: boolean;
-}
-
-const api = {
-  version: '0.1.0',
-  platform: process.platform,
-
-  displays: {
-    list: () =>
-      ipcRenderer.invoke(IPC_CHANNELS.Displays) as Promise<{
-        displays: DisplaySummary[];
-        primary: DisplaySummary;
-      }>,
-  },
-
-  appHost: {
-    open: (args: {
-      displayId: number;
-      appSlug: string;
-      experienceSlug: string;
-      fullscreen?: boolean;
-    }) =>
-      ipcRenderer.invoke(IPC_CHANNELS.AppHostOpen, args) as Promise<{
-        windowId: number;
-        displayId: number;
-        appSlug: string;
-        experienceSlug: string;
-      }>,
-    close: (windowId: number) =>
-      ipcRenderer.invoke(IPC_CHANNELS.AppHostClose, { windowId }) as Promise<boolean>,
-    list: () =>
-      ipcRenderer.invoke(IPC_CHANNELS.AppHostList) as Promise<
-        Array<{ windowId: number; appSlug: string; experienceSlug: string; displayId: number }>
-      >,
-  },
-
-  experience: {
-    end: (args: { appSlug: string; experienceSlug: string }) =>
-      ipcRenderer.invoke(IPC_CHANNELS.ExperienceEnd, args) as Promise<{ ok: true }>,
-  },
-
-  calibration: {
-    /** Runs the app's calibration flow; resolves when it ends. */
-    run: (args: { appSlug: string; displayId?: number }) =>
-      ipcRenderer.invoke(IPC_CHANNELS.CalibrationRun, args) as Promise<CalibrationResult>,
-  },
-
-  onExperienceEnded: (listener: (payload: { appSlug: string; experienceSlug: string }) => void) => {
-    const channel = IPC_CHANNELS.ExperienceEnded;
-    const handler = (
-      _ev: Electron.IpcRendererEvent,
-      payload: { appSlug: string; experienceSlug: string },
-    ): void => listener(payload);
+const transport: IpcTransport = {
+  invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
+  on: (channel, listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown): void =>
+      listener(payload as Parameters<typeof listener>[0]);
     ipcRenderer.on(channel, handler);
     return () => ipcRenderer.off(channel, handler);
   },
 };
 
-contextBridge.exposeInMainWorld('gosai', api);
-
-export type DashboardApi = typeof api;
+contextBridge.exposeInMainWorld(
+  'gosai',
+  createDashboardApi(transport, { version: '0.1.0', platform: process.platform }),
+);

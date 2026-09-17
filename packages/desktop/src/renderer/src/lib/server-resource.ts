@@ -1,0 +1,184 @@
+/**
+ * Server data the dashboard shows: loaded with a command, reloaded on every
+ * connection, and kept current by server events. The store works with
+ * `useSyncExternalStore` (see use-server-resource.ts) and has no React or DOM
+ * dependency, so tests can drive it.
+ */
+
+import type {
+  CommandName,
+  CommandRequest,
+  CommandResponse,
+  FixedEventPayloads,
+} from '@gosai/shared/protocol';
+import type { FixedServerEventName } from '@gosai/shared/events';
+import type { ServerClient } from '@gosai/shared/client';
+import { requestErrorMessage } from './errors.js';
+
+export type ResourceClient = Pick<ServerClient, 'request' | 'on' | 'onStatus'>;
+
+export interface ResourceRequest<C extends CommandName, T> {
+  readonly command: C;
+  readonly payload?: CommandRequest<C>;
+  /** Turns the response into the resource's value. Defaults to the response itself. */
+  readonly select?: (response: CommandResponse<C>) => T;
+  /** Nothing loads while false. */
+  readonly enabled?: boolean;
+  /** Not sent. A new value makes `useServerResource` start over, like a new payload. */
+  readonly key?: string;
+}
+
+/** Returned by an event handler to load the resource again. */
+export const RELOAD = Symbol('reload');
+
+/**
+ * How server events change a resource. Each handler returns the new value,
+ * {@link RELOAD}, or `undefined` to ignore the event.
+ */
+export type ResourceEvents<T> = {
+  readonly [E in FixedServerEventName]?: (
+    payload: FixedEventPayloads[E],
+    current: T | undefined,
+  ) => T | typeof RELOAD | undefined;
+};
+
+export interface ResourceSnapshot<T> {
+  /** The last value. Kept while reloading and while disconnected. */
+  readonly data: T | undefined;
+  /** Why the last load failed. Lost connections don't count. */
+  readonly error: string | null;
+  readonly loading: boolean;
+}
+
+/**
+ * How long listeners wait after an event changed the value. A burst of events,
+ * such as a flood of log lines, renders once instead of once per event.
+ */
+export const EVENT_RENDER_DELAY_MS = 50;
+
+export class ServerResource<C extends CommandName, T> {
+  private snapshot: ResourceSnapshot<T> = { data: undefined, error: null, loading: false };
+  private readonly listeners = new Set<() => void>();
+  private offs: Array<() => void> = [];
+  /** Bumped by every load and every `set`; older loads are dropped. */
+  private version = 0;
+  /**
+   * Events that arrived while a load was pending. They are replayed onto the
+   * loaded value, so an event never makes the load's result get dropped.
+   */
+  private queued: Array<(current: T | undefined) => T | typeof RELOAD | undefined> = [];
+  private notifyTimer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(
+    private readonly client: ResourceClient,
+    private readonly request: ResourceRequest<C, T>,
+    private readonly events: ResourceEvents<T> = {},
+  ) {}
+
+  readonly subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    if (this.listeners.size === 1) this.start();
+    return () => {
+      this.listeners.delete(listener);
+      if (this.listeners.size === 0) this.stop();
+    };
+  };
+
+  readonly getSnapshot = (): ResourceSnapshot<T> => this.snapshot;
+
+  /** Loads the resource again. Resolves with the new value, or `undefined` when the load failed. */
+  readonly reload = async (): Promise<T | undefined> => {
+    if (this.request.enabled === false) return undefined;
+    const version = ++this.version;
+    this.update({ loading: true });
+    try {
+      const response = await (
+        this.client.request as (command: C, payload?: CommandRequest<C>) => Promise<unknown>
+      )(this.request.command, this.request.payload);
+      const select = this.request.select ?? ((value: CommandResponse<C>) => value as T);
+      const loaded = select(response as CommandResponse<C>);
+      if (version !== this.version) return loaded;
+      const data = this.replayQueued(loaded);
+      this.update({ data, error: null, loading: false });
+      return data;
+    } catch (err) {
+      if (version === this.version) {
+        const data = this.replayQueued(this.snapshot.data);
+        this.update({ data, error: requestErrorMessage(err), loading: false });
+      }
+      return undefined;
+    }
+  };
+
+  /** Replaces the value, for example with what a save returned. */
+  readonly set = (data: T): void => {
+    this.version++;
+    // Events queued for a pending load are older than this value.
+    this.queued = [];
+    this.update({ data, error: null, loading: false });
+  };
+
+  private start(): void {
+    if (this.request.enabled === false) return;
+    this.offs = [
+      ...Object.entries(this.events).map(([name, apply]) =>
+        this.client.on(name, (payload) => {
+          const run = (current: T | undefined): T | typeof RELOAD | undefined =>
+            (apply as (payload: unknown, current: T | undefined) => T | typeof RELOAD | undefined)(
+              payload,
+              current,
+            );
+          if (this.snapshot.loading) {
+            this.queued.push(run);
+            return;
+          }
+          const next = run(this.snapshot.data);
+          if (next === RELOAD) {
+            void this.reload();
+          } else if (next !== undefined) {
+            this.version++;
+            this.update({ data: next, error: null }, { deferred: true });
+          }
+        }),
+      ),
+      this.client.onStatus((status) => {
+        if (status === 'connected') void this.reload();
+      }),
+    ];
+  }
+
+  /** Applies the queued events to `data`. One asking for a reload starts another load. */
+  private replayQueued(data: T | undefined): T | undefined {
+    let value = data;
+    let reload = false;
+    for (const run of this.queued.splice(0)) {
+      const next = run(value);
+      if (next === RELOAD) reload = true;
+      else if (next !== undefined) value = next;
+    }
+    if (reload) queueMicrotask(() => void this.reload());
+    return value;
+  }
+
+  private stop(): void {
+    for (const off of this.offs.splice(0)) off();
+    if (this.notifyTimer !== null) clearTimeout(this.notifyTimer);
+    this.notifyTimer = null;
+  }
+
+  /** Updates the snapshot now. Listeners hear about event changes a little later. */
+  private update(patch: Partial<ResourceSnapshot<T>>, options: { deferred?: boolean } = {}): void {
+    this.snapshot = { ...this.snapshot, ...patch };
+    if (options.deferred) {
+      this.notifyTimer ??= setTimeout(() => this.notify(), EVENT_RENDER_DELAY_MS);
+      return;
+    }
+    this.notify();
+  }
+
+  private notify(): void {
+    if (this.notifyTimer !== null) clearTimeout(this.notifyTimer);
+    this.notifyTimer = null;
+    for (const listener of Array.from(this.listeners)) listener();
+  }
+}

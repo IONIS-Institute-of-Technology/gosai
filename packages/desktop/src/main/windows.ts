@@ -8,10 +8,17 @@ import {
   type WebFrameMain,
 } from 'electron';
 import { join } from 'node:path';
+import type { DisplayInfo } from '@gosai/shared';
 import { appHostname } from '@gosai/shared/app-origin';
 import { mintAppToken } from '@gosai/shared/auth';
 import { ServerClient } from '@gosai/shared/client';
-import { IPC_CHANNELS } from './channels.js';
+import type {
+  AppWindowInfo,
+  DisplayList,
+  IpcEventChannel,
+  IpcEventChannels,
+} from '../ipc-contract.js';
+import { dashboardContentSecurityPolicy } from './dashboard-csp.js';
 
 interface WindowRegistryOptions {
   readonly rootDir: string;
@@ -34,16 +41,6 @@ interface ControlWindowHandle {
   readonly experienceSlug: string;
 }
 
-export interface DisplaySummary {
-  readonly id: number;
-  readonly label: string;
-  readonly bounds: { x: number; y: number; width: number; height: number };
-  readonly workArea: { x: number; y: number; width: number; height: number };
-  readonly scaleFactor: number;
-  readonly primary: boolean;
-  readonly internal: boolean;
-}
-
 export interface OpenAppHostOptions {
   readonly displayId: number;
   readonly appSlug: string;
@@ -63,7 +60,8 @@ export interface OpenControlWindowOptions {
   readonly title?: string;
 }
 
-const isDev = !app.isPackaged;
+/** The Vite dev server that serves the dashboard under `electron-vite dev`. */
+const devRendererUrl = !app.isPackaged ? process.env.ELECTRON_RENDERER_URL : undefined;
 const isMac = process.platform === 'darwin';
 const isLinux = process.platform === 'linux';
 
@@ -88,9 +86,11 @@ export class WindowRegistry {
   private dashboard: BrowserWindow | null = null;
   private readonly appHosts = new Map<number, AppHostHandle>();
   private readonly controlWindows = new Map<number, ControlWindowHandle>();
-  private readonly endingExperiences = new Set<string>();
+  private readonly endingExperiences = new Map<string, Promise<void>>();
+  private readonly userCloseListeners = new Set<(window: AppWindowInfo) => void>();
   private powerSaveBlockerId: number | null = null;
   private shuttingDown = false;
+  private displayEventsInstalled = false;
   private serverHost = '127.0.0.1';
   private serverPort = 7777;
   /** Created on first use, so the dashboard token only goes to a known server address. */
@@ -248,10 +248,12 @@ export class WindowRegistry {
     });
 
     win.once('ready-to-show', () => win.show());
+    this.installDashboardPolicy(win);
+    this.installDisplayEvents();
 
     const query = this.appendServerParams(new URLSearchParams(), this.options.dashboardToken);
-    if (isDev && process.env.ELECTRON_RENDERER_URL) {
-      void win.loadURL(`${process.env.ELECTRON_RENDERER_URL}/dashboard.html?${query.toString()}`);
+    if (devRendererUrl) {
+      void win.loadURL(`${devRendererUrl}/dashboard.html?${query.toString()}`);
     } else {
       void win.loadFile(join(this.options.rootDir, '../renderer/dashboard.html'), {
         search: `?${query.toString()}`,
@@ -267,12 +269,58 @@ export class WindowRegistry {
     return win;
   }
 
-  listDisplays(): DisplaySummary[] {
+  /**
+   * Sets the dashboard's Content-Security-Policy as a response header, since
+   * the server's port is only known at runtime. Covers `file://` loads too.
+   */
+  private installDashboardPolicy(win: BrowserWindow): void {
+    const contents = win.webContents;
+    contents.session.webRequest.onHeadersReceived((details, callback) => {
+      if (details.webContentsId !== contents.id || details.resourceType !== 'mainFrame') {
+        callback({});
+        return;
+      }
+      const policy = dashboardContentSecurityPolicy({
+        server: { host: this.serverHost, port: this.serverPort },
+        ...(devRendererUrl ? { devServerUrl: devRendererUrl } : {}),
+      });
+      const headers = Object.fromEntries(
+        Object.entries(details.responseHeaders ?? {}).filter(
+          ([name]) => name.toLowerCase() !== 'content-security-policy',
+        ),
+      );
+      callback({ responseHeaders: { ...headers, 'Content-Security-Policy': [policy] } });
+    });
+  }
+
+  private installDisplayEvents(): void {
+    if (this.displayEventsInstalled) return;
+    this.displayEventsInstalled = true;
+    const changed = (): void => this.sendToDashboard('gosai:displays-changed', this.displayList());
+    screen.on('display-added', changed);
+    screen.on('display-removed', changed);
+    screen.on('display-metrics-changed', changed);
+  }
+
+  private sendToDashboard<C extends IpcEventChannel>(
+    channel: C,
+    payload: IpcEventChannels[C],
+  ): void {
+    const dashboard = this.dashboard;
+    if (!dashboard || dashboard.isDestroyed()) return;
+    dashboard.webContents.send(channel, payload);
+  }
+
+  listDisplays(): DisplayInfo[] {
     return screen.getAllDisplays().map((d) => this.summarizeDisplay(d));
   }
 
-  primaryDisplay(): DisplaySummary {
+  primaryDisplay(): DisplayInfo {
     return this.summarizeDisplay(screen.getPrimaryDisplay());
+  }
+
+  displayList(): DisplayList {
+    return { displays: this.listDisplays(), primary: this.primaryDisplay() };
   }
 
   openAppHost(opts: OpenAppHostOptions): AppHostHandle {
@@ -371,40 +419,38 @@ export class WindowRegistry {
     };
 
     this.appHosts.set(handle.id, handle);
-    this.updatePowerSaveBlocker();
+    this.windowsChanged();
     // A close from the window manager stops the experience like main's own close.
     win.on('close', (event) => {
       event.preventDefault();
       void this.stopAndDestroy(win);
     });
     win.on('closed', () => {
+      // Main removes the handle before closing a window itself, so a handle
+      // still here means the user or the window manager closed it.
       if (!this.appHosts.delete(handle.id)) return;
-      this.updatePowerSaveBlocker();
+      this.windowsChanged();
+      for (const listener of Array.from(this.userCloseListeners)) {
+        listener({
+          windowId: handle.id,
+          appSlug: handle.appSlug,
+          experienceSlug: handle.experienceSlug,
+          role: 'app',
+          displayId: handle.displayId,
+        });
+      }
       if (this.hasControlFor(opts.appSlug, opts.experienceSlug)) return;
-      this.stopExperienceOnServer(opts.appSlug, opts.experienceSlug);
+      void this.stopExperienceOnServer(opts.appSlug, opts.experienceSlug);
     });
 
     return handle;
-  }
-
-  closeAppHost(windowId: number): boolean {
-    const handle = this.appHosts.get(windowId);
-    if (!handle) return false;
-    this.appHosts.delete(windowId);
-    this.updatePowerSaveBlocker();
-    void this.stopAndDestroy(handle.window).then(() => {
-      if (!this.hasControlFor(handle.appSlug, handle.experienceSlug)) {
-        this.stopExperienceOnServer(handle.appSlug, handle.experienceSlug);
-      }
-    });
-    return true;
   }
 
   /** Stops and closes every app-host window. */
   async closeAllAppHosts(): Promise<void> {
     const windows = [...this.appHosts.values()].map((handle) => handle.window);
     this.appHosts.clear();
-    this.updatePowerSaveBlocker();
+    this.windowsChanged();
     await Promise.all(windows.map((win) => this.stopAndDestroy(win)));
   }
 
@@ -458,13 +504,13 @@ export class WindowRegistry {
     };
 
     this.controlWindows.set(handle.id, handle);
-    this.updatePowerSaveBlocker();
+    this.windowsChanged();
     // Closing the control window ends the experience; every window of it,
     // this one included, stops before it is destroyed.
     win.on('close', (event) => {
       if (this.shuttingDown) return;
       event.preventDefault();
-      this.endExperienceInternal(opts.appSlug, opts.experienceSlug);
+      void this.endExperience(opts.appSlug, opts.experienceSlug);
     });
 
     return handle;
@@ -474,57 +520,76 @@ export class WindowRegistry {
   async closeAllControlWindows(): Promise<void> {
     const windows = [...this.controlWindows.values()].map((handle) => handle.window);
     this.controlWindows.clear();
-    this.updatePowerSaveBlocker();
+    this.windowsChanged();
     await Promise.all(windows.map((win) => this.stopAndDestroy(win)));
   }
 
-  listAppHosts(): Array<{
-    windowId: number;
-    appSlug: string;
-    experienceSlug: string;
-    displayId: number;
-  }> {
-    return Array.from(this.appHosts.values()).map((h) => ({
-      windowId: h.id,
-      appSlug: h.appSlug,
-      experienceSlug: h.experienceSlug,
-      displayId: h.displayId,
-    }));
+  listWindows(): AppWindowInfo[] {
+    return [
+      ...Array.from(this.appHosts.values(), (h) => ({
+        windowId: h.id,
+        appSlug: h.appSlug,
+        experienceSlug: h.experienceSlug,
+        role: 'app' as const,
+        displayId: h.displayId,
+      })),
+      ...Array.from(this.controlWindows.values(), (h) => ({
+        windowId: h.id,
+        appSlug: h.appSlug,
+        experienceSlug: h.experienceSlug,
+        role: 'control' as const,
+        displayId: null,
+      })),
+    ];
   }
 
-  /** Tear down all app-host and control windows for an experience and stop it on the server. */
-  endExperience(appSlug: string, experienceSlug: string): void {
-    this.endExperienceInternal(appSlug, experienceSlug);
+  /** Experiences with at least one open window. */
+  openExperiences(): Array<{ appSlug: string; experienceSlug: string }> {
+    return this.listWindows().map(({ appSlug, experienceSlug }) => ({ appSlug, experienceSlug }));
   }
 
-  private endExperienceInternal(appSlug: string, experienceSlug: string): void {
-    if (this.shuttingDown) return;
-
+  /**
+   * Stops and closes the experience's windows, then stops the experience on
+   * the server once they are gone, so its stop hooks run while its drivers
+   * still do.
+   */
+  endExperience(appSlug: string, experienceSlug: string): Promise<void> {
+    if (this.shuttingDown) return Promise.resolve();
     const key = `${appSlug}:${experienceSlug}`;
-    if (this.endingExperiences.has(key)) return;
-    this.endingExperiences.add(key);
+    const pending = this.endingExperiences.get(key);
+    if (pending) return pending;
+    const ending = (async () => {
+      await this.closeExperienceWindowsNow(appSlug, experienceSlug);
+      await this.stopExperienceOnServer(appSlug, experienceSlug);
+    })().finally(() => this.endingExperiences.delete(key));
+    this.endingExperiences.set(key, ending);
+    return ending;
+  }
 
+  /** Calls `listener` when the user or the window manager closes an app window. */
+  onAppWindowClosedByUser(listener: (window: AppWindowInfo) => void): () => void {
+    this.userCloseListeners.add(listener);
+    return () => this.userCloseListeners.delete(listener);
+  }
+
+  /** Stops and closes the experience's windows, for an experience the server already stopped. */
+  closeExperienceWindows(appSlug: string, experienceSlug: string): Promise<void> {
+    if (this.shuttingDown) return Promise.resolve();
+    return this.closeExperienceWindowsNow(appSlug, experienceSlug);
+  }
+
+  private async closeExperienceWindowsNow(appSlug: string, experienceSlug: string): Promise<void> {
     const toDestroy: BrowserWindow[] = [];
-
-    for (const [id, h] of this.appHosts.entries()) {
-      if (h.appSlug !== appSlug || h.experienceSlug !== experienceSlug) continue;
-      this.appHosts.delete(id);
-      if (!h.window.isDestroyed()) toDestroy.push(h.window);
+    for (const handles of [this.appHosts, this.controlWindows]) {
+      for (const [id, h] of handles.entries()) {
+        if (h.appSlug !== appSlug || h.experienceSlug !== experienceSlug) continue;
+        handles.delete(id);
+        toDestroy.push(h.window);
+      }
     }
-
-    for (const [id, h] of this.controlWindows.entries()) {
-      if (h.appSlug !== appSlug || h.experienceSlug !== experienceSlug) continue;
-      this.controlWindows.delete(id);
-      if (!h.window.isDestroyed()) toDestroy.push(h.window);
-    }
-    this.updatePowerSaveBlocker();
-
-    // Let the windows stop the experience before the server tears down its drivers.
-    void Promise.all(toDestroy.map((w) => this.stopAndDestroy(w))).then(() => {
-      this.stopExperienceOnServer(appSlug, experienceSlug);
-      this.notifyExperienceEnded(appSlug, experienceSlug);
-      this.endingExperiences.delete(key);
-    });
+    if (toDestroy.length === 0) return;
+    this.windowsChanged();
+    await Promise.all(toDestroy.map((w) => this.stopAndDestroy(w)));
   }
 
   private hasControlFor(appSlug: string, experienceSlug: string): boolean {
@@ -534,23 +599,22 @@ export class WindowRegistry {
     return false;
   }
 
-  private stopExperienceOnServer(appSlug: string, experienceSlug: string): void {
+  /** Never rejects. */
+  private async stopExperienceOnServer(appSlug: string, experienceSlug: string): Promise<void> {
     if (this.shuttingDown) return;
     const client = this.server;
-    void (async () => {
-      try {
-        await client.ready(5_000);
-        await client.request('experience:stop', { appSlug, experienceSlug });
-      } catch (err) {
-        console.error(`[gosai-desktop] could not stop ${appSlug}/${experienceSlug}`, err);
-      }
-    })();
+    try {
+      await client.ready(5_000);
+      await client.request('experience:stop', { appSlug, experienceSlug });
+    } catch (err) {
+      console.error(`[gosai-desktop] could not stop ${appSlug}/${experienceSlug}`, err);
+    }
   }
 
-  private notifyExperienceEnded(appSlug: string, experienceSlug: string): void {
-    const dash = this.dashboard;
-    if (!dash || dash.isDestroyed()) return;
-    dash.webContents.send(IPC_CHANNELS.ExperienceEnded, { appSlug, experienceSlug });
+  /** Updates the power save blocker and tells the dashboard. */
+  private windowsChanged(): void {
+    this.updatePowerSaveBlocker();
+    this.sendToDashboard('gosai:windows-changed', this.listWindows());
   }
 
   private updatePowerSaveBlocker(): void {
@@ -578,7 +642,7 @@ export class WindowRegistry {
     return screen.getPrimaryDisplay();
   }
 
-  private summarizeDisplay(d: Display): DisplaySummary {
+  private summarizeDisplay(d: Display): DisplayInfo {
     return {
       id: d.id,
       label: d.label || `Display ${d.id}`,

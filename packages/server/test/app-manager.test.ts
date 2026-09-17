@@ -218,6 +218,32 @@ describe('app manager lifecycle', () => {
     expect(drivers.leases.size).toBe(0);
   });
 
+  test('marks experiences that only run as a requirement, until a client asks for them', async () => {
+    const { paths, bus, create } = setup();
+    manifestApp(paths.apps, chain);
+    const manager = create();
+    const events: string[] = [];
+    bus.on('experience:state-changed', (_event, payload) => {
+      const state = payload as { experienceSlug: string; state: string; startedAs: string };
+      events.push(`${state.experienceSlug}:${state.state}:${state.startedAs}`);
+    });
+
+    await manager.startExperience('pool', 'main');
+    const startedAs = (): Record<string, string> =>
+      Object.fromEntries(
+        manager.listRunningExperiences().map((e) => [e.experienceSlug, e.startedAs]),
+      );
+    expect(startedAs()).toEqual({ base: 'requirement', main: 'request' });
+    expect(events).toContain('base:running:requirement');
+    expect(events).toContain('main:running:request');
+
+    // Asking for the running requirement makes it requested, and says so.
+    const base = await manager.startExperience('pool', 'base');
+    expect(base.startedAs).toBe('request');
+    expect(events.at(-1)).toBe('base:running:request');
+    expect(startedAs()).toEqual({ base: 'request', main: 'request' });
+  });
+
   test('keeps a required experience that was already running when a start fails', async () => {
     const { paths, drivers, create } = setup();
     manifestApp(paths.apps, chain);

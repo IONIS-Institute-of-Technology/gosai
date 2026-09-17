@@ -7,8 +7,8 @@
  *    binding so it uses the app's camera, or the app's own `experience`.
  * 2. Starts the flow's experience and opens its control window, then its
  *    fullscreen projector window. Both get `role` and `target` params.
- * 3. Resolves with the flow's `wizard:finished` result, and closes both
- *    windows and stops the experience. Closing a window, a crashed window, a
+ * 3. On the flow's `wizard:finished` result, closes both windows, stops the
+ *    experience, and then resolves with the result. Closing a window, a crashed window, a
  *    failed start or a lost server connection end the run too, so the caller
  *    never waits forever.
  *
@@ -23,6 +23,7 @@ import {
 } from '@gosai/shared/calibration';
 import type { ServerClient } from '@gosai/shared/client';
 import { appEventName } from '@gosai/shared/events';
+import { resolveAppDisplay, type DisplaySource } from './displays.js';
 import type { OpenAppHostOptions, OpenControlWindowOptions } from './windows.js';
 
 export type CalibrationServer = Pick<ServerClient, 'ready' | 'request' | 'on' | 'onStatus'>;
@@ -40,15 +41,23 @@ export interface CalibrationWindowHandle {
 }
 
 /** The parts of the WindowRegistry the orchestrator uses. */
-export interface CalibrationWindows {
+export interface CalibrationWindows extends DisplaySource {
   readonly server: CalibrationServer;
   openControlWindow(options: OpenControlWindowOptions): CalibrationWindowHandle;
   openAppHost(options: OpenAppHostOptions): CalibrationWindowHandle;
-  /** Closes the experience's windows and stops it on the server. */
-  endExperience(appSlug: string, experienceSlug: string): void;
-  listDisplays(): readonly { readonly id: number }[];
-  primaryDisplay(): { readonly id: number };
+  /** Closes the experience's windows, then stops it on the server. */
+  endExperience(appSlug: string, experienceSlug: string): Promise<void>;
 }
+
+/**
+ * Keeps main's experience windows (see experience-windows.ts) from opening a
+ * plain app window for the flow's experience, since the flow opens its own.
+ */
+export interface ExperienceClaims {
+  claim(appSlug: string, experienceSlug: string): () => void;
+}
+
+const NO_CLAIMS: ExperienceClaims = { claim: () => () => undefined };
 
 export interface RunCalibrationOptions {
   readonly appSlug: string;
@@ -65,7 +74,10 @@ export class CalibrationOrchestrator {
   /** The app whose calibration is running. */
   private running: string | null = null;
 
-  constructor(private readonly windows: CalibrationWindows) {}
+  constructor(
+    private readonly windows: CalibrationWindows,
+    private readonly claims: ExperienceClaims = NO_CLAIMS,
+  ) {}
 
   /** Runs one flow at a time. Never rejects. */
   run(options: RunCalibrationOptions): Promise<CalibrationResult> {
@@ -102,19 +114,28 @@ export class CalibrationOrchestrator {
     if (builtin && !apps.some((a) => a.manifest.slug === CALIBRATION_RUNNER.appSlug)) {
       return { ok: false, error: 'The built-in calibration app is not installed' };
     }
-    const projectorDisplay = displayId ?? (await this.resolveDisplay(server, appSlug));
+    const projectorDisplay =
+      displayId ?? (await resolveAppDisplay(server, this.windows, appSlug)).displayId;
     // The built-in runner uses the target's camera; a custom flow is the app itself.
     const driverBinding = builtin ? appSlug : undefined;
 
     return new Promise<CalibrationResult>((resolve) => {
       let finished = false;
       const cleanups: Array<() => void> = [];
+      const release = this.claims.claim(flow.appSlug, flow.experienceSlug);
       const finish = (result: CalibrationResult): void => {
         if (finished) return;
         finished = true;
         for (const cleanup of cleanups) cleanup();
-        this.windows.endExperience(flow.appSlug, flow.experienceSlug);
-        resolve(result);
+        // Keep the claim until the windows are gone and the server stopped the
+        // flow, so a reconnect meanwhile doesn't open a plain window for it.
+        void this.windows
+          .endExperience(flow.appSlug, flow.experienceSlug)
+          .catch(() => undefined)
+          .finally(() => {
+            release();
+            resolve(result);
+          });
       };
 
       cleanups.push(
@@ -165,16 +186,6 @@ export class CalibrationOrchestrator {
         watch(projector, 'projector');
       })().catch((err: unknown) => finish({ ok: false, error: errorMessage(err) }));
     });
-  }
-
-  private async resolveDisplay(server: CalibrationServer, appSlug: string): Promise<number> {
-    const known = new Set(this.windows.listDisplays().map((display) => display.id));
-    const settings = await server.request('app:config:get', { appSlug }).catch(() => null);
-    const assigned = settings?.display?.id;
-    if (assigned != null && known.has(assigned)) return assigned;
-    const config = await server.request('config:get').catch(() => null);
-    if (config?.displayId != null && known.has(config.displayId)) return config.displayId;
-    return this.windows.primaryDisplay().id;
   }
 }
 

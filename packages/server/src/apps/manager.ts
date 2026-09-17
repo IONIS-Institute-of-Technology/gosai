@@ -13,6 +13,7 @@ import type {
   ExperienceDescriptor,
   InstalledApp,
   InvalidApp,
+  ExperienceStart,
   RunningExperience,
 } from '@gosai/shared';
 import type { Capability } from '@gosai/shared/capabilities';
@@ -363,11 +364,23 @@ export class AppManager {
         experience.slug,
       ]);
     }
-    const existing = this.running.get(experienceKey(appSlug, experience.slug));
-    if (existing?.state === 'running' && existing.driverBinding === driverBinding) return existing;
+    // Only the experience a client asked for counts as requested. One that
+    // ran as a requirement becomes requested when a client asks for it.
+    const startedAs: ExperienceStart = path.length === 0 ? 'request' : 'requirement';
+    const key = experienceKey(appSlug, experience.slug);
+    const existing = this.running.get(key);
+    if (existing?.state === 'running' && existing.driverBinding === driverBinding) {
+      if (startedAs === 'request' && existing.startedAs === 'requirement') {
+        const promoted: ExperienceRecord = { ...existing, startedAs };
+        this.running.set(key, promoted);
+        this.broadcastExperience(promoted);
+        return promoted;
+      }
+      return existing;
+    }
     if (existing) await this.stopExperience(appSlug, experience.slug);
 
-    const running = await this.startOne(record, experience, driverBinding);
+    const running = await this.startOne(record, experience, driverBinding, startedAs);
     started.push(experience);
     return running;
   }
@@ -376,6 +389,7 @@ export class AppManager {
     record: AppRecord,
     experience: ExperienceDescriptor,
     driverBinding: string,
+    startedAs: ExperienceStart,
   ): Promise<ExperienceRecord> {
     const appSlug = record.manifest.slug;
     const key = experienceKey(appSlug, experience.slug);
@@ -384,6 +398,7 @@ export class AppManager {
       experienceSlug: experience.slug,
       state: 'starting',
       startedAt: Date.now(),
+      startedAs,
       driverBinding,
       drivers: experience.drivers,
     };
@@ -694,6 +709,7 @@ function toPublicExperience(record: RunningExperience): RunningExperience {
     experienceSlug: record.experienceSlug,
     state: record.state,
     startedAt: record.startedAt,
+    startedAs: record.startedAs,
   };
 }
 

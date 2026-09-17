@@ -17,8 +17,9 @@ bun run build:apps                 # builds built-in app entry bundles
 All Python driver dependencies (OpenCV, MediaPipe, ONNX Runtime, audio) are
 installed automatically by `python:sync`, with the CPU build of ONNX Runtime
 (CoreML on macOS). In auto mode, ONNX drivers use CUDA when the `gpu` extra is
-installed and CoreML on macOS. The Drivers panel shows the active
-hardware/provider for each running driver.
+installed and CoreML on macOS. The Drivers panel lists every driver, including
+those no app uses, with the events, actions and config options its schema
+declares, and the active hardware/provider of each running driver.
 
 Camera mode selectors list modes that the Python runtime can actually open and
 decode, including MJPG/H264 modes needed by many 720p/30 webcams. Selecting a
@@ -45,7 +46,8 @@ Three processes start with one shared dashboard token:
 - The Electron desktop app, connected to that server.
 
 The dashboard appears with five tabs: Apps · Experiences · Drivers · Logs ·
-Settings.
+Settings. Tabs keep their state when you switch between them, so log filters
+and camera mode probes survive.
 
 ## 3. Install an app from git
 
@@ -59,15 +61,30 @@ The server clones the repo into `~/.gosai/apps/<slug>/`, runs
 refreshes the app list. The app now
 appears under "Installed" with a "Start" button.
 
+A prompt then shows the app's icon, author, the capabilities it requests with
+what each allows, and any extra network origins from `network.connect`. The app
+holds none of the requested capabilities until you allow them; closing the
+prompt allows none. Expand the app's row and click "permissions" to change them
+later. If an earlier app with the same slug left data from another source, the
+dashboard asks before reusing it, and "uninstall" asks whether to delete the
+app's data too.
+
 ## 4. Start an experience
 
 Click "Start" on the app's row to run its default experience, or expand the
-row to pick another one. The Electron main process opens a fullscreen window
-on the display chosen in the Settings tab. The window loads
-`/v1/apps/<slug>/static/<entry>` from the server and runs the experience.
+row to pick another one. The dashboard only asks the server to start it. The
+Electron main process follows the server's experience state: when an experience
+runs, main opens its window, and when it stops or crashes, main closes it. That
+also covers experiences started or stopped elsewhere, such as an app calling
+`rt.router.switchTo`. The Experiences tab lists running experiences and the
+windows main has open.
 
-To switch displays, pick another monitor in the Display panel of the
-Settings tab; the next experience start uses it.
+The window opens on the app's own display assignment (expand the row, "device
+assignments"), else on the display chosen in the Settings tab, else on the
+primary display, in fullscreen unless the app is set to windowed. It loads the
+app host page from `http://<slug>.localhost:<port>/`, which runs the
+experience. Picking "Default" for an app's camera, microphone or speaker
+removes the app's override, so it follows the global setting again.
 
 ## 5. Build your own app
 

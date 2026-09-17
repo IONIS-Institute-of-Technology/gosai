@@ -1,16 +1,6 @@
 @import 'tailwindcss';
 
 @theme {
-  --color-background: #0a0a0a;
-  --color-surface: #141414;
-  --color-surface-2: #1c1c1c;
-  --color-border: #2a2a2a;
-  --color-muted: #6b7280;
-  --color-text: #e5e5e5;
-  --color-accent: #4ade80;
-  --color-danger: #ef4444;
-  --color-warn: #f59e0b;
-
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   --font-sans:
     ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -30,8 +20,8 @@ body {
 }
 
 ::selection {
-  background: var(--color-accent);
-  color: var(--color-background);
+  background: var(--color-green-400);
+  color: var(--color-neutral-950);
 }
 
 ::-webkit-scrollbar {
@@ -42,9 +32,9 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--color-border);
+  background: var(--color-neutral-800);
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-muted);
+  background: var(--color-neutral-500);
 }

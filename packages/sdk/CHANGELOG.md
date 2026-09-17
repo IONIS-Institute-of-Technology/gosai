@@ -34,6 +34,13 @@ Added:
   own process and Python environment, named `<app slug>/<driver>`.
 - `gosai-sdk gen-driver-types` accepts app driver names such as
   `my-app/counter`, from `python -m gosai_py.schemas --app <dir>`.
+- Experience states from `rt.router.onStateChange` carry `startedAs`:
+  `request` for the experience a client asked for, `requirement` for one that
+  only runs because another lists it in `required`. The desktop app and kiosks
+  open windows for requested experiences only.
+- The desktop app and kiosks open and close windows as experiences start and
+  stop, so `rt.router.switchTo` replaces the app's window with the next
+  experience's.
 
 ## 0.1.0
 

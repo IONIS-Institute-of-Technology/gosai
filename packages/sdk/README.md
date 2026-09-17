@@ -193,6 +193,18 @@ const res = await fetch(url, { signal: rt.signal });
 
 Release other resources (WebGL renderers, media elements) in `stop`.
 
+An experience can stop in two ways, and the order differs:
+
+- **Its window closes** (the user closes it, or the app host stops the
+  page): the page's `stop` hook runs first, while the experience's drivers
+  still run on the server, and the server stops the experience afterwards.
+- **The server stops it** (the dashboard's Stop button, another client,
+  `rt.router.switchTo` or `rt.router.stop()`, or a crash): the server releases
+  the experience's drivers first. The desktop app then closes the window,
+  which runs the `stop` hook. By then driver subscriptions have ended and
+  driver actions may fail, so a `stop` hook should save state with storage
+  writes rather than rely on drivers.
+
 ## Runtime context
 
 | Member                                         | Description                                                                                                                              |
@@ -214,7 +226,7 @@ Release other resources (WebGL renderers, media elements) in `stop`.
 | `rt.audio`                                     | An `AudioContext` created on first use and resumed when the experience starts.                                                           |
 | `rt.ping()`                                    | Round-trip time to the server, in milliseconds.                                                                                          |
 | `rt.signal`                                    | Aborts when the experience stops.                                                                                                        |
-| `rt.router.switchTo(slug)`, `rt.router.stop()` | Start or stop experiences of this app on the server. It doesn't open windows yet.                                                        |
+| `rt.router.switchTo(slug)`, `rt.router.stop()` | Start or stop experiences of this app on the server. The desktop app and kiosks open and close their windows to match.                   |
 | `rt.router.onStateChange(listener)`            | Follow the state of this app's experiences.                                                                                              |
 | `rt.appConfig.get()`, `rt.appConfig.onChange`  | The app's device assignments (display, camera, microphone, speaker) and their changes.                                                   |
 | `rt.app.server`                                | The raw server connection, for commands the SDK doesn't wrap.                                                                            |

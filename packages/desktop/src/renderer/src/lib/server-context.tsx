@@ -1,9 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { ServerClient, type ConnectionStatus } from '@gosai/shared/client';
-import type { EventPayload } from '@gosai/shared/protocol';
 import { SERVER_TOKEN, SERVER_WS_URL } from './server-url.js';
-
-const DEFAULT_URL = SERVER_WS_URL;
 
 interface ServerContextValue {
   client: ServerClient;
@@ -12,14 +9,8 @@ interface ServerContextValue {
 
 const ServerContext = createContext<ServerContextValue | null>(null);
 
-export function ServerProvider({
-  url = DEFAULT_URL,
-  children,
-}: {
-  url?: string;
-  children: ReactNode;
-}): React.ReactElement {
-  const client = useMemo(() => new ServerClient({ url, token: SERVER_TOKEN }), [url]);
+export function ServerProvider({ children }: { children: ReactNode }): React.ReactElement {
+  const client = useMemo(() => new ServerClient({ url: SERVER_WS_URL, token: SERVER_TOKEN }), []);
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
 
   useEffect(() => {
@@ -39,12 +30,4 @@ export function useServer(): ServerContextValue {
   const ctx = useContext(ServerContext);
   if (!ctx) throw new Error('useServer must be used within ServerProvider');
   return ctx;
-}
-
-export function useServerEvent<E extends string>(
-  event: E,
-  listener: (payload: EventPayload<E>) => void,
-): void {
-  const { client } = useServer();
-  useEffect(() => client.on(event, listener), [client, event, listener]);
 }

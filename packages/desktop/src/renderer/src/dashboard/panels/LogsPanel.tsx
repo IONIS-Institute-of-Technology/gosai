@@ -1,7 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { formatLogEntry, type LogEntry, type LogLevel } from '@gosai/shared';
-import { useServer } from '../../lib/server-context.js';
+import { useServerResource } from '../../lib/use-server-resource.js';
+import { Button } from '../components/Button.js';
+import { ErrorText } from '../components/ErrorText.js';
 import { Panel } from '../components/Panel.js';
+
+const MAX_ENTRIES = 2000;
 
 const LEVEL_COLORS: Record<LogLevel, string> = {
   debug: 'text-neutral-500',
@@ -10,48 +14,30 @@ const LEVEL_COLORS: Record<LogLevel, string> = {
   error: 'text-red-300',
 };
 
-export function LogsPanel(): React.ReactElement {
-  const { client, status } = useServer();
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+const NO_LOGS: readonly LogEntry[] = [];
+
+export function LogsPanel({ active }: { active: boolean }): React.ReactElement {
+  const logs = useServerResource(
+    { command: 'logs:history', select: (r) => r.logs },
+    { 'server:log': (entry, current) => [...(current ?? []), entry].slice(-MAX_ENTRIES) },
+  );
   const [filter, setFilter] = useState('');
   const [level, setLevel] = useState<'all' | LogLevel>('all');
   const [autoScroll, setAutoScroll] = useState(true);
   const tailRef = useRef<HTMLDivElement | null>(null);
-
-  const append = useCallback((entry: LogEntry) => {
-    setLogs((prev) => {
-      const next = prev.concat(entry);
-      if (next.length > 2000) next.splice(0, next.length - 2000);
-      return next;
-    });
-  }, []);
+  const entries = logs.data ?? NO_LOGS;
 
   useEffect(() => {
-    if (status !== 'connected') return;
-    void (async () => {
-      try {
-        const history = await client.request('logs:history');
-        setLogs(history.logs);
-      } catch {
-        // ignore
-      }
-    })();
-  }, [client, status]);
-
-  useEffect(() => {
-    const off = client.on('server:log', append);
-    return off;
-  }, [client, append]);
-
-  useEffect(() => {
-    if (autoScroll && tailRef.current) {
-      tailRef.current.scrollIntoView({ behavior: 'instant', block: 'end' });
+    if (active && autoScroll) {
+      tailRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' });
     }
-  }, [logs, autoScroll]);
+  }, [entries, autoScroll, active]);
 
+  // A hidden panel keeps collecting lines but renders none of them.
   const filtered = useMemo(() => {
+    if (!active) return NO_LOGS;
     const text = filter.toLowerCase();
-    return logs.filter((entry) => {
+    return entries.filter((entry) => {
       if (level !== 'all' && entry.level !== level) return false;
       if (!text) return true;
       const formatted = formatLogEntry(entry);
@@ -61,7 +47,7 @@ export function LogsPanel(): React.ReactElement {
         (formatted.details ?? '').toLowerCase().includes(text)
       );
     });
-  }, [logs, level, filter]);
+  }, [entries, level, filter, active]);
 
   return (
     <div className="flex h-full flex-col gap-4 p-6">
@@ -72,7 +58,7 @@ export function LogsPanel(): React.ReactElement {
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="search source or message"
-            className="flex-1 min-w-[200px] rounded border border-neutral-800 bg-neutral-950 px-3 py-1.5 font-mono text-xs text-neutral-100 placeholder:text-neutral-600 focus:border-neutral-600 focus:outline-none"
+            className="min-w-[200px] flex-1 rounded border border-neutral-800 bg-neutral-950 px-3 py-1.5 font-mono text-xs text-neutral-100 placeholder:text-neutral-600 focus:border-neutral-600 focus:outline-none"
             spellCheck={false}
           />
           <select
@@ -94,14 +80,11 @@ export function LogsPanel(): React.ReactElement {
             />
             auto-scroll
           </label>
-          <button
-            type="button"
-            onClick={() => setLogs([])}
-            className="rounded border border-neutral-700 px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-neutral-300 hover:bg-neutral-800"
-          >
+          <Button size="sm" onClick={() => logs.set([])}>
             clear
-          </button>
+          </Button>
         </div>
+        <ErrorText error={logs.error} />
       </Panel>
 
       <div className="flex-1 overflow-auto rounded border border-neutral-800 bg-neutral-950/80 font-mono text-[11px] leading-5">
@@ -109,13 +92,13 @@ export function LogsPanel(): React.ReactElement {
           <tbody>
             {filtered.map((entry, idx) => (
               <tr key={`${entry.timestamp}-${idx}`} className="border-b border-neutral-900/80">
-                <td className="whitespace-nowrap px-2 py-0.5 align-top text-neutral-600">
+                <td className="px-2 py-0.5 align-top whitespace-nowrap text-neutral-600">
                   {formatTime(entry.timestamp)}
                 </td>
-                <td className="whitespace-nowrap px-2 py-0.5 align-top">
+                <td className="px-2 py-0.5 align-top whitespace-nowrap">
                   <span className={`uppercase ${LEVEL_COLORS[entry.level]}`}>{entry.level}</span>
                 </td>
-                <td className="whitespace-nowrap px-2 py-0.5 align-top text-neutral-500">
+                <td className="px-2 py-0.5 align-top whitespace-nowrap text-neutral-500">
                   {entry.source}
                 </td>
                 <td className="px-2 py-0.5 text-neutral-300">
@@ -135,9 +118,9 @@ function LogMessage({ entry }: { entry: LogEntry }): React.ReactElement {
   const { message, details } = formatLogEntry(entry);
   return (
     <>
-      <div className="whitespace-pre-wrap break-words">{message}</div>
+      <div className="break-words whitespace-pre-wrap">{message}</div>
       {details ? (
-        <pre className="mt-0.5 whitespace-pre-wrap break-words text-neutral-500">{details}</pre>
+        <pre className="mt-0.5 break-words whitespace-pre-wrap text-neutral-500">{details}</pre>
       ) : null}
     </>
   );

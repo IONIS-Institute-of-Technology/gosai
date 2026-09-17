@@ -1,10 +1,10 @@
 /**
- * Resolves the GOSAI server address and token for this window. The Electron
- * main process appends `?serverPort=`, `serverHost=` and `token=` to every
- * renderer URL it opens, so windows keep working when the server runs on an
- * ephemeral port (kiosk mode / multiple instances). The address falls back to
- * the historical default of 127.0.0.1:7777 for dev setups.
+ * The GOSAI server address and token for the dashboard. Electron main appends
+ * `?serverHost=`, `serverPort=` and `token=` to the dashboard URL, since the
+ * embedded server listens on an ephemeral port.
  */
+
+import type { AppManifest } from '@gosai/shared';
 
 const params = new URLSearchParams(window.location.search);
 
@@ -16,3 +16,9 @@ export const SERVER_WS_URL = `ws://${SERVER_HOST}:${SERVER_PORT}/ws`;
 
 /** Dashboard token for this window. */
 export const SERVER_TOKEN: string = params.get('token') ?? '';
+
+/** URL of the app's icon, or `null` when it declares none. */
+export function appIconUrl(manifest: Pick<AppManifest, 'slug' | 'icon'>): string | null {
+  if (!manifest.icon) return null;
+  return `${SERVER_BASE_URL}/v1/apps/${manifest.slug}/static/${encodeURI(manifest.icon)}`;
+}

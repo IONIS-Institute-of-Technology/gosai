@@ -1,26 +1,23 @@
 import { useEffect, useState } from 'react';
 import type { SystemStats } from '@gosai/shared';
 import { ServerProvider, useServer } from '../lib/server-context.js';
-import { AppsPanel } from './panels/AppsPanel.js';
-import { DriversPanel } from './panels/DriversPanel.js';
+import { AppsPanel } from './panels/apps/AppsPanel.js';
+import { DriversPanel } from './panels/drivers/DriversPanel.js';
 import { ExperiencesPanel } from './panels/ExperiencesPanel.js';
 import { LogsPanel } from './panels/LogsPanel.js';
 import { SettingsPanel } from './panels/SettingsPanel.js';
-import { SystemHeader } from './SystemHeader.js';
 
-type TabId = 'apps' | 'drivers' | 'experiences' | 'logs' | 'settings';
+type TabId = 'apps' | 'experiences' | 'drivers' | 'logs' | 'settings';
 
-interface Tab {
-  id: TabId;
-  label: string;
-}
+/** `active` is false while the panel's tab is hidden. */
+type PanelComponent = (props: { active: boolean }) => React.ReactElement;
 
-const TABS: readonly Tab[] = [
-  { id: 'apps', label: 'Apps' },
-  { id: 'experiences', label: 'Experiences' },
-  { id: 'drivers', label: 'Drivers' },
-  { id: 'logs', label: 'Logs' },
-  { id: 'settings', label: 'Settings' },
+const TABS: readonly { id: TabId; label: string; Panel: PanelComponent }[] = [
+  { id: 'apps', label: 'Apps', Panel: AppsPanel },
+  { id: 'experiences', label: 'Experiences', Panel: ExperiencesPanel },
+  { id: 'drivers', label: 'Drivers', Panel: DriversPanel },
+  { id: 'logs', label: 'Logs', Panel: LogsPanel },
+  { id: 'settings', label: 'Settings', Panel: SettingsPanel },
 ];
 
 export function Dashboard(): React.ReactElement {
@@ -33,18 +30,32 @@ export function Dashboard(): React.ReactElement {
 
 function DashboardShell(): React.ReactElement {
   const [active, setActive] = useState<TabId>('apps');
+  // A panel mounts the first time its tab opens, so the Settings camera probe
+  // doesn't run at boot, and stays mounted afterwards.
+  const [opened, setOpened] = useState<ReadonlySet<TabId>>(() => new Set(['apps']));
+
+  const open = (tab: TabId): void => {
+    setActive(tab);
+    setOpened((current) => (current.has(tab) ? current : new Set([...current, tab])));
+  };
 
   return (
     <div className="flex h-full flex-col bg-neutral-950 text-neutral-100">
-      <SystemHeader />
-
       <div className="flex flex-1 overflow-hidden">
-        <nav className="flex w-44 shrink-0 flex-col border-r border-neutral-800 bg-neutral-900/40 py-2">
+        <nav
+          className="flex w-44 shrink-0 flex-col border-r border-neutral-800 bg-neutral-900/40 py-2"
+          role="tablist"
+          aria-orientation="vertical"
+        >
           {TABS.map((tab) => (
             <button
               key={tab.id}
+              id={`tab-${tab.id}`}
               type="button"
-              onClick={() => setActive(tab.id)}
+              role="tab"
+              aria-selected={active === tab.id}
+              aria-controls={`panel-${tab.id}`}
+              onClick={() => open(tab.id)}
               className={`px-4 py-2 text-left text-sm transition-colors ${
                 active === tab.id
                   ? 'bg-neutral-800 text-neutral-50'
@@ -56,9 +67,21 @@ function DashboardShell(): React.ReactElement {
           ))}
         </nav>
 
-        <main className="flex-1 overflow-auto">
-          <PanelGate active={active} />
-        </main>
+        {/* Opened panels stay mounted, so logs, filters and camera probes survive tab switches. */}
+        {TABS.map(({ id, Panel }) =>
+          opened.has(id) ? (
+            <main
+              key={id}
+              id={`panel-${id}`}
+              role="tabpanel"
+              aria-labelledby={`tab-${id}`}
+              hidden={active !== id}
+              className="flex-1 overflow-auto"
+            >
+              <Panel active={active === id} />
+            </main>
+          ) : null,
+        )}
       </div>
 
       <StatusBar />
@@ -66,31 +89,17 @@ function DashboardShell(): React.ReactElement {
   );
 }
 
-function PanelGate({ active }: { active: TabId }): React.ReactElement {
-  switch (active) {
-    case 'apps':
-      return <AppsPanel />;
-    case 'drivers':
-      return <DriversPanel />;
-    case 'experiences':
-      return <ExperiencesPanel />;
-    case 'logs':
-      return <LogsPanel />;
-    case 'settings':
-      return <SettingsPanel />;
-  }
-}
-
 function StatusBar(): React.ReactElement {
-  const { status } = useServer();
+  const { client, status } = useServer();
   const [systemStats, setSystemStats] = useState<SystemStats | null>(null);
-
-  const { client } = useServer();
   useEffect(() => client.on('system:stats', setSystemStats), [client]);
 
   return (
     <footer className="flex items-center justify-between border-t border-neutral-800 bg-neutral-900/60 px-4 py-1.5 font-mono text-[11px] text-neutral-400">
       <div className="flex items-center gap-3">
+        <span className="font-medium text-neutral-100">GOSAI</span>
+        <span>v{window.gosai.version}</span>
+        <span className="text-neutral-600">·</span>
         <span className="flex items-center gap-1.5">
           <span
             className={`h-1.5 w-1.5 rounded-full ${
@@ -104,7 +113,7 @@ function StatusBar(): React.ReactElement {
           <span>{status}</span>
         </span>
         <span className="text-neutral-600">·</span>
-        <span>{window.gosai?.platform ?? 'unknown'}</span>
+        <span>{window.gosai.platform}</span>
       </div>
       <div className="flex items-center gap-3">
         {systemStats ? (

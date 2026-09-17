@@ -119,9 +119,19 @@ class FakeWindows implements CalibrationWindows {
     return { window };
   }
 
-  endExperience(appSlug: string, experienceSlug: string): void {
+  /** Resolves when `finishEnding` is called, or at once when `holdEnding` is off. */
+  holdEnding = false;
+  private readonly endings: Array<() => void> = [];
+
+  endExperience(appSlug: string, experienceSlug: string): Promise<void> {
     this.ended.push(`${appSlug}/${experienceSlug}`);
     for (const { window } of [...this.controls, ...this.projectors]) window.close();
+    if (!this.holdEnding) return Promise.resolve();
+    return new Promise((resolve) => this.endings.push(resolve));
+  }
+
+  finishEnding(): void {
+    for (const resolve of this.endings.splice(0)) resolve();
   }
 
   listDisplays(): { id: number }[] {
@@ -175,6 +185,33 @@ describe('CalibrationOrchestrator', () => {
     expect(windows.projectors[0]?.window.closed).toBe(true);
     expect(windows.fake.listenerCount()).toBe(0);
     expect(windows.fake.statusListeners.size).toBe(0);
+  });
+
+  test('claims the flow experience from the start request until it has ended', async () => {
+    const windows = new FakeWindows();
+    windows.holdEnding = true;
+    const log: string[] = [];
+    const claims = {
+      claim: (appSlug: string, experienceSlug: string) => {
+        log.push(`claim ${appSlug}/${experienceSlug}`);
+        return () => log.push('release');
+      },
+    };
+    let settled = false;
+    const run = new CalibrationOrchestrator(windows, claims).run({ appSlug: 'pool' });
+    void run.then(() => (settled = true));
+    await windowsOpen(windows);
+    expect(log).toEqual(['claim calibration/calibrate']);
+    windows.fake.emit('app:calibration:wizard:finished', { ok: true });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    // The windows are closing and the server hasn't stopped the flow yet.
+    expect(windows.ended).toEqual(['calibration/calibrate']);
+    expect(log).toEqual(['claim calibration/calibrate']);
+    expect(settled).toBe(false);
+
+    windows.finishEnding();
+    expect(await run).toEqual({ ok: true });
+    expect(log).toEqual(['claim calibration/calibrate', 'release']);
   });
 
   test('a load failure reported by the flow closes both windows and returns the error', async () => {
