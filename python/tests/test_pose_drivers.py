@@ -212,3 +212,16 @@ def test_flip_reads_boolean_strings(pose_driver: tuple[PoseDriver, RecordingCont
     driver, _ = pose_driver
     assert driver.execute("set_flip", "false") == {"flip": False}
     assert driver.execute("set_flip", "true") == {"flip": True}
+
+
+def test_hand_pose_drops_a_hand_at_infinity(hand_driver: tuple[HandPoseDriver, RecordingContext]) -> None:
+    driver, context = hand_driver
+    # w = 1 - x / 400 is zero on the column x = 400 px, where the fake hand's landmarks sit.
+    driver.execute("set_homography", [1, 0, 0, 0, 1, 0, -1 / 400, 0, 1])
+    driver.execute("set_surface_size", {"width": 800, "height": 600})
+
+    driver.on_data("camera", "frame", _frame(800, 600))
+
+    payload = context.emitted("raw_data")[0]
+    assert payload["hands_landmarks"] == []
+    assert payload["hands_handedness"] == []

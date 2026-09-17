@@ -160,6 +160,7 @@ export declare namespace DriverTypes {
       inverse: number[];
       surface_matrix: number[] | null;
       surface_inverse: number[] | null;
+      /** The surface corners TL, TR, BR, BL in display pixels. Null without a focus quad, or when a corner maps to infinity on the display. */
       surface_quad_display: Point[] | null;
       surface_size: Size;
       frame_size: null | Size;
@@ -205,7 +206,7 @@ export declare namespace DriverTypes {
     export interface ReprojectedPoints {
       /** @default true */
       ok: boolean;
-      points: Point[];
+      points: (null | Point)[];
     }
   }
 
@@ -857,12 +858,12 @@ export interface BuiltinDrivers {
         params: undefined;
         result: DriverTypes.calibration.LatestFrame;
       };
-      /** Warp a camera pixel into display or surface space. */
+      /** Warp a camera pixel into display or surface space. Fails when it maps to infinity. */
       reproject_point: {
         params: DriverTypes.calibration.ReprojectPointParams;
         result: DriverTypes.calibration.ReprojectedPoint;
       };
-      /** Warp camera pixels into display or surface space. */
+      /** Warp camera pixels into display or surface space, null where one maps to infinity. */
       reproject_points: {
         params: DriverTypes.calibration.ReprojectPointsParams;
         result: DriverTypes.calibration.ReprojectedPoints;
