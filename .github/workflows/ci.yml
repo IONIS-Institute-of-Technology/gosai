@@ -51,8 +51,8 @@ jobs:
       - uses: astral-sh/setup-uv@v10
         with:
           python-version: '3.12'
-          # The Linux environment pulls several GB of CUDA wheels, too large to cache usefully.
-          enable-cache: false
+          enable-cache: true
+          cache-dependency-glob: python/uv.lock
       - run: uv sync --locked
       - run: uv run --locked ruff check .
       - run: uv run --locked pyright
