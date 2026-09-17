@@ -17,15 +17,24 @@
  *    calibrated) skeleton on the reflection with dwell buttons to save the
  *    profile or redo the run.
  *
- * The wizard runs exclusively (menu stays on) and restores the persistent
- * overlays when it finishes.
+ * The wizard runs exclusively (the menu stays on). However it ends, the
+ * overlays come back; unless the fit was saved, the driver goes back to the
+ * saved projection and results still in flight are dropped.
  */
 
-import { drawText, fillCircle, strokeCircle } from '../shared/canvas.js';
-import { saveConfig, saveMirrorProfile, type MirrorProfile } from '../shared/config.js';
+import type { DriverActionResult } from '@gosai/sdk';
 import type { LayerDeps } from '../shared/deps.js';
-import { drawBody, isValid } from '../shared/mirror.js';
-import { REF_HEIGHT, REF_WIDTH, type FrameContext, type Layer } from '../shared/types.js';
+import { drawText, fillCircle, strokeCircle } from '../shared/draw.js';
+import { drawBody } from '../shared/mirror.js';
+import { REF_HEIGHT, REF_WIDTH, type Layer } from '../shared/types.js';
+import {
+  CursorPicker,
+  drawHoverButton,
+  drawProgressRing,
+  inRect,
+  stepDwell,
+  type Rect,
+} from '../shared/ui.js';
 
 // Body-pose index fingertips (MediaPipe indices).
 const LEFT_INDEX = 19;
@@ -56,7 +65,6 @@ const STEPBACK_MIN_MS = 4000;
 /** How long a solve-failure screen stays up before restarting. */
 const FAIL_SHOW_MS = 8000;
 const VERIFY_DWELL_MS = 1400;
-const CURSOR_GRACE_MS = 300;
 
 // Targets in reference space, avoiding the menu button at (540, 130).
 const ROUND1: ReadonlyArray<readonly [number, number]> = [
@@ -74,19 +82,15 @@ const ROUND2: ReadonlyArray<readonly [number, number]> = [
 
 const ORANGE = '#ff8100';
 const GREEN = '#a6d854';
-const WHITE = '#ffffff';
 const DIM = 'rgba(255,255,255,0.65)';
+const RING_GREEN = { color: GREEN, lineWidth: 8 };
 
 type Phase = 'intro' | 'capture' | 'stepback' | 'solving' | 'verify' | 'saving' | 'failed';
 
-interface SolveResult {
-  tilt_deg?: number;
-  scale?: number;
-  affine?: number[];
-  residual_px_mean?: number;
-  residual_px_max?: number;
-  samples?: number;
-}
+type SolveResult = DriverActionResult<'pose_to_mirror', 'solve_calibration'>;
+
+const SAVE_BUTTON: Rect = { x: 150, y: 1580, w: 340, h: 130 };
+const REDO_BUTTON: Rect = { x: 590, y: 1580, w: 340, h: 130 };
 
 export function createCalibrateLayer(deps: LayerDeps): Layer {
   let phase: Phase = 'intro';
@@ -96,6 +100,13 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
   let message = '';
   let pending = false;
   let phaseStartedAt = 0;
+  /**
+   * Bumped whenever the run resets or the layer stops, so a capture or solve
+   * that settles afterwards can tell it belongs to an abandoned run.
+   */
+  let run = 0;
+  /** Aborts the remaining steps of a save when the run resets or the layer stops. */
+  let saving: AbortController | null = null;
 
   // Stability window over the raw fingertip: [x, y, timestamp].
   let holdWindow: Array<[number, number, number]> = [];
@@ -119,11 +130,14 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
   let failReason = '';
 
   // Verify-screen dwell state.
-  let cursorLast: { x: number; y: number } | null = null;
-  let cursorLastTs = 0;
-  const verifyDwell = new Map<string, number>();
+  const cursorPicker = new CursorPicker({ bodyFallback: true });
+  let saveDwellMs = 0;
+  let redoDwellMs = 0;
 
   function reset(): void {
+    run += 1;
+    saving?.abort();
+    saving = null;
     phase = 'intro';
     round = 1;
     targetIdx = 0;
@@ -141,9 +155,9 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
     stepbackStableSince = 0;
     fit = null;
     failReason = '';
-    cursorLast = null;
-    cursorLastTs = 0;
-    verifyDwell.clear();
+    cursorPicker.reset();
+    saveDwellMs = 0;
+    redoDwellMs = 0;
   }
 
   function targets(): ReadonlyArray<readonly [number, number]> {
@@ -269,21 +283,27 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
     pending = true;
     message = '';
     const span = shoulderSpan();
-    void deps.rt.drivers
+    const captureRun = run;
+    deps.rt.drivers
       .execute('pose_to_mirror', 'capture_calibration_sample', {
         target: [target[0], target[1]],
         ...(holdLandmark !== null ? { landmark: holdLandmark } : {}),
       })
-      .then(() => {
-        if (round === 1 && span !== null) round1Spans.push(span);
-        advanceTarget();
-      })
-      .catch((err) => {
-        // The driver rejects with a user-facing reason (too few frames, hand not visible).
-        message = err instanceof Error ? err.message : 'capture failed, hold still and retry';
-        deps.rt.log.warn('calibrate: capture failed', { err: String(err) });
-      })
+      .then(
+        () => {
+          if (captureRun !== run) return;
+          if (round === 1 && span !== null) round1Spans.push(span);
+          advanceTarget();
+        },
+        (err: unknown) => {
+          if (captureRun !== run) return;
+          // The driver rejects with a user-facing reason (too few frames, hand not visible).
+          message = err instanceof Error ? err.message : 'capture failed, hold still and retry';
+          deps.rt.log.warn('calibrate: capture failed', { err: String(err) });
+        },
+      )
       .finally(() => {
+        if (captureRun !== run) return;
         pending = false;
         holdWindow = [];
         holdLandmark = null;
@@ -304,10 +324,12 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
     }
   }
 
+  function clearSamples(): void {
+    deps.rt.drivers.execute('pose_to_mirror', 'clear_calibration_samples').catch(() => undefined);
+  }
+
   function solveFailed(error: string): void {
-    void deps.rt.drivers
-      .execute('pose_to_mirror', 'clear_calibration_samples')
-      .catch(() => undefined);
+    clearSamples();
     message = '';
     fit = null;
     phase = 'failed';
@@ -321,28 +343,27 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
   // advanceTarget, while the capture promise that called it is still marked
   // pending) and re-entry is prevented by the 'solving' phase itself.
   function solve(): void {
-    void deps.rt.drivers
-      .execute('pose_to_mirror', 'solve_calibration', {})
-      .then(async (res) => {
-        const r = res as SolveResult;
-        // The verify overlay must show the *fitted reflection* projection,
-        // even when the wizard was launched from direct mode.
-        await deps.rt.drivers
-          .execute('pose_to_mirror', 'set_mirror_config', { mode: 'reflection' })
-          .catch(() => undefined);
-        fit = r;
-        phase = 'verify';
-        verifyDwell.clear();
-      })
-      .catch((err) => {
-        solveFailed(err instanceof Error ? err.message : String(err));
-      });
+    const solveRun = run;
+    void (async () => {
+      const result = await deps.rt.drivers.execute('pose_to_mirror', 'solve_calibration');
+      if (solveRun !== run) return;
+      // The verify overlay must show the fitted reflection projection, even
+      // when the wizard was launched from direct mode.
+      await deps.rt.drivers
+        .execute('pose_to_mirror', 'set_mirror_config', { mode: 'reflection' })
+        .catch(() => undefined);
+      if (solveRun !== run) return;
+      fit = result;
+      phase = 'verify';
+      saveDwellMs = 0;
+      redoDwellMs = 0;
+    })().catch((err: unknown) => {
+      if (solveRun === run) solveFailed(err instanceof Error ? err.message : String(err));
+    });
   }
 
   function restartRun(): void {
-    void deps.rt.drivers
-      .execute('pose_to_mirror', 'clear_calibration_samples')
-      .catch(() => undefined);
+    clearSamples();
     const keep = message;
     reset();
     message = keep;
@@ -350,59 +371,36 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
 
   function saveAndFinish(): void {
     if (!fit || phase === 'saving') return;
-    phase = 'saving';
-    const profile: MirrorProfile = {
-      tilt_deg: fit.tilt_deg!,
-      scale: fit.scale!,
-      affine: fit.affine as [number, number, number, number],
-      ...(typeof fit.residual_px_mean === 'number'
-        ? { residual_px_mean: fit.residual_px_mean }
-        : {}),
+    const [ax = 0, bx = 0, ay = 0, by = 0] = fit.affine;
+    const profile = {
+      tilt_deg: fit.tilt_deg,
+      scale: fit.scale,
+      affine: [ax, bx, ay, by] as const,
+      residual_px_mean: fit.residual_px_mean,
       updatedAt: Date.now(),
     };
-    void (async () => {
-      await saveMirrorProfile(deps.rt, profile);
-      // Calibrating implies a physical mirror rig: switch (and persist) the
-      // projection mode so kiosks never need the dashboard to get there.
-      if (deps.config.projection.mode !== 'reflection') {
-        deps.config.projection.mode = 'reflection';
-        await saveConfig(deps.rt, deps.config);
-      }
-      saved = true;
-      deps.rt.log.info('calibrate: profile saved', { ...profile });
-      finish();
-    })().catch((err) => {
-      deps.rt.log.warn('calibrate: profile save failed', { err: String(err) });
-      message = 'save failed, try again';
-      phase = 'verify';
-    });
-  }
-
-  function finish(): void {
-    // Restore the persistent overlays, then stop ourselves.
-    for (const slug of ['hands', 'body', 'face']) deps.controller.start(slug);
-    deps.controller.stop('calibrate');
-  }
-
-  // -- verify-screen dwell cursor (mirror space; projection now calibrated) ---
-
-  function mirrorCursor(now: number): { x: number; y: number } | null {
-    const m = deps.feed.mirror.data;
-    const candidates = [
-      m.right_hand_pose[8],
-      m.left_hand_pose[8],
-      m.body_pose[RIGHT_INDEX],
-      m.body_pose[LEFT_INDEX],
-    ];
-    for (const c of candidates) {
-      if (isValid(c)) {
-        cursorLast = { x: c[0]!, y: c[1]! };
-        cursorLastTs = now;
-        return cursorLast;
-      }
-    }
-    if (cursorLast && now - cursorLastTs < CURSOR_GRACE_MS) return cursorLast;
-    return null;
+    phase = 'saving';
+    const saveRun = run;
+    const controller = new AbortController();
+    saving = controller;
+    // Saving also switches the app to reflection mode, so kiosks never need
+    // the dashboard to get there. Leaving during the save skips the steps
+    // that haven't started, so the restore on stop wins.
+    deps.projection.saveCalibration(profile, controller.signal).then(
+      (completed) => {
+        if (!completed || saveRun !== run) return;
+        saving = null;
+        saved = true;
+        deps.rt.log.info('calibrate: profile saved', { ...profile });
+        void deps.layers.stop('calibrate');
+      },
+      (err: unknown) => {
+        if (saveRun !== run) return;
+        deps.rt.log.warn('calibrate: profile save failed', { err: String(err) });
+        message = 'save failed, try again';
+        phase = 'verify';
+      },
+    );
   }
 
   // -- rendering --------------------------------------------------------------
@@ -412,13 +410,13 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
       reset();
       saved = false;
       targetShownAt = performance.now();
-      void deps.rt.drivers
-        .execute('pose_to_mirror', 'clear_calibration_samples')
-        .catch(() => undefined);
+      clearSamples();
+      deps.projection.snapshot().catch((err: unknown) => {
+        deps.rt.log.warn('calibrate: reading the mirror settings failed', { err: String(err) });
+      });
     },
 
-    render(frame: FrameContext): void {
-      const { ctx, timestamp, deltaMs } = frame;
+    render({ ctx, timestamp, deltaMs }): void {
       switch (phase) {
         case 'intro':
           renderIntro(ctx, timestamp);
@@ -448,14 +446,15 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
     },
 
     stop(): void {
-      // Abandoned from direct mode without saving: put the driver back so the
-      // regular experiences keep working with the direct overlay.
-      if (!saved && deps.config.projection.mode === 'direct') {
-        void deps.rt.drivers
-          .execute('pose_to_mirror', 'set_mirror_config', { mode: 'direct' })
-          .catch(() => undefined);
-      }
+      const abandoned = !saved;
       reset();
+      if (abandoned) {
+        clearSamples();
+        deps.projection.restore().catch((err: unknown) => {
+          deps.rt.log.warn('calibrate: restoring the projection failed', { err: String(err) });
+        });
+      }
+      deps.restoreOverlays();
     },
   };
 
@@ -492,7 +491,7 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
         'center',
         'middle',
       );
-      drawProgressRing(ctx, REF_WIDTH / 2, 1520, 40, progress, GREEN);
+      drawProgressRing(ctx, REF_WIDTH / 2, 1520, 40, progress, RING_GREEN);
       if (progress >= 1) {
         phase = 'capture';
         targetIdx = 0;
@@ -551,7 +550,7 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
     const pulse = 1 + 0.08 * Math.sin(now / 250);
     strokeCircle(ctx, tx, ty, 92 * pulse, 3, DIM);
     fillCircle(ctx, tx, ty, 26, pending ? GREEN : aiming ? 'rgba(255,129,0,0.45)' : ORANGE);
-    drawProgressRing(ctx, tx, ty, 62, progress, GREEN);
+    drawProgressRing(ctx, tx, ty, 62, progress, RING_GREEN);
 
     if (!pending && progress >= 1) captureTarget(target);
   }
@@ -581,7 +580,7 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
     if (minTimePassed && (moved || waitedLong) && bodyPresent(now)) {
       if (stepbackStableSince === 0) stepbackStableSince = now;
       const progress = Math.min(1, (now - stepbackStableSince) / STEPBACK_STABLE_MS);
-      drawProgressRing(ctx, REF_WIDTH / 2, 1400, 40, progress, GREEN);
+      drawProgressRing(ctx, REF_WIDTH / 2, 1400, 40, progress, RING_GREEN);
       if (progress >= 1) {
         phase = 'capture';
         round = 2;
@@ -609,7 +608,7 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
       560,
     );
     const progress = Math.min(1, (now - phaseStartedAt) / FAIL_SHOW_MS);
-    drawProgressRing(ctx, REF_WIDTH / 2, 1500, 40, progress, ORANGE);
+    drawProgressRing(ctx, REF_WIDTH / 2, 1500, 40, progress, { color: ORANGE, lineWidth: 8 });
     if (progress >= 1) reset();
   }
 
@@ -638,55 +637,26 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
       );
     }
 
-    const cursor = mirrorCursor(now);
-    drawDwellButton(ctx, 'save', 'Save', 150, 1580, 340, 130, GREEN, cursor, deltaMs, () =>
-      saveAndFinish(),
-    );
-    drawDwellButton(ctx, 'redo', 'Redo', 590, 1580, 340, 130, ORANGE, cursor, deltaMs, () => {
-      restartRun();
+    const cursor = cursorPicker.pick(deps.feed.mirror.data, now);
+    saveDwellMs = stepDwell(saveDwellMs, inRect(cursor, SAVE_BUTTON), deltaMs);
+    redoDwellMs = stepDwell(redoDwellMs, inRect(cursor, REDO_BUTTON), deltaMs);
+    const buttonStyle = { lineWidth: 4, radius: 18, fontPx: 44 };
+    drawHoverButton(ctx, SAVE_BUTTON, 'Save', saveDwellMs / VERIFY_DWELL_MS, {
+      ...buttonStyle,
+      color: GREEN,
     });
-
+    drawHoverButton(ctx, REDO_BUTTON, 'Redo', redoDwellMs / VERIFY_DWELL_MS, {
+      ...buttonStyle,
+      color: ORANGE,
+    });
     if (cursor) fillCircle(ctx, cursor.x, cursor.y, 22, 'rgba(255,255,255,0.8)');
-  }
 
-  function drawDwellButton(
-    ctx: CanvasRenderingContext2D,
-    id: string,
-    label: string,
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-    color: string,
-    cursor: { x: number; y: number } | null,
-    deltaMs: number,
-    fire: () => void,
-  ): void {
-    const hovered =
-      cursor !== null && cursor.x > x && cursor.x < x + w && cursor.y > y && cursor.y < y + h;
-    let ms = verifyDwell.get(id) ?? 0;
-    ms = hovered ? ms + deltaMs : Math.max(0, ms - deltaMs * 2);
-    verifyDwell.set(id, ms);
-    const progress = Math.min(1, ms / VERIFY_DWELL_MS);
-
-    ctx.fillStyle = 'rgba(0,0,0,0.65)';
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.roundRect(x, y, w, h, 18);
-    ctx.fill();
-    ctx.stroke();
-    if (progress > 0) {
-      ctx.fillStyle = `${color}59`; // ~35% alpha.
-      ctx.beginPath();
-      ctx.roundRect(x, y, w * progress, h, 18);
-      ctx.fill();
-    }
-    drawText(ctx, label, x + w / 2, y + h / 2, 44, WHITE, 'center', 'middle');
-
-    if (progress >= 1) {
-      verifyDwell.set(id, 0);
-      fire();
+    if (saveDwellMs >= VERIFY_DWELL_MS) {
+      saveDwellMs = 0;
+      saveAndFinish();
+    } else if (redoDwellMs >= VERIFY_DWELL_MS) {
+      redoDwellMs = 0;
+      restartRun();
     }
   }
 }
@@ -702,22 +672,6 @@ function drawCentered(ctx: CanvasRenderingContext2D, lines: string[], topY: numb
     }
     y += size + 18;
   }
-}
-
-function drawProgressRing(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  r: number,
-  progress: number,
-  color: string,
-): void {
-  if (progress <= 0) return;
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 8;
-  ctx.beginPath();
-  ctx.arc(x, y, r, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2);
-  ctx.stroke();
 }
 
 function median(values: number[]): number | null {

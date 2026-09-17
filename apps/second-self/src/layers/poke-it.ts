@@ -6,10 +6,11 @@
  * resets the round and tracks the best score.
  */
 
-import { drawText, fillCircle, strokeCircle } from '../shared/canvas.js';
 import type { LayerDeps } from '../shared/deps.js';
+import { drawText, fillCircle, strokeCircle } from '../shared/draw.js';
 import { isValid } from '../shared/mirror.js';
-import { REF_HEIGHT, REF_WIDTH, type FrameContext, type Layer } from '../shared/types.js';
+import { REF_HEIGHT, REF_WIDTH, type Layer } from '../shared/types.js';
+import { dist, drawProgressRing } from '../shared/ui.js';
 
 const RADIUS = 60;
 const REGION_W = REF_WIDTH * 0.8;
@@ -23,7 +24,6 @@ export function createPokeItLayer(deps: LayerDeps): Layer {
   let count = 0;
   let best = 0;
   let startTime = 0;
-  let time = 0;
 
   function reset(now: number): void {
     if (count > best) best = count;
@@ -39,10 +39,9 @@ export function createPokeItLayer(deps: LayerDeps): Layer {
       ball = randomBall();
     },
 
-    render(frame: FrameContext): void {
-      const { ctx, timestamp } = frame;
+    render({ ctx, timestamp }): void {
       if (startTime === 0) startTime = timestamp;
-      time = (timestamp - startTime) / 1000;
+      const time = (timestamp - startTime) / 1000;
       if (time >= TIME_LIMIT_S) reset(timestamp);
 
       const m = deps.feed.mirror.data;
@@ -61,20 +60,10 @@ export function createPokeItLayer(deps: LayerDeps): Layer {
       drawText(ctx, `Score: ${count}`, REF_WIDTH - 60, 250, 40, '#fff', 'right', 'middle');
       drawText(ctx, `Best: ${best}`, REF_WIDTH - 60, 310, 40, '#fff', 'right', 'middle');
 
-      // Countdown ring.
-      ctx.save();
-      ctx.translate(REF_WIDTH - 90, 430);
-      ctx.rotate(-Math.PI / 2);
-      const sweep = (1 - time / TIME_LIMIT_S) * Math.PI * 2;
-      ctx.fillStyle = '#fff';
-      ctx.strokeStyle = '#fff';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(0, 0);
-      ctx.arc(0, 0, 30, 0, sweep);
-      ctx.closePath();
-      ctx.fill();
-      ctx.restore();
+      drawProgressRing(ctx, REF_WIDTH - 90, 430, 30, 1 - time / TIME_LIMIT_S, {
+        color: '#fff',
+        fill: true,
+      });
     },
   };
 }
@@ -84,8 +73,4 @@ function randomBall(): { x: number; y: number } {
     x: REGION_X + Math.random() * REGION_W,
     y: REGION_Y + Math.random() * REGION_H,
   };
-}
-
-function dist(x1: number, y1: number, x2: number, y2: number): number {
-  return Math.hypot(x1 - x2, y1 - y2);
 }

@@ -7,15 +7,9 @@
  * area is the upper half of the portrait mirror.
  */
 
-import { fillCircle } from '../shared/canvas.js';
 import type { LayerDeps } from '../shared/deps.js';
-import {
-  REF_HEIGHT,
-  REF_WIDTH,
-  type FrameContext,
-  type Landmark,
-  type Layer,
-} from '../shared/types.js';
+import { fillCircle } from '../shared/draw.js';
+import { REF_HEIGHT, REF_WIDTH, type Landmark, type Layer } from '../shared/types.js';
 
 const RADIUS = 60;
 const GRAVITY = 2000; // px/s^2
@@ -43,8 +37,7 @@ export function createBounceLayer(deps: LayerDeps): Layer {
       reset();
     },
 
-    render(frame: FrameContext): void {
-      const { ctx, deltaMs } = frame;
+    render({ ctx, deltaMs }): void {
       const dt = Math.min(deltaMs / 1000, 0.05);
 
       const prevVy = speed.y;
@@ -78,8 +71,8 @@ export function createBounceLayer(deps: LayerDeps): Layer {
     },
   };
 
-  function collide(hand: Landmark[]): void {
-    if (!hand || hand.length < 13) return;
+  function collide(hand: readonly Landmark[]): void {
+    if (hand.length < 13) return;
     let left = REF_WIDTH;
     let right = 0;
     let top = REF_HEIGHT;

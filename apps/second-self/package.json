@@ -6,15 +6,16 @@
   "scripts": {
     "build": "bun build src/main.ts --target=browser --format=esm --outdir dist --external @gosai/sdk",
     "dev": "bun run build --watch",
-    "typecheck": "tsc"
+    "typecheck": "tsc && tsc -p test",
+    "test": "bun test --conditions @gosai/source"
   },
   "dependencies": {
     "@gosai/sdk": "workspace:*",
     "@pixiv/three-vrm": "3.5.5",
     "kalidokit": "1.1.5",
-    "three": "0.185.1"
+    "three": "0.186.0"
   },
   "devDependencies": {
-    "@types/three": "0.185.1"
+    "@types/three": "0.186.0"
   }
 }

@@ -1,109 +1,162 @@
 /**
  * Aria: a VRM avatar puppeted by the user's pose, hands and face.
  *
- * Ports the legacy `aria` app. Like the legacy version it consumes the **raw**
- * `pose.raw_data` landmarks (camera pixel space, unflipped, unsmoothed) — not
- * the mirror projection, which is flipped/letterboxed and would corrupt the
- * Kalidokit solves. Landmarks are solved into humanoid bone rotations and face
- * blendshapes with Kalidokit, then applied to a VRM model rendered with
- * three.js + @pixiv/three-vrm (v3).
+ * It reads the raw `pose.raw_data` landmarks (camera pixel space, unflipped,
+ * unsmoothed), not the mirror projection, which is flipped and letterboxed and
+ * would corrupt the Kalidokit solves. Kalidokit turns the landmarks into bone
+ * rotations and face blendshapes, applied to a VRM model rendered with
+ * three.js and @pixiv/three-vrm.
  *
- * Convention note: Kalidokit emits rotations for VRM0 rigs (legacy three-vrm
- * 0.x raw bones). three-vrm v3 *normalized* bones only bake out rest
- * rotations — their frames stay aligned with the model's glTF world axes —
- * and this VRoid VRM0 model has identity rest rotations on all humanoid
- * bones, so Kalidokit rotations apply unchanged (no VRM1 x/z sign flip; that
- * conversion is only for VRM1-authored models, whose bone frames are yawed
- * 180 deg).
+ * Convention note: Kalidokit emits rotations for VRM0 rigs. three-vrm's
+ * normalized bones only bake out rest rotations, so their frames stay aligned
+ * with the model's glTF world axes, and this VRoid VRM0 model has identity
+ * rest rotations on all humanoid bones. Kalidokit rotations therefore apply
+ * unchanged (the VRM1 x/z sign flip is only for VRM1-authored models).
  *
- * Unlike the 2D layers this owns its own transparent WebGL canvas overlaid on
- * the compositor; it does not draw into the shared 2D context.
+ * The WebGL renderer draws into its own canvas, stacked in the compositor's
+ * container right below the transparent 2D canvas and aligned with the
+ * reference space, so the menu, the overlays and the sleep veil stay on top.
+ * Copying WebGL frames into the 2D canvas instead would read pixels back
+ * every frame wherever Chromium runs 2D canvases in software. The renderer
+ * exists only while the layer runs.
  */
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { VRM, VRMLoaderPlugin, type VRMHumanBoneName } from '@pixiv/three-vrm';
+import { VRMLoaderPlugin, type VRM, type VRMHumanBoneName } from '@pixiv/three-vrm';
 import * as Kalidokit from 'kalidokit';
 
-import { drawText } from '../shared/canvas.js';
 import type { LayerDeps } from '../shared/deps.js';
+import { drawText } from '../shared/draw.js';
+import { DEFAULT_FRAME_HEIGHT, DEFAULT_FRAME_WIDTH } from '../shared/feed.js';
 import {
   REF_HEIGHT,
   REF_WIDTH,
-  type FrameContext,
   type Landmark,
   type Layer,
+  type Viewport,
 } from '../shared/types.js';
 
-type Vec3 = { x: number; y: number; z: number };
-type Euler = { x: number; y: number; z: number; rotationOrder?: string };
+interface Rotation {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  readonly rotationOrder?: THREE.EulerOrder;
+}
+
+type HandSide = 'left' | 'right';
+type HandBones = ReadonlyArray<readonly [Kalidokit.HandKeys<Kalidokit.Side>, VRMHumanBoneName]>;
 
 /** Feed considered stale after this long without a pose update. */
 const STALE_MS = 1000;
 /** Lerp used to ease bones back to the rest pose when tracking is lost. */
 const REST_LERP = 0.08;
 
-/** Kalidokit finger key -> VRM1 bone name, per hand side. */
-const FINGER_BONES = ['Index', 'Middle', 'Ring', 'Little'] as const;
-const FINGER_PARTS = ['Proximal', 'Intermediate', 'Distal'] as const;
+const ZERO: Rotation = { x: 0, y: 0, z: 0 };
+const LEFT_ARM_DOWN: Rotation = { x: 0, y: 0, z: 1.4 };
+const RIGHT_ARM_DOWN: Rotation = { x: 0, y: 0, z: -1.4 };
 
-const RAD2DEG = 180 / Math.PI;
+const FINGERS = ['Index', 'Middle', 'Ring', 'Little'] as const;
+const PARTS = ['Proximal', 'Intermediate', 'Distal'] as const;
+
+/** Kalidokit hand keys and the VRM bones they drive, for one side. */
+function handBones(side: HandSide): HandBones {
+  const Side = side === 'left' ? 'Left' : 'Right';
+  const bones: Array<readonly [Kalidokit.HandKeys<Kalidokit.Side>, VRMHumanBoneName]> = [];
+  for (const finger of FINGERS) {
+    for (const part of PARTS) bones.push([`${Side}${finger}${part}`, `${side}${finger}${part}`]);
+  }
+  // Kalidokit's thumb Proximal/Intermediate/Distal map to VRM1 Metacarpal/Proximal/Distal.
+  bones.push([`${Side}ThumbProximal`, `${side}ThumbMetacarpal`]);
+  bones.push([`${Side}ThumbIntermediate`, `${side}ThumbProximal`]);
+  bones.push([`${Side}ThumbDistal`, `${side}ThumbDistal`]);
+  return bones;
+}
+
+const HANDS = {
+  left: { wrist: 'LeftWrist', hand: 'leftHand', bones: handBones('left') },
+  right: { wrist: 'RightWrist', hand: 'rightHand', bones: handBones('right') },
+} as const;
 
 export function createAriaLayer(deps: LayerDeps): Layer {
-  let renderer: THREE.WebGLRenderer | null = null;
-  let canvas: HTMLCanvasElement | null = null;
-  let scene: THREE.Scene | null = null;
-  let camera: THREE.PerspectiveCamera | null = null;
   let vrm: VRM | null = null;
   let loadFailed = false;
-  const clock = new THREE.Clock();
-  const oldLookTarget = new THREE.Euler();
+  let renderer: THREE.WebGLRenderer | null = null;
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(35, REF_WIDTH / REF_HEIGHT, 0.1, 10);
+  camera.position.set(0, 1.4, 0.7);
+  camera.lookAt(0, 1.4, 0);
+  const timer = new THREE.Timer();
 
-  const resize = (): void => {
-    if (!renderer || !camera) return;
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    renderer.setSize(w, h);
-    camera.aspect = w / h;
-    camera.updateProjectionMatrix();
-  };
+  // Scratch objects reused by every bone on every frame.
+  const euler = new THREE.Euler();
+  const quaternion = new THREE.Quaternion();
+  const position = new THREE.Vector3();
+  const drawingSize = new THREE.Vector2();
+  /** The viewport the canvas was last placed at, to skip unchanged style writes. */
+  let placement = '';
 
-  /** Slerp a bone toward a Kalidokit rotation (see convention note above). */
-  function rigRotation(name: VRMHumanBoneName, rot: Euler, dampener = 1, lerpAmount = 0.3): void {
+  /** Lines the WebGL canvas up with the reference space and sizes its drawing buffer. */
+  function place(target: THREE.WebGLRenderer, viewport: Viewport): void {
+    const { x, y, width, height } = viewport;
+    const key = `${x},${y},${width},${height}`;
+    if (key === placement) return;
+    placement = key;
+    const style = target.domElement.style;
+    style.left = `${x}px`;
+    style.top = `${y}px`;
+    style.width = `${width}px`;
+    style.height = `${height}px`;
+    const dpr = window.devicePixelRatio || 1;
+    const bufferWidth = Math.max(1, Math.round(width * dpr));
+    const bufferHeight = Math.max(1, Math.round(height * dpr));
+    const size = target.getSize(drawingSize);
+    if (size.x !== bufferWidth || size.y !== bufferHeight) {
+      target.setSize(bufferWidth, bufferHeight, false);
+    }
+  }
+  const look = { pitch: 0, yaw: 0 };
+
+  const face = new LandmarkBuffer();
+  const pose2d = new LandmarkBuffer();
+  const pose3d = new LandmarkBuffer();
+  const leftHand = new LandmarkBuffer();
+  const rightHand = new LandmarkBuffer();
+
+  /** Slerps a bone toward a Kalidokit rotation (see the convention note above). */
+  function rigRotation(
+    name: VRMHumanBoneName,
+    rot: Rotation,
+    dampener = 1,
+    lerpAmount = 0.3,
+  ): void {
     const bone = vrm?.humanoid.getNormalizedBoneNode(name);
     if (!bone) return;
-    const euler = new THREE.Euler(
-      rot.x * dampener,
-      rot.y * dampener,
-      rot.z * dampener,
-      (rot.rotationOrder as THREE.EulerOrder) || 'XYZ',
-    );
-    const q = new THREE.Quaternion().setFromEuler(euler);
-    if ([q.x, q.y, q.z, q.w].some((v) => Number.isNaN(v))) return;
-    bone.quaternion.slerp(q, lerpAmount);
+    euler.set(rot.x * dampener, rot.y * dampener, rot.z * dampener, rot.rotationOrder ?? 'XYZ');
+    quaternion.setFromEuler(euler);
+    if (Number.isNaN(quaternion.x + quaternion.y + quaternion.z + quaternion.w)) return;
+    bone.quaternion.slerp(quaternion, lerpAmount);
   }
 
-  function rigPosition(name: VRMHumanBoneName, pos: Vec3, dampener = 1, lerpAmount = 0.3): void {
-    const bone = vrm?.humanoid.getNormalizedBoneNode(name);
-    if (!bone) return;
-    const target = new THREE.Vector3(pos.x * dampener, pos.y * dampener, pos.z * dampener);
-    if ([target.x, target.y, target.z].some((v) => Number.isNaN(v))) return;
-    bone.position.lerp(target, lerpAmount);
+  function rigHipsPosition(x: number, y: number, z: number): void {
+    const bone = vrm?.humanoid.getNormalizedBoneNode('hips');
+    if (!bone || Number.isNaN(x + y + z)) return;
+    bone.position.lerp(position.set(x, y, z), 0.07);
   }
 
-  function rigFace(face: Kalidokit.TFace): void {
+  function rigFace(solved: Kalidokit.TFace): void {
     if (!vrm) return;
-    rigRotation('neck', face.head as Euler, 0.7, 0.3);
+    rigRotation('neck', solved.head, 0.7, 0.3);
     const exp = vrm.expressionManager;
     if (!exp) return;
 
     const blink = Kalidokit.Face.stabilizeBlink(
-      { l: clampUnit(1 - face.eye.l), r: clampUnit(1 - face.eye.r) },
-      face.head.y,
+      { l: clampUnit(1 - solved.eye.l), r: clampUnit(1 - solved.eye.r) },
+      solved.head.y,
     );
     exp.setValue('blink', lerp(blink.l, exp.getValue('blink') ?? 0, 0.5));
 
-    const m = face.mouth.shape;
+    const m = solved.mouth.shape;
     exp.setValue('ih', lerp(m.I, exp.getValue('ih') ?? 0, 0.5));
     exp.setValue('aa', lerp(m.A, exp.getValue('aa') ?? 0, 0.5));
     exp.setValue('ee', lerp(m.E, exp.getValue('ee') ?? 0, 0.5));
@@ -111,176 +164,108 @@ export function createAriaLayer(deps: LayerDeps): Layer {
     exp.setValue('ou', lerp(m.U, exp.getValue('ou') ?? 0, 0.5));
 
     if (vrm.lookAt) {
-      const lookTarget = new THREE.Euler(
-        lerp(oldLookTarget.x, face.pupil.y, 0.4),
-        lerp(oldLookTarget.y, face.pupil.x, 0.4),
-        0,
-        'XYZ',
-      );
-      oldLookTarget.copy(lookTarget);
-      // Applied by vrm.update() at the end of the frame (degrees).
-      vrm.lookAt.yaw = lookTarget.y * RAD2DEG;
-      vrm.lookAt.pitch = lookTarget.x * RAD2DEG;
+      look.pitch = lerp(look.pitch, solved.pupil.y, 0.4);
+      look.yaw = lerp(look.yaw, solved.pupil.x, 0.4);
+      // Applied by vrm.update() at the end of the frame, in degrees.
+      vrm.lookAt.yaw = THREE.MathUtils.radToDeg(look.yaw);
+      vrm.lookAt.pitch = THREE.MathUtils.radToDeg(look.pitch);
     }
   }
 
   function applyHand(
-    side: 'left' | 'right',
-    rigged: Record<string, Euler>,
-    poseWristZ: number,
+    side: HandSide,
+    solved: Kalidokit.THand<Kalidokit.Side>,
+    wristZ: number,
   ): void {
-    const Side = side === 'left' ? 'Left' : 'Right';
-    const wrist = rigged[`${Side}Wrist`];
-    if (wrist)
-      rigRotation(`${side}Hand` as VRMHumanBoneName, { x: wrist.x, y: wrist.y, z: poseWristZ });
-    for (const finger of FINGER_BONES) {
-      for (const part of FINGER_PARTS) {
-        const k = rigged[`${Side}${finger}${part}`];
-        if (k) rigRotation(`${side}${finger}${part}` as VRMHumanBoneName, k);
-      }
-    }
-    // Thumb: Kalidokit Proximal/Intermediate/Distal -> VRM1 Metacarpal/Proximal/Distal.
-    const thumbMap: Array<[string, string]> = [
-      [`${Side}ThumbProximal`, `${side}ThumbMetacarpal`],
-      [`${Side}ThumbIntermediate`, `${side}ThumbProximal`],
-      [`${Side}ThumbDistal`, `${side}ThumbDistal`],
-    ];
-    for (const [src, dst] of thumbMap) {
-      const k = rigged[src];
-      if (k) rigRotation(dst as VRMHumanBoneName, k);
-    }
+    const { wrist, hand, bones } = HANDS[side];
+    const w = solved[wrist];
+    rigRotation(hand, { x: w.x, y: w.y, z: wristZ });
+    for (const [key, bone] of bones) rigRotation(bone, solved[key]);
   }
 
-  /** Ease the body (hips/spine/arms) back to a relaxed rest pose. */
+  /** Eases the body back to a relaxed rest pose, arms down. */
   function restBody(lerpAmount = REST_LERP): void {
-    const zero: Euler = { x: 0, y: 0, z: 0 };
-    rigRotation('hips', zero, 1, lerpAmount);
-    rigRotation('chest', zero, 1, lerpAmount);
-    rigRotation('spine', zero, 1, lerpAmount);
-    rigRotation('neck', zero, 1, lerpAmount);
-    // Arms down (legacy load pose; values in the Kalidokit/VRM0 frame).
-    rigRotation('leftUpperArm', { x: 0, y: 0, z: 1.4 }, 1, lerpAmount);
-    rigRotation('leftLowerArm', zero, 1, lerpAmount);
-    rigRotation('rightUpperArm', { x: 0, y: 0, z: -1.4 }, 1, lerpAmount);
-    rigRotation('rightLowerArm', zero, 1, lerpAmount);
-    // Hips position is left untouched: the model stays where it was last seen
-    // instead of drifting to an arbitrary anchor.
+    rigRotation('hips', ZERO, 1, lerpAmount);
+    rigRotation('chest', ZERO, 1, lerpAmount);
+    rigRotation('spine', ZERO, 1, lerpAmount);
+    rigRotation('neck', ZERO, 1, lerpAmount);
+    rigRotation('leftUpperArm', LEFT_ARM_DOWN, 1, lerpAmount);
+    rigRotation('leftLowerArm', ZERO, 1, lerpAmount);
+    rigRotation('rightUpperArm', RIGHT_ARM_DOWN, 1, lerpAmount);
+    rigRotation('rightLowerArm', ZERO, 1, lerpAmount);
+    // The hips position stays where it was last seen instead of drifting.
   }
 
-  /** Ease one hand (wrist + fingers) back to a neutral pose. */
-  function restHand(side: 'left' | 'right', lerpAmount = REST_LERP): void {
-    const zero: Euler = { x: 0, y: 0, z: 0 };
-    rigRotation(`${side}Hand` as VRMHumanBoneName, zero, 1, lerpAmount);
-    for (const finger of FINGER_BONES) {
-      for (const part of FINGER_PARTS) {
-        rigRotation(`${side}${finger}${part}` as VRMHumanBoneName, zero, 1, lerpAmount);
-      }
-    }
-    rigRotation(`${side}ThumbMetacarpal` as VRMHumanBoneName, zero, 1, lerpAmount);
-    rigRotation(`${side}ThumbProximal` as VRMHumanBoneName, zero, 1, lerpAmount);
-    rigRotation(`${side}ThumbDistal` as VRMHumanBoneName, zero, 1, lerpAmount);
+  function restHand(side: HandSide): void {
+    const { hand, bones } = HANDS[side];
+    rigRotation(hand, ZERO, 1, REST_LERP);
+    for (const [, bone] of bones) rigRotation(bone, ZERO, 1, REST_LERP);
   }
 
   function animate(nowMs: number): void {
-    if (!vrm) return;
     const raw = deps.feed.raw;
     const stale = nowMs - raw.lastUpdate > STALE_MS;
     const d = raw.data;
+    const width = d.frame_width || DEFAULT_FRAME_WIDTH;
+    const height = d.frame_height || DEFAULT_FRAME_HEIGHT;
+    const imageSize = { width, height };
 
-    const imageSize = {
-      width: d.frame_width || 1280,
-      height: d.frame_height || 720,
-    };
+    const faceLm = face.fill(stale ? [] : d.face_mesh, width, height);
+    const pose2dLm = pose2d.fill(stale ? [] : d.body_pose, width, height);
+    const pose3dLm = pose3d.fill(stale ? [] : d.body_world_pose);
+    // Canonical Kalidokit mirror mapping: the solver's "Left" outputs come
+    // from the person's anatomical right side and drive the avatar's left
+    // bones. The driver's `left_hand_pose` holds the anatomical right hand.
+    const leftLm = leftHand.fill(stale ? [] : d.left_hand_pose, width, height);
+    const rightLm = rightHand.fill(stale ? [] : d.right_hand_pose, width, height);
 
-    const face = stale ? [] : toLandmarks(d.face_mesh, false, imageSize);
-    const pose2d = stale ? [] : toLandmarks(d.body_pose, false, imageSize);
-    const pose3d = stale ? [] : toLandmarks(d.body_world_pose, true, imageSize);
-    // Canonical Kalidokit mirror mapping: the solver's "Left" outputs are
-    // calibrated from the person's anatomical RIGHT side and drive the
-    // avatar's left bones. The driver's `left_hand_pose` holds the anatomical
-    // right hand (legacy swapped convention), i.e. exactly the "Left" input.
-    const leftHand = stale ? [] : toLandmarks(d.left_hand_pose, false, imageSize);
-    const rightHand = stale ? [] : toLandmarks(d.right_hand_pose, false, imageSize);
-
-    if (face.length > 0) {
-      const riggedFace = trySolve(() =>
-        Kalidokit.Face.solve(face, { runtime: 'mediapipe', imageSize }),
+    if (faceLm.length > 0) {
+      const solved = trySolve(() =>
+        Kalidokit.Face.solve(faceLm, { runtime: 'mediapipe', imageSize }),
       );
-      if (riggedFace) rigFace(riggedFace);
+      if (solved) rigFace(solved);
     }
 
-    let riggedPose: Kalidokit.TPose | undefined;
-    if (pose2d.length > 0 && pose3d.length > 0) {
-      riggedPose =
-        trySolve(() => Kalidokit.Pose.solve(pose3d, pose2d, { runtime: 'mediapipe', imageSize })) ??
-        undefined;
-      if (riggedPose) {
-        rigRotation('hips', riggedPose.Hips.rotation as Euler, 0.7);
-        rigPosition(
-          'hips',
-          {
-            x: -(pose2d[0]?.x ?? 0) * 1.8 + 1.2,
-            y: -(pose2d[0]?.y ?? 0) * 1.8 + 1.8,
-            z: -(pose2d[0]?.z ?? 0) * 1.5 + 1.5,
-          },
-          1,
-          0.07,
+    let pose: Kalidokit.TPose | undefined;
+    if (pose2dLm.length > 0 && pose3dLm.length > 0) {
+      pose = trySolve(() =>
+        Kalidokit.Pose.solve(pose3dLm, pose2dLm, { runtime: 'mediapipe', imageSize }),
+      );
+      if (pose) {
+        if (pose.Hips.rotation) rigRotation('hips', pose.Hips.rotation, 0.7);
+        const nose = pose2dLm[0];
+        rigHipsPosition(
+          -(nose?.x ?? 0) * 1.8 + 1.2,
+          -(nose?.y ?? 0) * 1.8 + 1.8,
+          -(nose?.z ?? 0) * 1.5 + 1.5,
         );
-        rigRotation('chest', riggedPose.Spine as Euler, 0.25, 0.3);
-        rigRotation('spine', riggedPose.Spine as Euler, 0.45, 0.3);
-        // No side crossing here: Kalidokit's Left outputs already come from
-        // the person's right arm (mirror view). Crossing them (as the legacy
-        // code did) applies each side's sign conventions to the opposite
-        // bone, which flips the arms upside down.
-        rigRotation('leftUpperArm', riggedPose.LeftUpperArm as Euler, 1, 0.3);
-        rigRotation('leftLowerArm', riggedPose.LeftLowerArm as Euler, 1, 0.3);
-        rigRotation('rightUpperArm', riggedPose.RightUpperArm as Euler, 1, 0.3);
-        rigRotation('rightLowerArm', riggedPose.RightLowerArm as Euler, 1, 0.3);
+        rigRotation('chest', pose.Spine, 0.25, 0.3);
+        rigRotation('spine', pose.Spine, 0.45, 0.3);
+        // No side crossing: Kalidokit's Left outputs already come from the
+        // person's right arm. Crossing them flips the arms upside down.
+        rigRotation('leftUpperArm', pose.LeftUpperArm);
+        rigRotation('leftLowerArm', pose.LeftLowerArm);
+        rigRotation('rightUpperArm', pose.RightUpperArm);
+        rigRotation('rightLowerArm', pose.RightLowerArm);
       }
     } else {
       restBody();
     }
 
-    if (leftHand.length > 0) {
-      const r = trySolve(() => Kalidokit.Hand.solve(leftHand, 'Left'));
-      if (r)
-        applyHand(
-          'left',
-          r as unknown as Record<string, Euler>,
-          (riggedPose?.LeftHand as Vec3 | undefined)?.z ?? 0,
-        );
-    } else {
-      restHand('left');
-    }
-    if (rightHand.length > 0) {
-      const r = trySolve(() => Kalidokit.Hand.solve(rightHand, 'Right'));
-      if (r)
-        applyHand(
-          'right',
-          r as unknown as Record<string, Euler>,
-          (riggedPose?.RightHand as Vec3 | undefined)?.z ?? 0,
-        );
-    } else {
-      restHand('right');
-    }
+    const leftSolved =
+      leftLm.length > 0 ? trySolve(() => Kalidokit.Hand.solve(leftLm, 'Left')) : undefined;
+    if (leftSolved) applyHand('left', leftSolved, pose?.LeftHand.z ?? 0);
+    else if (leftLm.length === 0) restHand('left');
+    const rightSolved =
+      rightLm.length > 0 ? trySolve(() => Kalidokit.Hand.solve(rightLm, 'Right')) : undefined;
+    if (rightSolved) applyHand('right', rightSolved, pose?.RightHand.z ?? 0);
+    else if (rightLm.length === 0) restHand('right');
   }
 
   return {
     async preload(): Promise<void> {
-      canvas = document.createElement('canvas');
-      canvas.style.cssText =
-        'position:fixed;inset:0;width:100%;height:100%;z-index:5;pointer-events:none;';
-
-      renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
-      renderer.setPixelRatio(window.devicePixelRatio);
-
-      scene = new THREE.Scene();
-      camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 0.1, 10);
-      camera.position.set(0, 1.4, 0.7);
-      camera.lookAt(0, 1.4, 0);
-
-      // Close to the legacy setup (one directional at intensity 1): MToon
-      // materials blow out to white under stronger rigs.
+      // Close to the legacy setup (one directional light at intensity 1):
+      // MToon materials blow out to white under stronger rigs.
       const key = new THREE.DirectionalLight(0xffffff, 1.0);
       key.position.set(1, 1, 1).normalize();
       scene.add(key);
@@ -293,16 +278,14 @@ export function createAriaLayer(deps: LayerDeps): Layer {
       const loader = new GLTFLoader();
       loader.register((parser) => new VRMLoaderPlugin(parser));
       try {
-        const gltf = await loader.loadAsync(deps.assetUrl('aria/models/papa_de_him_chan.vrm'));
-        const loaded = gltf.userData.vrm as VRM | undefined;
-        if (loaded && scene) {
-          vrm = loaded;
-          vrm.scene.rotation.y = Math.PI;
-          scene.add(vrm.scene);
-          restBody(1); // start relaxed (arms down), not in the T-pose.
-        } else {
-          loadFailed = true;
-        }
+        const gltf = await loader.loadAsync(deps.asset('aria/models/papa_de_him_chan.vrm'));
+        const loaded: VRM | undefined = gltf.userData.vrm;
+        if (!loaded) throw new Error('the file holds no VRM');
+        loaded.scene.rotation.y = Math.PI;
+        loaded.scene.position.set(0, 0, -1);
+        scene.add(loaded.scene);
+        vrm = loaded;
+        restBody(1); // Start relaxed, not in the T-pose.
       } catch (err) {
         deps.rt.log.warn('aria: VRM load failed', { err: String(err) });
         loadFailed = true;
@@ -310,29 +293,45 @@ export function createAriaLayer(deps: LayerDeps): Layer {
     },
 
     start(): void {
-      if (canvas && !canvas.isConnected) document.body.appendChild(canvas);
-      resize();
-      window.addEventListener('resize', resize);
-      clock.getDelta();
+      if (loadFailed) return;
+      const canvas = document.createElement('canvas');
+      canvas.style.cssText = 'position:absolute;display:block;pointer-events:none;';
+      const { container, canvas: compositor } = deps.surface;
+      container.insertBefore(canvas, compositor);
+      renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+      renderer.setPixelRatio(1);
+      placement = '';
+      timer.reset();
+      deps.setFaceMesh('raw', true);
     },
 
-    render(frame: FrameContext): void {
-      if (loadFailed) {
-        drawPlaceholder(frame.ctx);
+    render({ ctx, timestamp, viewport }): void {
+      if (!renderer) {
+        drawPlaceholder(ctx);
         return;
       }
-      if (!renderer || !scene || !camera) return;
-      animate(frame.timestamp);
-      if (vrm) {
-        vrm.update(clock.getDelta());
-        vrm.scene.position.set(0, 0, -1);
-      }
+      place(renderer, viewport);
+      animate(timestamp);
+      timer.update(timestamp);
+      vrm?.update(timer.getDelta());
       renderer.render(scene, camera);
     },
 
+    suspend(): void {
+      if (renderer) renderer.domElement.style.visibility = 'hidden';
+    },
+
+    resume(): void {
+      if (renderer) renderer.domElement.style.visibility = 'visible';
+    },
+
     stop(): void {
-      window.removeEventListener('resize', resize);
-      canvas?.remove();
+      if (!renderer) return;
+      deps.setFaceMesh('raw', false);
+      renderer.domElement.remove();
+      renderer.dispose();
+      renderer.forceContextLoss();
+      renderer = null;
     },
   };
 }
@@ -345,41 +344,45 @@ interface KLandmark {
   x: number;
   y: number;
   z: number;
-  visibility?: number;
+  visibility: number | undefined;
 }
 
-/**
- * Convert raw landmark tuples to Kalidokit landmark objects. 2D face/pose/hand
- * landmarks are normalised by the camera frame size (matching the legacy
- * scene.js, including passing the third component through as z); world
- * landmarks (`metric`) are passed through in meters.
- */
-function toLandmarks(
-  arr: Landmark[],
-  metric: boolean,
-  imageSize: { width: number; height: number },
-): KLandmark[] {
-  const out: KLandmark[] = [];
-  for (const lm of arr) {
-    if (!lm || lm.length < 2) continue;
-    if (metric) {
-      out.push({ x: lm[0]!, y: lm[1]!, z: lm[2] ?? 0, visibility: lm[3] });
-    } else {
-      out.push({
-        x: lm[0]! / imageSize.width,
-        y: lm[1]! / imageSize.height,
-        z: lm[2] ?? 0,
-        visibility: lm[2],
-      });
+/** Kalidokit landmark objects for one stream, reused from frame to frame. */
+class LandmarkBuffer {
+  private readonly items: KLandmark[] = [];
+  private readonly view: KLandmark[] = [];
+
+  /**
+   * Converts landmark rows. With a frame size, 2D rows are normalised by it
+   * and the third value passes through as z and visibility, as the legacy app
+   * did; without one, metric world rows `[x, y, z, visibility]` pass through.
+   */
+  fill(rows: readonly Landmark[], width?: number, height?: number): KLandmark[] {
+    this.view.length = 0;
+    for (const row of rows) {
+      if (row.length < 2) continue;
+      const lm = (this.items[this.view.length] ??= { x: 0, y: 0, z: 0, visibility: undefined });
+      if (width && height) {
+        lm.x = row[0]! / width;
+        lm.y = row[1]! / height;
+        lm.z = row[2] ?? 0;
+        lm.visibility = row[2];
+      } else {
+        lm.x = row[0]!;
+        lm.y = row[1]!;
+        lm.z = row[2] ?? 0;
+        lm.visibility = row[3];
+      }
+      this.view.push(lm);
     }
+    return this.view;
   }
-  return out;
 }
 
-/** Run a Kalidokit solve, tolerating internal errors (e.g. missing iris pts). */
-function trySolve<T>(solve: () => T | undefined | null): T | undefined {
+/** Runs a Kalidokit solve, tolerating internal errors (e.g. missing iris points). */
+function trySolve<T>(solve: () => T | undefined): T | undefined {
   try {
-    return solve() ?? undefined;
+    return solve();
   } catch {
     return undefined;
   }
@@ -394,21 +397,14 @@ function clampUnit(v: number): number {
 }
 
 function drawPlaceholder(ctx: CanvasRenderingContext2D): void {
-  drawText(
-    ctx,
-    'Aria',
-    REF_WIDTH / 2,
-    REF_HEIGHT / 2 - 30,
-    64,
-    'rgba(255,255,255,0.85)',
-    'center',
-    'middle',
-  );
+  const x = REF_WIDTH / 2;
+  const y = REF_HEIGHT / 2;
+  drawText(ctx, 'Aria', x, y - 30, 64, 'rgba(255,255,255,0.85)', 'center', 'middle');
   drawText(
     ctx,
     'VRM avatar model could not be loaded',
-    REF_WIDTH / 2,
-    REF_HEIGHT / 2 + 40,
+    x,
+    y + 40,
     28,
     'rgba(255,255,255,0.5)',
     'center',

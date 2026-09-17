@@ -1,173 +1,173 @@
 /**
- * Second Self runtime configuration.
+ * Second Self configuration.
  *
- * Configuration is deliberately minimal: the only user-facing choices are the
- * projection mode (webcam overlay vs. physical mirror rig) and the selfie
- * flip. Everything else is automatic:
+ * The user-facing settings are declared once, in the manifest's `settings`
+ * schema: the projection mode (webcam overlay or physical mirror rig), the
+ * selfie flip and the display sleep tuning. The runtime reads them through
+ * `rt.settings`; the defaults and bounds below come from the same schema.
  *
- * - The reference space is fixed at 1080x1920 and `contain`-fit onto the
- *   screen, so any portrait display (including 9:16 WQHD) fills exactly and
- *   other aspects letterbox without distortion.
- * - The physical-mirror projection parameters are not typed in by hand; they
- *   are *fitted* by the in-app calibration wizard (`calibrate` layer) and
- *   persisted as a {@link MirrorProfile} under {@link MIRROR_PROFILE_STORAGE_KEY}.
- *
- * The projection config is read from the app's key/value storage (key
- * {@link CONFIG_STORAGE_KEY}) on start and merged over {@link DEFAULT_CONFIG}.
+ * The physical mirror projection isn't typed in by hand. The in-app
+ * calibration wizard fits it and stores a {@link MirrorProfile} under
+ * {@link MIRROR_PROFILE_STORAGE_KEY}.
  */
 
-import type { ExperienceRuntimeContext } from '@gosai/sdk';
+import type { DriverTypes, ExperienceRuntimeContext } from '@gosai/sdk';
+import manifest from '../../gosai.app.json';
 import { REF_HEIGHT, REF_WIDTH } from './types.js';
 
-export const CONFIG_STORAGE_KEY = 'config';
 export const MIRROR_PROFILE_STORAGE_KEY = 'mirror_calibration';
 
-export type ProjectionMode = 'direct' | 'reflection';
+type ProjectionMode = 'direct' | 'reflection';
 
-export interface ProjectionConfig {
+interface ProjectionConfig {
   /** `direct` = webcam selfie overlay; `reflection` = physical mirror rig. */
-  mode: ProjectionMode;
+  readonly mode: ProjectionMode;
   /** Horizontal flip for a selfie view (direct mode). */
-  mirror: boolean;
+  readonly mirror: boolean;
 }
 
 export interface SleepConfig {
   /** Master switch for presence-based display sleep. */
-  enabled: boolean;
+  readonly enabled: boolean;
   /** Smoothed presence confidence required to wake the display (0..1). */
-  wakeConfidence: number;
+  readonly wakeConfidence: number;
   /** Below this smoothed confidence the user counts as absent (0..1). */
-  sleepConfidence: number;
+  readonly sleepConfidence: number;
   /** Seconds of continuous absence before the display falls asleep. */
-  sleepDelaySec: number;
+  readonly sleepDelaySec: number;
   /** People estimated farther than this (meters) are ignored. */
-  maxDistanceM: number;
+  readonly maxDistanceM: number;
 }
 
 export interface SecondSelfConfig {
-  projection: ProjectionConfig;
-  sleep: SleepConfig;
+  readonly projection: ProjectionConfig;
+  readonly sleep: SleepConfig;
+}
+
+/** Fitted mirror calibration, produced by the wizard and applied in reflection mode. */
+export interface MirrorProfile {
+  /** Camera tilt in degrees. */
+  readonly tilt_deg: number;
+  /** Distance-estimate correction factor. */
+  readonly scale: number;
+  /** mm to mirror-pixel affine `[ax, bx, ay, by]`. */
+  readonly affine: readonly [number, number, number, number];
+  /** Mean residual of the fit in reference pixels (informational). */
+  readonly residual_px_mean?: number;
+  /** Epoch ms of the calibration run (informational). */
+  readonly updatedAt?: number;
+}
+
+type MirrorSettingsUpdate = DriverTypes.pose_to_mirror.MirrorSettingsUpdate;
+
+/** The parts of a manifest settings field this module reads. */
+interface ManifestField {
+  readonly key: string;
+  readonly default?: unknown;
+  readonly min?: number;
+  readonly max?: number;
+}
+
+const GROUPS: readonly { readonly fields: readonly ManifestField[] }[] = manifest.settings.groups;
+const FIELDS = new Map(GROUPS.flatMap((group) => group.fields).map((f) => [f.key, f]));
+
+function field(key: string): ManifestField {
+  const found = FIELDS.get(key);
+  if (!found) throw new Error(`gosai.app.json declares no setting ${key}`);
+  return found;
+}
+
+const MODES: readonly ProjectionMode[] = ['direct', 'reflection'];
+
+/** The manifest defaults. Frozen: build new objects instead of editing it. */
+export const DEFAULT_CONFIG: SecondSelfConfig = deepFreeze({
+  projection: {
+    mode: pickEnum(field('projection.mode').default, MODES, 'direct'),
+    mirror: pickBool(field('projection.mirror').default, true),
+  },
+  sleep: {
+    enabled: pickBool(field('sleep.enabled').default, true),
+    wakeConfidence: numberDefault('sleep.wakeConfidence'),
+    sleepConfidence: numberDefault('sleep.sleepConfidence'),
+    sleepDelaySec: numberDefault('sleep.sleepDelaySec'),
+    maxDistanceM: numberDefault('sleep.maxDistanceM'),
+  },
+});
+
+/** Reads the settings, validated and merged over {@link DEFAULT_CONFIG}. */
+export async function loadConfig(rt: ExperienceRuntimeContext): Promise<SecondSelfConfig> {
+  try {
+    return mergeConfig(DEFAULT_CONFIG, await rt.settings.get());
+  } catch (err) {
+    rt.log.warn('second-self: failed to read settings, using defaults', { err: String(err) });
+    return mergeConfig(DEFAULT_CONFIG, null);
+  }
 }
 
 /**
- * Fitted mirror calibration, produced by the calibration wizard and applied
- * to the `pose_to_mirror` driver on start (reflection mode only).
+ * Validates `override` field by field over `base`: unknown or invalid values
+ * fall back to `base`, numbers are clamped to the manifest bounds. Always
+ * returns a new object.
  */
-export interface MirrorProfile {
-  /** Camera tilt in degrees (fitted). */
-  tilt_deg: number;
-  /** Distance-estimate correction factor (fitted). */
-  scale: number;
-  /** mm -> mirror-pixel affine `[ax, bx, ay, by]` (fitted). */
-  affine: [number, number, number, number];
-  /** Mean residual of the fit in reference pixels (informational). */
-  residual_px_mean?: number;
-  /** Epoch ms of the calibration run (informational). */
-  updatedAt?: number;
+export function mergeConfig(base: SecondSelfConfig, override: unknown): SecondSelfConfig {
+  const projection = asObject(asObject(override).projection);
+  const sleep = asObject(asObject(override).sleep);
+  const number = (key: keyof SleepConfig & string, fallback: number): number => {
+    const { min = -Infinity, max = Infinity } = field(`sleep.${key}`);
+    const value = sleep[key];
+    return typeof value === 'number' && Number.isFinite(value)
+      ? Math.min(max, Math.max(min, value))
+      : fallback;
+  };
+  return {
+    projection: {
+      mode: pickEnum(projection.mode, MODES, base.projection.mode),
+      mirror: pickBool(projection.mirror, base.projection.mirror),
+    },
+    sleep: {
+      enabled: pickBool(sleep.enabled, base.sleep.enabled),
+      wakeConfidence: number('wakeConfidence', base.sleep.wakeConfidence),
+      sleepConfidence: number('sleepConfidence', base.sleep.sleepConfidence),
+      sleepDelaySec: number('sleepDelaySec', base.sleep.sleepDelaySec),
+      maxDistanceM: number('maxDistanceM', base.sleep.maxDistanceM),
+    },
+  };
 }
 
-export const DEFAULT_CONFIG: SecondSelfConfig = {
-  projection: {
-    mode: 'direct',
-    mirror: true,
-  },
-  sleep: {
-    enabled: true,
-    wakeConfidence: 0.6,
-    sleepConfidence: 0.35,
-    sleepDelaySec: 7,
-    maxDistanceM: 2,
-  },
-};
-
-/** Read + validate the stored config, merged over the defaults. */
-export async function loadConfig(rt: ExperienceRuntimeContext): Promise<SecondSelfConfig> {
-  let stored: unknown = null;
-  try {
-    stored = await rt.storage.get<unknown>(CONFIG_STORAGE_KEY, null);
-  } catch (err) {
-    rt.log.warn('second-self: failed to read config, using defaults', { err: String(err) });
-  }
-  return mergeConfig(DEFAULT_CONFIG, stored);
-}
-
-/** Read + validate the stored mirror calibration profile, if any. */
+/** Reads the stored mirror calibration profile, if there is a valid one. */
 export async function loadMirrorProfile(
   rt: ExperienceRuntimeContext,
 ): Promise<MirrorProfile | null> {
-  let stored: unknown = null;
   try {
-    stored = await rt.storage.get<unknown>(MIRROR_PROFILE_STORAGE_KEY, null);
+    return parseMirrorProfile(await rt.storage.get(MIRROR_PROFILE_STORAGE_KEY));
   } catch (err) {
     rt.log.warn('second-self: failed to read mirror profile', { err: String(err) });
     return null;
   }
-  return parseMirrorProfile(stored);
-}
-
-/** Persist the mirror calibration profile produced by the wizard. */
-export async function saveMirrorProfile(
-  rt: ExperienceRuntimeContext,
-  profile: MirrorProfile,
-): Promise<void> {
-  await rt.storage.set(MIRROR_PROFILE_STORAGE_KEY, profile);
-}
-
-/** Persist the projection config (used by the wizard to switch modes). */
-export async function saveConfig(
-  rt: ExperienceRuntimeContext,
-  cfg: SecondSelfConfig,
-): Promise<void> {
-  await rt.storage.set(CONFIG_STORAGE_KEY, cfg);
 }
 
 /**
- * Build the `set_mirror_config` action payload for the `pose_to_mirror` driver
- * from the projection config plus the fitted profile (when present).
+ * The `set_mirror_config` update for the projection settings plus the fitted
+ * profile. Without a profile the driver drops any fitted affine.
  */
 export function toMirrorDriverConfig(
   cfg: SecondSelfConfig,
   profile: MirrorProfile | null,
-): Record<string, unknown> {
+): MirrorSettingsUpdate {
   return {
     mode: cfg.projection.mode,
     mirror: cfg.projection.mirror,
     width: REF_WIDTH,
     height: REF_HEIGHT,
     ...(profile
-      ? {
-          tilt_deg: profile.tilt_deg,
-          scale: profile.scale,
-          affine: profile.affine,
-        }
-      : {}),
-  };
-}
-
-// ---------------------------------------------------------------------------
-
-function mergeConfig(base: SecondSelfConfig, override: unknown): SecondSelfConfig {
-  if (typeof override !== 'object' || override === null) return base;
-  const o = override as { projection?: Partial<ProjectionConfig>; sleep?: Partial<SleepConfig> };
-  return {
-    projection: {
-      mode: pickEnum(o.projection?.mode, ['direct', 'reflection'], base.projection.mode),
-      mirror: pickBool(o.projection?.mirror, base.projection.mirror),
-    },
-    sleep: {
-      enabled: pickBool(o.sleep?.enabled, base.sleep.enabled),
-      wakeConfidence: pickNumber(o.sleep?.wakeConfidence, base.sleep.wakeConfidence, 0, 1),
-      sleepConfidence: pickNumber(o.sleep?.sleepConfidence, base.sleep.sleepConfidence, 0, 1),
-      sleepDelaySec: pickNumber(o.sleep?.sleepDelaySec, base.sleep.sleepDelaySec, 0, 3600),
-      maxDistanceM: pickNumber(o.sleep?.maxDistanceM, base.sleep.maxDistanceM, 0.3, 20),
-    },
+      ? { tilt_deg: profile.tilt_deg, scale: profile.scale, affine: [...profile.affine] }
+      : { affine: null }),
   };
 }
 
 function parseMirrorProfile(value: unknown): MirrorProfile | null {
-  if (typeof value !== 'object' || value === null) return null;
-  const v = value as Record<string, unknown>;
-  const affine = v.affine;
+  if (!isObject(value)) return null;
+  const { affine, tilt_deg, scale, residual_px_mean, updatedAt } = value;
   if (
     !Array.isArray(affine) ||
     affine.length !== 4 ||
@@ -175,20 +175,30 @@ function parseMirrorProfile(value: unknown): MirrorProfile | null {
   ) {
     return null;
   }
-  if (typeof v.tilt_deg !== 'number' || typeof v.scale !== 'number') return null;
+  if (typeof tilt_deg !== 'number' || typeof scale !== 'number') return null;
   return {
-    tilt_deg: v.tilt_deg,
-    scale: v.scale,
-    affine: affine as [number, number, number, number],
-    ...(typeof v.residual_px_mean === 'number' ? { residual_px_mean: v.residual_px_mean } : {}),
-    ...(typeof v.updatedAt === 'number' ? { updatedAt: v.updatedAt } : {}),
+    tilt_deg,
+    scale,
+    affine: [affine[0], affine[1], affine[2], affine[3]],
+    ...(typeof residual_px_mean === 'number' ? { residual_px_mean } : {}),
+    ...(typeof updatedAt === 'number' ? { updatedAt } : {}),
   };
 }
 
-function pickNumber(value: unknown, fallback: number, lo: number, hi: number): number {
-  return typeof value === 'number' && Number.isFinite(value)
-    ? Math.min(hi, Math.max(lo, value))
-    : fallback;
+// ---------------------------------------------------------------------------
+
+function numberDefault(key: string): number {
+  const value = field(key).default;
+  if (typeof value !== 'number') throw new Error(`setting ${key} has no number default`);
+  return value;
+}
+
+function isObject(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function asObject(value: unknown): Readonly<Record<string, unknown>> {
+  return isObject(value) ? value : {};
 }
 
 function pickBool(value: unknown, fallback: boolean): boolean {
@@ -196,7 +206,12 @@ function pickBool(value: unknown, fallback: boolean): boolean {
 }
 
 function pickEnum<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
-  return typeof value === 'string' && (allowed as readonly string[]).includes(value)
-    ? (value as T)
-    : fallback;
+  return allowed.find((option) => option === value) ?? fallback;
+}
+
+function deepFreeze<T extends object>(value: T): T {
+  for (const child of Object.values(value)) {
+    if (typeof child === 'object' && child !== null) deepFreeze(child);
+  }
+  return Object.freeze(value);
 }

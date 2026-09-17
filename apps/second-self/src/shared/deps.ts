@@ -1,25 +1,35 @@
 /**
- * Dependencies injected into every layer factory.
- *
- * Layers are created with this bundle so they can read the shared real-time
- * {@link MirrorFeed}, synthesize audio, launch/stop sibling layers and read
- * their options via the {@link MenuController}, resolve bundled assets, and
- * reach the runtime (logging, WebSocket round-trips, driver actions).
+ * What every layer factory receives: the shared real-time feed, the synth,
+ * the layer manager and menu options, the mirror projection and the runtime
+ * context (logging, assets, drivers).
  */
 
-import type { ExperienceRuntimeContext } from '@gosai/sdk';
-import type { SecondSelfConfig } from './config.js';
+import type { ExperienceRuntimeContext, FullscreenCanvas } from '@gosai/sdk';
 import type { MirrorFeed } from './feed.js';
-import type { MenuController } from './menu-controller.js';
+import type { Layers, MenuOptions } from './layers.js';
+import type { Projection } from './projection.js';
 import type { Synth } from './synth.js';
 
 export interface LayerDeps {
-  feed: MirrorFeed;
-  synth: Synth;
-  controller: MenuController;
-  rt: ExperienceRuntimeContext;
-  /** Loaded projection config (read-only for layers). */
-  config: SecondSelfConfig;
-  /** Resolve an asset path (relative to the app's `assets/` dir) to a URL. */
-  assetUrl(path: string): string;
+  readonly rt: ExperienceRuntimeContext;
+  /** The compositor's canvas. Layers with their own canvas stack it in `surface.container`. */
+  readonly surface: FullscreenCanvas;
+  readonly feed: MirrorFeed;
+  readonly synth: Synth;
+  readonly layers: Layers;
+  readonly options: MenuOptions;
+  readonly projection: Projection;
+  /**
+   * Turns the face mesh on or off in the raw `pose` stream or the mirrored
+   * stream. Layers that draw or solve it enable it while they run, so the
+   * drivers don't send 478 unused points per frame.
+   */
+  setFaceMesh(stream: 'raw' | 'mirrored', enabled: boolean): void;
+  /** URL of a file under the app's `assets/` directory. */
+  asset(path: string): string;
+  /**
+   * Starts the overlay layers again unless an exclusive layer is running or
+   * the experience is stopping.
+   */
+  restoreOverlays(): void;
 }

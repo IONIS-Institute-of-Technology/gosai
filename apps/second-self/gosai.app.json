@@ -44,6 +44,59 @@
             "default": true
           }
         ]
+      },
+      {
+        "label": "Sleep",
+        "description": "Presence-based display sleep: the mirror fades to black when nobody stands in front of it and wakes when someone does.",
+        "fields": [
+          {
+            "key": "sleep.enabled",
+            "label": "Enabled",
+            "type": "boolean",
+            "description": "Fade the display to black while nobody is in front of the mirror.",
+            "default": true
+          },
+          {
+            "key": "sleep.wakeConfidence",
+            "label": "Wake confidence",
+            "type": "number",
+            "description": "Smoothed presence confidence needed to wake the display (0 to 1).",
+            "default": 0.6,
+            "min": 0,
+            "max": 1,
+            "step": 0.05
+          },
+          {
+            "key": "sleep.sleepConfidence",
+            "label": "Sleep confidence",
+            "type": "number",
+            "description": "Below this smoothed confidence the user counts as absent (0 to 1).",
+            "default": 0.35,
+            "min": 0,
+            "max": 1,
+            "step": 0.05
+          },
+          {
+            "key": "sleep.sleepDelaySec",
+            "label": "Sleep delay (s)",
+            "type": "number",
+            "description": "Seconds of continuous absence before the display falls asleep.",
+            "default": 7,
+            "min": 0,
+            "max": 3600,
+            "step": 1
+          },
+          {
+            "key": "sleep.maxDistanceM",
+            "label": "Max distance (m)",
+            "type": "number",
+            "description": "People estimated farther than this (meters) are ignored.",
+            "default": 2,
+            "min": 0.3,
+            "max": 20,
+            "step": 0.1
+          }
+        ]
       }
     ]
   }
