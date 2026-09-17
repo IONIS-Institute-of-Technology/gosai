@@ -42,9 +42,7 @@ Actions:
 from __future__ import annotations
 
 import base64
-import contextlib
 import time
-from collections.abc import Callable
 from typing import Any, ClassVar
 
 from gosai_py.driver import BaseDriver, DriverContext
@@ -55,6 +53,7 @@ class CalibrationDriver(BaseDriver):
     name: ClassVar[str] = "calibration"
     description: ClassVar[str] = "Camera-projector calibration via ArUco markers."
     events: ClassVar[tuple[str, ...]] = ("detection", "homography", "status")
+    stream_events: ClassVar[tuple[str, ...]] = ("detection",)
     actions: ClassVar[tuple[str, ...]] = (
         "set_marker_layout",
         "set_camera_event",
@@ -66,6 +65,7 @@ class CalibrationDriver(BaseDriver):
         "reproject_points",
     )
     dependencies: ClassVar[tuple[str, ...]] = ("camera",)
+    subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("camera", "frame"),)
     loop_interval_s: ClassVar[float | None] = None  # callback driven
 
     def __init__(self, context: DriverContext) -> None:
@@ -76,7 +76,6 @@ class CalibrationDriver(BaseDriver):
         # 4 corners per detected marker, in TL,TR,BR,BL order matching the
         # marker's own coordinate system (same convention as cv2.aruco).
         self._last_detections: dict[int, list[tuple[float, float]]] = {}
-        self._sub_callback: Callable[[Any], None] | None = None
         self._latest_frame_b64: str | None = None
         self._latest_frame: Any = None
         self._latest_frame_meta: dict[str, Any] | None = None
@@ -85,33 +84,11 @@ class CalibrationDriver(BaseDriver):
         self._homography: Any = None  # ndarray (3, 3) camera->display
         self._homography_surface: Any = None  # ndarray (3, 3) camera->surface
 
-    def pre_run(self) -> None:
-        self._subscribe()
-
-    def cleanup(self) -> None:
-        self._unsubscribe()
-
-    # ------------------------------------------------------------------
-    # Subscription management
-    # ------------------------------------------------------------------
-
-    def _subscribe(self) -> None:
-        cb = self._on_frame
-        self._sub_callback = cb
-        self._context.subscribe(self._camera_driver, self._camera_event, cb)
-
-    def _unsubscribe(self) -> None:
-        if self._sub_callback is None:
-            return
-        with contextlib.suppress(Exception):
-            self._context.unsubscribe(self._camera_driver, self._camera_event, self._sub_callback)
-        self._sub_callback = None
-
     # ------------------------------------------------------------------
     # Frame handling
     # ------------------------------------------------------------------
 
-    def _on_frame(self, data: Any) -> None:
+    def on_data(self, driver: str, event: str, data: Any) -> None:
         if not isinstance(data, dict):
             return
         frame = data.get("_frame")
@@ -196,11 +173,11 @@ class CalibrationDriver(BaseDriver):
             return {"count": len(self._marker_layout)}
 
         if action == "set_camera_event":
-            self._unsubscribe()
+            self.unsubscribe(self._camera_driver, self._camera_event)
             if isinstance(data, dict):
                 self._camera_driver = str(data.get("driver", self._camera_driver))
                 self._camera_event = str(data.get("event", self._camera_event))
-            self._subscribe()
+            self.subscribe(self._camera_driver, self._camera_event)
             return {"driver": self._camera_driver, "event": self._camera_event}
 
         if action == "compute":
@@ -229,7 +206,7 @@ class CalibrationDriver(BaseDriver):
 
     def _get_latest_frame(self) -> dict[str, Any]:
         if self._latest_frame_b64 is None and self._latest_frame is None:
-            return {"ok": False, "error": "no camera frame received yet"}
+            raise RuntimeError("no camera frame received yet")
         if self._latest_frame_b64 is None:
             self._latest_frame_b64 = frame_to_jpeg_base64(self._latest_frame, quality=75)
         payload: dict[str, Any] = {
@@ -255,14 +232,14 @@ class CalibrationDriver(BaseDriver):
         try:
             import cv2  # type: ignore[import-not-found]
         except ImportError as exc:
-            return {"ok": False, "error": f"opencv required: {exc}"}
+            raise RuntimeError(f"opencv required: {exc}") from exc
 
         aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
         img = cv2.aruco.generateImageMarker(aruco_dict, marker_id, size)
 
         ok, buf = cv2.imencode(".png", img)
         if not ok:
-            return {"ok": False, "error": "imencode failed"}
+            raise RuntimeError("imencode failed")
         png_b64 = base64.b64encode(buf.tobytes()).decode("ascii")
         return {"ok": True, "id": marker_id, "size": size, "png_base64": png_b64}
 
@@ -271,10 +248,10 @@ class CalibrationDriver(BaseDriver):
             import cv2  # type: ignore[import-not-found]
             import numpy as np  # type: ignore[import-not-found]
         except ImportError as exc:
-            return {"ok": False, "error": f"opencv/numpy required: {exc}"}
+            raise RuntimeError(f"opencv/numpy required: {exc}") from exc
 
         if len(self._marker_layout) < 4:
-            return {"ok": False, "error": "need at least 4 markers in layout"}
+            raise ValueError("need at least 4 markers in layout")
 
         # ------------------------------------------------------------------
         # Parse optional params: focus_quad (4 normalised camera points),
@@ -331,10 +308,7 @@ class CalibrationDriver(BaseDriver):
             detected_markers += 1
 
         if detected_markers < 4:
-            return {
-                "ok": False,
-                "error": f"only {detected_markers} markers detected, need 4",
-            }
+            raise RuntimeError(f"only {detected_markers} markers detected, need 4")
 
         display_arr = np.array(display_pts, dtype=np.float64)
         camera_arr = np.array(camera_pts, dtype=np.float64)
@@ -348,7 +322,7 @@ class CalibrationDriver(BaseDriver):
             ransacReprojThreshold=5.0,
         )
         if h_matrix is None:
-            return {"ok": False, "error": "findHomography returned None"}
+            raise RuntimeError("findHomography returned None")
 
         inlier_count = int(mask.sum()) if mask is not None else len(display_pts)
 
@@ -454,21 +428,21 @@ class CalibrationDriver(BaseDriver):
 
     def _reproject_point(self, data: Any) -> dict[str, Any]:
         if not isinstance(data, dict):
-            return {"ok": False, "error": "expected { x, y, space? }"}
+            raise ValueError("expected { x, y, space? }")
         try:
             x = float(data["x"])
             y = float(data["y"])
-        except (KeyError, TypeError, ValueError):
-            return {"ok": False, "error": "expected numeric x, y"}
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("expected numeric x, y") from exc
         space = str(data.get("space", "display"))
         h = self._homography_surface if space == "surface" else self._homography
         if h is None:
-            return {"ok": False, "error": f"homography for '{space}' not computed yet"}
+            raise RuntimeError(f"homography for '{space}' not computed yet")
         try:
             import cv2  # type: ignore[import-not-found]
             import numpy as np  # type: ignore[import-not-found]
         except ImportError as exc:
-            return {"ok": False, "error": f"opencv/numpy required: {exc}"}
+            raise RuntimeError(f"opencv/numpy required: {exc}") from exc
         warped = cv2.perspectiveTransform(
             np.array([[[x, y]]], dtype=np.float64), h,
         ).reshape(-1, 2)
@@ -476,23 +450,23 @@ class CalibrationDriver(BaseDriver):
 
     def _reproject_points(self, data: Any) -> dict[str, Any]:
         if not isinstance(data, dict):
-            return {"ok": False, "error": "expected { points: [...], space? }"}
+            raise ValueError("expected { points: [...], space? }")
         raw_points = data.get("points")
         if not isinstance(raw_points, list) or not raw_points:
-            return {"ok": False, "error": "expected non-empty points list"}
+            raise ValueError("expected non-empty points list")
         try:
             pts = [(float(_get_xy(p, 0)), float(_get_xy(p, 1))) for p in raw_points]
-        except (KeyError, TypeError, ValueError):
-            return {"ok": False, "error": "points must be [{x,y}] or [[x,y]]"}
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("points must be [{x,y}] or [[x,y]]") from exc
         space = str(data.get("space", "display"))
         h = self._homography_surface if space == "surface" else self._homography
         if h is None:
-            return {"ok": False, "error": f"homography for '{space}' not computed yet"}
+            raise RuntimeError(f"homography for '{space}' not computed yet")
         try:
             import cv2  # type: ignore[import-not-found]
             import numpy as np  # type: ignore[import-not-found]
         except ImportError as exc:
-            return {"ok": False, "error": f"opencv/numpy required: {exc}"}
+            raise RuntimeError(f"opencv/numpy required: {exc}") from exc
         arr = np.array([[p] for p in pts], dtype=np.float64)
         warped = cv2.perspectiveTransform(arr, h).reshape(-1, 2)
         return {

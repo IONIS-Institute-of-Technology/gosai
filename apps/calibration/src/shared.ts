@@ -57,11 +57,9 @@ export interface MarkerSlot {
 }
 
 export interface MarkerImage {
-  ok: boolean;
   id: number;
   size: number;
   png_base64?: string;
-  error?: string;
 }
 
 export const STORAGE_KEYS = CAMERA_PROJECTOR_SURFACE_STORAGE_KEYS;

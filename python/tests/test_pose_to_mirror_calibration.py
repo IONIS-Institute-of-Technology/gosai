@@ -155,9 +155,8 @@ def _capture_all(
 
 
 def test_capture_requires_recent_frames(driver: PoseToMirrorDriver) -> None:
-    result = driver.execute("capture_calibration_sample", {"target": [100, 100]})
-    assert not result["ok"]
-    assert "recent pose frames" in result["error"]
+    with pytest.raises(RuntimeError, match="recent pose frames"):
+        driver.execute("capture_calibration_sample", {"target": [100, 100]})
 
 
 @pytest.mark.parametrize("affine", [TRUE_AFFINE, TRUE_AFFINE_FLIPPED])
@@ -197,8 +196,8 @@ def test_solver_respects_apply_false(driver: PoseToMirrorDriver) -> None:
 def test_clear_samples(driver: PoseToMirrorDriver) -> None:
     _capture_all(driver)
     assert driver.execute("clear_calibration_samples", None) == {"ok": True, "samples": 0}
-    result = driver.execute("solve_calibration", {})
-    assert not result["ok"]
+    with pytest.raises(RuntimeError, match="need at least"):
+        driver.execute("solve_calibration", {})
 
 
 # ---------------------------------------------------------------------------

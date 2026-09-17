@@ -97,10 +97,17 @@ export type DeviceListResult = DeviceCatalog;
 
 /**
  * Python <-> Server bridge protocol (stdio newline-delimited JSON).
+ *
+ * Every `ts` is milliseconds since the Unix epoch. Bump
+ * {@link BRIDGE_PROTOCOL_VERSION} together with `PROTOCOL_VERSION` in
+ * `python/src/gosai_py/bridge.py` whenever these shapes change.
  */
+export const BRIDGE_PROTOCOL_VERSION = 2;
+
 export type BridgeRequest =
   | { type: 'ping'; id: string }
   | { type: 'list-drivers'; id: string }
+  | { type: 'list-instances'; id: string }
   | { type: 'list-cameras'; id: string }
   | { type: 'list-audio-devices'; id: string }
   | {
@@ -129,7 +136,7 @@ export type BridgeResponse =
   | { type: 'result'; id: string; ok: true; data?: unknown }
   | { type: 'result'; id: string; ok: false; error: string }
   | { type: 'event'; instance: string; driver: string; event: string; data: unknown; ts: number }
-  | { type: 'log'; level: string; source: string; message: string; ts: number }
+  | { type: 'log'; level: string; source: string; instance?: string; message: string; ts: number }
   | {
       type: 'driver-state';
       instance: string;
@@ -137,8 +144,28 @@ export type BridgeResponse =
       state: string;
       runtime?: DriverRuntimeInfo;
     }
-  | { type: 'performance'; source: string; metric: string; value: number; ts: number }
-  | { type: 'ready'; version: string };
+  | {
+      /** Summary of one metric over the last second: `value` is the mean. */
+      type: 'performance';
+      instance: string;
+      source: string;
+      metric: string;
+      value: number;
+      max: number;
+      count: number;
+      ts: number;
+    }
+  | { type: 'ready'; version: string; protocol: number };
+
+/** Reply to `list-instances`: what the bridge is actually running. */
+export interface BridgeInstanceList {
+  readonly instances: readonly {
+    readonly instance: string;
+    readonly driver: string;
+    readonly state: string;
+    readonly subscriptions: readonly string[];
+  }[];
+}
 
 export interface BridgeManifest {
   readonly drivers: readonly {

@@ -1,18 +1,23 @@
 /**
- * Node-side handle for the long-running Python bridge process. Spawns
- * `python/.venv/bin/gosai-bridge` (or the `gosai-bridge` console script), reads
- * newline-delimited JSON from its stdout, and forwards JSON requests to its
- * stdin.
+ * Node-side handle for one Python bridge process. Spawns
+ * `python/.venv/bin/gosai-bridge`, reads newline-delimited JSON from its
+ * stdout, and forwards JSON requests to its stdin.
  *
- * One PythonBridge instance hosts all drivers; the bridge process itself runs
- * the drivers as threads. The Node side multiplexes requests with `id`s.
+ * One process hosts every driver instance as threads. Requests are multiplexed
+ * with `id`s. Restarting a dead process is the supervisor's job
+ * (`supervisor.ts`); this class only manages a single process lifetime.
  */
 
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Subprocess } from 'bun';
 import type { DriverRuntimeInfo } from '@gosai/shared';
-import type { BridgeRequest, BridgeResponse } from '@gosai/shared/protocol';
+import {
+  BRIDGE_PROTOCOL_VERSION,
+  type BridgeRequest,
+  type BridgeResponse,
+} from '@gosai/shared/protocol';
+import type { ChildLogger } from '../logger/index.js';
 
 /** Discriminated-union-friendly Omit<BridgeRequest, 'id'>. */
 export type BridgeRequestSansId = BridgeRequest extends infer T
@@ -20,13 +25,17 @@ export type BridgeRequestSansId = BridgeRequest extends infer T
     ? Omit<T, 'id'>
     : never
   : never;
-import type { ChildLogger } from '../logger/index.js';
 
-export interface BridgeOptions {
-  readonly pythonDir: string;
-  readonly venvName?: string;
-  readonly env?: Record<string, string>;
-  readonly logger: ChildLogger;
+export interface BridgePerformanceSample {
+  readonly instance: string;
+  readonly source: string;
+  readonly metric: string;
+  readonly value: number;
+  readonly ts: number;
+}
+
+/** Callbacks a bridge uses to report what the Python side does. */
+export interface BridgeHandlers {
   readonly onEvent: (
     instance: string,
     driver: string,
@@ -34,15 +43,40 @@ export interface BridgeOptions {
     data: unknown,
     ts: number,
   ) => void;
-  readonly onLog: (level: string, source: string, message: string) => void;
+  readonly onLog: (level: string, source: string, message: string, instance?: string) => void;
   readonly onDriverState: (
     instance: string,
     driver: string,
     state: string,
     runtime?: DriverRuntimeInfo,
   ) => void;
-  readonly onPerformance: (source: string, metric: string, value: number, ts: number) => void;
-  readonly onExit?: (code: number | null, signal: number | null) => void;
+  readonly onPerformance: (sample: BridgePerformanceSample) => void;
+  /** The process exited, whether or not `stop()` asked it to. */
+  readonly onExit: (code: number | null, signal: number | string | null) => void;
+}
+
+export interface RequestOptions {
+  readonly timeoutMs?: number;
+}
+
+/** What `DriverManager` needs from a bridge. Tests provide their own. */
+export interface DriverBridge {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  isRunning(): boolean;
+  ping(timeoutMs: number): Promise<number>;
+  request<T = unknown>(req: BridgeRequestSansId, options?: RequestOptions): Promise<T>;
+}
+
+export type DriverBridgeFactory = (handlers: BridgeHandlers) => DriverBridge;
+
+export interface PythonBridgeOptions {
+  readonly pythonDir: string;
+  readonly logger: ChildLogger;
+  readonly handlers: BridgeHandlers;
+  readonly readyTimeoutMs?: number;
+  /** How long to wait for a clean exit after `shutdown` before SIGKILL. */
+  readonly exitTimeoutMs?: number;
 }
 
 interface PendingRequest {
@@ -51,58 +85,61 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout>;
 }
 
-const REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_READY_TIMEOUT_MS = 15_000;
+const DEFAULT_EXIT_TIMEOUT_MS = 10_000;
+const SHUTDOWN_REPLY_TIMEOUT_MS = 2_000;
 
-export class PythonBridge {
+/**
+ * Splits a stream of text chunks into lines. Each chunk is scanned once, so
+ * parsing stays linear however large a pending line grows.
+ */
+export class LineSplitter {
+  private parts: string[] = [];
+
+  push(chunk: string, onLine: (line: string) => void): void {
+    let start = 0;
+    let newline = chunk.indexOf('\n');
+    while (newline !== -1) {
+      this.parts.push(chunk.slice(start, newline));
+      const line = this.parts.join('');
+      this.parts = [];
+      onLine(line);
+      start = newline + 1;
+      newline = chunk.indexOf('\n', start);
+    }
+    if (start < chunk.length) this.parts.push(chunk.slice(start));
+  }
+}
+
+export class PythonBridge implements DriverBridge {
   private process: Subprocess<'pipe', 'pipe', 'pipe'> | null = null;
-  private buffer = '';
   private readonly pending = new Map<string, PendingRequest>();
-  private readyPromise: Promise<void> | null = null;
-  private resolveReady: (() => void) | null = null;
-  private rejectReady: ((err: Error) => void) | null = null;
-  private starting = false;
+  private ready: { resolve: () => void; reject: (err: Error) => void } | null = null;
   private stopping = false;
 
-  constructor(private readonly options: BridgeOptions) {}
+  constructor(private readonly options: PythonBridgeOptions) {}
 
   isRunning(): boolean {
-    return this.process !== null && !this.stopping;
+    return this.process !== null && !this.stopping && this.ready === null;
   }
 
   async start(): Promise<void> {
-    if (this.isRunning()) return;
-    if (this.starting) {
-      if (this.readyPromise) await this.readyPromise;
-      return;
-    }
-
-    this.starting = true;
-    this.stopping = false;
-    this.buffer = '';
-
-    this.readyPromise = new Promise<void>((resolve, reject) => {
-      this.resolveReady = resolve;
-      this.rejectReady = reject;
-    });
-
-    const { pythonDir, venvName = '.venv' } = this.options;
-    const venvBin = join(pythonDir, venvName, 'bin');
-    const bridgeBin = join(venvBin, 'gosai-bridge');
-
+    if (this.process) throw new Error('Python bridge is already running');
+    const bridgeBin = join(this.options.pythonDir, '.venv', 'bin', 'gosai-bridge');
     if (!existsSync(bridgeBin)) {
-      const err = new Error(
+      throw new Error(
         `gosai-bridge not found at ${bridgeBin}. Run \`uv sync\` inside the python/ directory.`,
       );
-      this.starting = false;
-      this.readyPromise = null;
-      this.resolveReady = null;
-      this.rejectReady = null;
-      throw err;
     }
 
-    const env: Record<string, string> = {
-      ...(process.env as Record<string, string>),
-      ...this.options.env,
+    this.stopping = false;
+    const readyPromise = new Promise<void>((resolve, reject) => {
+      this.ready = { resolve, reject };
+    });
+
+    const env: Record<string, string | undefined> = {
+      ...process.env,
       PYTHONUNBUFFERED: '1',
       // MediaPipe / TensorFlow write verbose native logs to stderr.
       GLOG_minloglevel: '2',
@@ -111,70 +148,82 @@ export class PythonBridge {
     // Python drivers must not see the server's secret.
     delete env.GOSAI_DASHBOARD_TOKEN;
 
-    this.process = Bun.spawn({
+    const proc = Bun.spawn({
       cmd: [bridgeBin],
-      cwd: pythonDir,
+      cwd: this.options.pythonDir,
       env,
       stdin: 'pipe',
       stdout: 'pipe',
       stderr: 'pipe',
       onExit: (_proc, exitCode, signalCode, error) => {
-        this.handleExit(exitCode, signalCode, error);
+        this.handleExit(proc, exitCode, signalCode, error);
       },
     });
+    this.process = proc;
+    void this.consumeStdout(proc);
+    void this.consumeStderr(proc);
 
-    void this.consumeStdout();
-    void this.consumeStderr();
-
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        this.readyPromise,
-        new Promise<void>((_, reject) =>
-          setTimeout(() => reject(new Error('Python bridge did not signal ready in time')), 15_000),
-        ),
+        readyPromise,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('Python bridge did not signal ready in time')),
+            this.options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
+          );
+        }),
       ]);
     } catch (err) {
-      this.starting = false;
-      try {
-        await this.stop();
-      } catch {
-        // best-effort
-      }
+      this.ready = null;
+      await this.stop();
       throw err;
+    } finally {
+      clearTimeout(timer);
     }
-
-    this.starting = false;
   }
 
-  async stop(timeoutMs = 5_000): Promise<void> {
-    if (!this.process) return;
-    this.stopping = true;
-    try {
-      await this.requestRaw({ type: 'shutdown', id: cryptoId() } as BridgeRequest, 1_000).catch(
-        () => undefined,
-      );
-    } catch {
-      // ignore
-    }
+  /** Ask the bridge to shut down, close stdin, wait for exit, then SIGKILL. */
+  async stop(): Promise<void> {
     const proc = this.process;
     if (!proc) return;
+    this.stopping = true;
     try {
-      proc.kill();
-    } catch {
-      // already dead
+      await this.requestRaw(
+        { type: 'shutdown', id: crypto.randomUUID() },
+        SHUTDOWN_REPLY_TIMEOUT_MS,
+      );
+    } catch (err) {
+      this.options.logger.debug('bridge did not acknowledge shutdown', { err: String(err) });
     }
-    await Promise.race([
-      proc.exited,
-      new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+    try {
+      await proc.stdin.end();
+    } catch (err) {
+      this.options.logger.debug('closing bridge stdin failed', { err: String(err) });
+    }
+    const exitTimeoutMs = this.options.exitTimeoutMs ?? DEFAULT_EXIT_TIMEOUT_MS;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const exited = await Promise.race([
+      proc.exited.then(() => true),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), exitTimeoutMs);
+      }),
     ]);
-    this.process = null;
-    this.failAllPending(new Error('Python bridge stopped'));
+    clearTimeout(timer);
+    if (!exited) {
+      this.options.logger.warn('python bridge did not exit in time; killing it', {
+        timeoutMs: exitTimeoutMs,
+      });
+      proc.kill('SIGKILL');
+      await proc.exited;
+    }
+    // Report the exit now rather than whenever Bun's onExit callback runs.
+    this.handleExit(proc, proc.exitCode, proc.signalCode, undefined);
   }
 
-  async ping(): Promise<number> {
-    const id = cryptoId();
+  async ping(timeoutMs: number): Promise<number> {
     const start = performance.now();
-    await this.requestRaw({ type: 'ping', id }, 5_000);
+    await this.requestRaw({ type: 'ping', id: crypto.randomUUID() }, timeoutMs);
     return performance.now() - start;
   }
 
@@ -182,14 +231,18 @@ export class PythonBridge {
    * Send a request to the bridge. The caller supplies everything except `id`.
    * Distributes Omit over the BridgeRequest union to keep discriminated types.
    */
-  request<T = unknown>(req: BridgeRequestSansId): Promise<T> {
-    const id = cryptoId();
-    return this.requestRaw({ ...req, id } as BridgeRequest) as Promise<T>;
+  request<T = unknown>(req: BridgeRequestSansId, options: RequestOptions = {}): Promise<T> {
+    if (!this.isRunning()) return Promise.reject(new Error('Python bridge is not running'));
+    return this.requestRaw(
+      { ...req, id: crypto.randomUUID() } as BridgeRequest,
+      options.timeoutMs,
+    ) as Promise<T>;
   }
 
-  private requestRaw(req: BridgeRequest, timeoutMs = REQUEST_TIMEOUT_MS): Promise<unknown> {
+  private requestRaw(req: BridgeRequest, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS): Promise<unknown> {
     return new Promise<unknown>((resolve, reject) => {
-      if (!this.process) {
+      const proc = this.process;
+      if (!proc) {
         reject(new Error('Python bridge is not running'));
         return;
       }
@@ -199,7 +252,8 @@ export class PythonBridge {
       }, timeoutMs);
       this.pending.set(req.id, { resolve, reject, timer });
       try {
-        this.writeLine(JSON.stringify(req));
+        proc.stdin.write(`${JSON.stringify(req)}\n`);
+        void proc.stdin.flush();
       } catch (err) {
         clearTimeout(timer);
         this.pending.delete(req.id);
@@ -208,68 +262,40 @@ export class PythonBridge {
     });
   }
 
-  private writeLine(line: string): void {
-    const stdin = this.process?.stdin;
-    if (!stdin) throw new Error('Python bridge stdin not open');
-    stdin.write(`${line}\n`);
-  }
-
-  private async consumeStdout(): Promise<void> {
-    const stream = this.process?.stdout;
-    if (!stream) return;
-    const reader = stream.getReader();
+  private async consumeStdout(proc: Subprocess<'pipe', 'pipe', 'pipe'>): Promise<void> {
     const decoder = new TextDecoder('utf8');
+    const lines = new LineSplitter();
+    const onLine = (line: string): void => this.handleLine(line);
     try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        this.buffer += decoder.decode(value, { stream: true });
-        this.flushBuffer();
+      for await (const chunk of proc.stdout) {
+        lines.push(decoder.decode(chunk, { stream: true }), onLine);
       }
+      lines.push(`${decoder.decode()}\n`, onLine);
     } catch (err) {
       this.options.logger.error('stdout read failed', { err: String(err) });
     }
   }
 
-  private async consumeStderr(): Promise<void> {
-    const stream = this.process?.stderr;
-    if (!stream) return;
-    const reader = stream.getReader();
+  private async consumeStderr(proc: Subprocess<'pipe', 'pipe', 'pipe'>): Promise<void> {
     const decoder = new TextDecoder('utf8');
-    let leftover = '';
+    const lines = new LineSplitter();
+    const onLine = (line: string): void => {
+      const trimmed = line.trim();
+      if (trimmed.length > 0) this.logStderrLine(trimmed);
+    };
     try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const text = leftover + decoder.decode(value, { stream: true });
-        const lines = text.split('\n');
-        leftover = lines.pop() ?? '';
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (trimmed.length === 0) continue;
-          this.logStderrLine(trimmed);
-        }
+      for await (const chunk of proc.stderr) {
+        lines.push(decoder.decode(chunk, { stream: true }), onLine);
       }
-      const tail = leftover.trim();
-      if (tail.length > 0) {
-        this.logStderrLine(tail);
-      }
+      lines.push(`${decoder.decode()}\n`, onLine);
     } catch (err) {
       this.options.logger.error('stderr read failed', { err: String(err) });
     }
   }
 
-  private flushBuffer(): void {
-    let idx: number;
-    while ((idx = this.buffer.indexOf('\n')) !== -1) {
-      const line = this.buffer.slice(0, idx).trim();
-      this.buffer = this.buffer.slice(idx + 1);
-      if (!line) continue;
-      this.handleLine(line);
-    }
-  }
-
-  private handleLine(line: string): void {
+  private handleLine(raw: string): void {
+    const line = raw.trim();
+    if (!line) return;
     let msg: BridgeResponse;
     try {
       msg = JSON.parse(line) as BridgeResponse;
@@ -278,65 +304,85 @@ export class PythonBridge {
       return;
     }
 
+    const { handlers } = this.options;
     switch (msg.type) {
       case 'ready':
-        if (this.resolveReady) {
-          this.resolveReady();
-          this.resolveReady = null;
-          this.rejectReady = null;
-        }
-        this.options.logger.info(`bridge ready (python v${msg.version})`);
+        this.handleReady(msg.version, msg.protocol);
         return;
-      case 'pong': {
-        const pending = this.pending.get(msg.id);
-        if (pending) {
-          clearTimeout(pending.timer);
-          this.pending.delete(msg.id);
-          pending.resolve(msg.ts);
-        }
+      case 'pong':
+        this.settle(msg.id, (pending) => pending.resolve(msg.ts));
         return;
-      }
-      case 'result': {
-        const pending = this.pending.get(msg.id);
-        if (!pending) return;
-        clearTimeout(pending.timer);
-        this.pending.delete(msg.id);
-        if (msg.ok) pending.resolve(msg.data);
-        else pending.reject(new Error(msg.error));
+      case 'result':
+        this.settle(msg.id, (pending) => {
+          if (msg.ok) pending.resolve(msg.data);
+          else pending.reject(new Error(msg.error));
+        });
         return;
-      }
       case 'event':
-        this.options.onEvent(msg.instance, msg.driver, msg.event, msg.data, msg.ts);
+        handlers.onEvent(msg.instance, msg.driver, msg.event, msg.data, msg.ts);
         return;
       case 'log':
-        this.options.onLog(msg.level, msg.source, msg.message);
+        handlers.onLog(msg.level, msg.source, msg.message, msg.instance);
         return;
       case 'driver-state':
-        this.options.onDriverState(msg.instance, msg.driver, msg.state, msg.runtime);
+        handlers.onDriverState(msg.instance, msg.driver, msg.state, msg.runtime);
         return;
       case 'performance':
-        this.options.onPerformance(msg.source, msg.metric, msg.value, msg.ts);
+        handlers.onPerformance({
+          instance: msg.instance,
+          source: msg.source,
+          metric: msg.metric,
+          value: msg.value,
+          ts: msg.ts,
+        });
         return;
       default:
         this.options.logger.warn(`unknown bridge message: ${line}`);
     }
   }
 
+  private handleReady(version: string, protocol: number | undefined): void {
+    const ready = this.ready;
+    if (!ready) return;
+    this.ready = null;
+    if (protocol !== BRIDGE_PROTOCOL_VERSION) {
+      ready.reject(
+        new Error(
+          `Python bridge speaks protocol ${String(protocol)}, expected ${BRIDGE_PROTOCOL_VERSION}. ` +
+            'Run `uv sync` inside the python/ directory.',
+        ),
+      );
+      return;
+    }
+    this.options.logger.info(`bridge ready (python v${version}, protocol ${protocol})`);
+    ready.resolve();
+  }
+
+  private settle(id: string, apply: (pending: PendingRequest) => void): void {
+    const pending = this.pending.get(id);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pending.delete(id);
+    apply(pending);
+  }
+
   private handleExit(
+    proc: Subprocess<'pipe', 'pipe', 'pipe'>,
     exitCode: number | null,
-    signalCode: number | null,
+    signalCode: number | string | null,
     error: Error | undefined,
   ): void {
-    if (this.rejectReady) {
-      this.rejectReady(
-        error ?? new Error(`Bridge exited (code=${exitCode}, signal=${signalCode})`),
-      );
-      this.resolveReady = null;
-      this.rejectReady = null;
-    }
-    this.failAllPending(error ?? new Error('Bridge process exited'));
+    if (this.process !== proc) return;
+    const reason = error ?? new Error(`Bridge exited (code=${exitCode}, signal=${signalCode})`);
+    this.ready?.reject(reason);
+    this.ready = null;
     this.process = null;
-    this.options.onExit?.(exitCode, signalCode);
+    for (const [id, pending] of this.pending) {
+      clearTimeout(pending.timer);
+      pending.reject(reason);
+      this.pending.delete(id);
+    }
+    this.options.handlers.onExit(exitCode, signalCode);
   }
 
   private logStderrLine(line: string): void {
@@ -350,18 +396,6 @@ export class PythonBridge {
       this.options.logger.warn(line);
     }
   }
-
-  private failAllPending(err: Error): void {
-    for (const [id, pending] of this.pending.entries()) {
-      clearTimeout(pending.timer);
-      pending.reject(err);
-      this.pending.delete(id);
-    }
-  }
-}
-
-function cryptoId(): string {
-  return crypto.randomUUID();
 }
 
 function isPythonTracebackLine(line: string): boolean {

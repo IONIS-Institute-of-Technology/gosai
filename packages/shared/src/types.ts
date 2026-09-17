@@ -289,6 +289,8 @@ export interface GlobalConfig {
 
 export interface PerformanceSample {
   readonly source: string;
+  /** Driver instance namespace, for driver samples. */
+  readonly instance?: string;
   readonly type: 'driver' | 'experience' | 'app' | 'system';
   readonly metric: string;
   readonly value: number;

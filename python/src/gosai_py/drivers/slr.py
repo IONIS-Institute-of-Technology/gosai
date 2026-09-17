@@ -24,8 +24,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, ClassVar
 
-from gosai_py.driver import DriverContext
-from gosai_py.processor import BaseProcessor
+from gosai_py.driver import BaseDriver, DriverContext
 from gosai_py.runtime import create_onnx_session
 from gosai_py.runtime.models import Model, resolve_model
 
@@ -109,7 +108,7 @@ def _adapt_frame(frame: dict[str, Any], include_face: bool) -> list[float]:
     return feats
 
 
-class SLRDriver(BaseProcessor):
+class SLRDriver(BaseDriver):
     """Sign-language recognition over a rolling window of pose frames."""
 
     name: ClassVar[str] = "slr"
@@ -118,6 +117,8 @@ class SLRDriver(BaseProcessor):
     actions: ClassVar[tuple[str, ...]] = ("set_actions",)
     dependencies: ClassVar[tuple[str, ...]] = ("pose",)
     subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("pose", "raw_data"),)
+    # Each prediction covers a 30-frame sequence, so frames are queued, not skipped.
+    subscription_queue_size: ClassVar[int | None] = 60
     loop_interval_s: ClassVar[float | None] = None
 
     def __init__(self, context: DriverContext) -> None:
@@ -131,28 +132,20 @@ class SLRDriver(BaseProcessor):
     def execute(self, action: str, data: Any) -> Any:
         if action == "set_actions":
             if not isinstance(data, list) or not all(isinstance(a, str) for a in data):
-                self.log("warn", "set_actions expects a list of strings")
-                return {"ok": False}
-            return {"ok": self._load_model(data)}
+                raise ValueError("set_actions expects a list of strings")
+            self._load_model(data)
+            return {"ok": True}
         return super().execute(action, data)
 
-    def _load_model(self, actions: list[str]) -> bool:
-        try:
-            import numpy as np  # noqa: F401  (used in on_data)
-        except ImportError as exc:
-            self.log("error", f"slr: numpy unavailable: {exc}")
-            return False
-
+    def _load_model(self, actions: list[str]) -> None:
         model = MODELS.get(len(actions))
         if model is None:
-            self.log("error", f"slr: no model for {len(actions)} actions")
-            return False
+            raise ValueError(f"slr: no model for {len(actions)} actions")
         try:
             model_path = resolve_model(model, self.log)
             session, info = create_onnx_session(model_path, log_fn=self.log, allow_cpu=True)
         except Exception as exc:
-            self.log("error", f"slr: failed to load {model.filename}: {exc!r}")
-            return False
+            raise RuntimeError(f"slr: failed to load {model.filename}: {exc!r}") from exc
 
         inp = session.get_inputs()[0]
         feature_dim = int(inp.shape[2]) if len(inp.shape) >= 3 and isinstance(inp.shape[2], int) else 158
@@ -164,7 +157,6 @@ class SLRDriver(BaseProcessor):
         self.set_runtime_info(info)
         self.publish_state("running")
         self.log("info", f"slr: loaded {model_path.name} (features={feature_dim}, actions={len(actions)})")
-        return True
 
     def on_data(self, driver: str, event: str, data: Any) -> None:
         if self._session is None or not isinstance(data, dict):

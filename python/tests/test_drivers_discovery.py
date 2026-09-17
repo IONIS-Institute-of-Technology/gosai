@@ -49,13 +49,84 @@ def test_each_driver_has_unique_metadata() -> None:
             assert dep in bridge._driver_classes, f"{name} depends on missing {dep}"
 
 
-def test_calibration_driver_exposes_core_actions() -> None:
+# Events, actions and dependencies apps rely on. Drivers may declare more.
+EXPECTED_METADATA: dict[str, dict[str, tuple[str, ...]]] = {
+    "heartbeat": {"events": ("tick",), "actions": ("echo",), "dependencies": ()},
+    "camera": {
+        "events": ("frame", "color", "depth", "frame_size", "fps"),
+        "actions": ("set_device", "set_mode", "set_resolution", "set_fps", "snapshot", "list_formats"),
+        "dependencies": (),
+    },
+    "calibration": {
+        "events": ("detection", "homography", "status"),
+        "actions": (
+            "set_marker_layout",
+            "set_camera_event",
+            "compute",
+            "clear",
+            "render_marker",
+            "get_latest_frame",
+        ),
+        "dependencies": ("camera",),
+    },
+    "interpolate": {
+        "events": ("interpolated_data",),
+        "actions": ("interpolate_points", "reset"),
+        "dependencies": (),
+    },
+    "microphone": {
+        "events": ("audio_stream", "settings"),
+        "actions": ("list_devices", "set_device", "set_samplerate"),
+        "dependencies": (),
+    },
+    "speaker": {
+        "events": ("settings", "underrun"),
+        "actions": ("play", "clear", "list_devices", "set_device", "set_samplerate"),
+        "dependencies": (),
+    },
+    "frequency_analysis": {
+        "events": ("frequency",),
+        "actions": ("set_max_frequency", "set_window_size"),
+        "dependencies": ("microphone",),
+    },
+    "hand_pose": {"events": ("raw_data",), "actions": ("set_flip", "set_window"), "dependencies": ("camera",)},
+    "pose": {"events": ("raw_data",), "actions": ("set_flip", "set_window"), "dependencies": ("camera",)},
+    "hand_sign": {"events": ("sign",), "actions": (), "dependencies": ("hand_pose",)},
+    "ball": {
+        "events": ("balls", "fps"),
+        "actions": (
+            "set_homography",
+            "set_output_size",
+            "set_confidence",
+            "set_max_ball_px",
+            "set_min_ball_px",
+            "set_frame_skip",
+            "set_cuda_device",
+        ),
+        "dependencies": ("camera",),
+    },
+    "speech_activity_detection": {
+        "events": ("activity",),
+        "actions": ("predict",),
+        "dependencies": ("microphone",),
+    },
+    "speech_to_text": {
+        "events": ("transcription",),
+        "actions": ("transcribe", "set_model"),
+        "dependencies": (),
+    },
+}
+
+
+def test_drivers_declare_the_metadata_apps_rely_on() -> None:
     bridge = Bridge()
     bridge.discover_builtin()
-    cls = bridge._driver_classes["calibration"]
-    assert "get_latest_frame" in cls.actions
-    assert "render_marker" in cls.actions
-    assert "compute" in cls.actions
+    for name, expected in EXPECTED_METADATA.items():
+        cls = bridge._driver_classes[name]
+        for field in ("events", "actions", "dependencies"):
+            declared = getattr(cls, field)
+            missing = [item for item in expected[field] if item not in declared]
+            assert not missing, f"{name} is missing {field} {missing}; declares {declared}"
 
 
 def test_hand_sign_classifier_recognizes_fist_and_open_hand() -> None:

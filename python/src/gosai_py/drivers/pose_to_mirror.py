@@ -80,8 +80,7 @@ from collections import deque
 from statistics import median
 from typing import Any, ClassVar
 
-from gosai_py.driver import DriverContext
-from gosai_py.processor import BaseProcessor
+from gosai_py.driver import BaseDriver, DriverContext
 
 # MediaPipe pose landmark indices used as anchors (match the legacy driver).
 NOSE = 0
@@ -241,12 +240,13 @@ def _map_location(
     return [-1.0, -1.0]
 
 
-class PoseToMirrorDriver(BaseProcessor):
+class PoseToMirrorDriver(BaseDriver):
     """Reflects MediaPipe landmarks onto an augmented mirror (webcam-only)."""
 
     name: ClassVar[str] = "pose_to_mirror"
     description: ClassVar[str] = "Reflect MediaPipe landmarks onto an augmented mirror (webcam-only)."
     events: ClassVar[tuple[str, ...]] = ("mirrored_data", "projected_data")
+    stream_events: ClassVar[tuple[str, ...]] = ("mirrored_data", "projected_data")
     actions: ClassVar[tuple[str, ...]] = (
         "set_mirror_config",
         "capture_calibration_sample",
@@ -641,14 +641,14 @@ class PoseToMirrorDriver(BaseProcessor):
         is omitted the more visible body index fingertip (19/20) is chosen.
         """
         if not isinstance(data, dict):
-            return {"ok": False, "error": "expected { target: [x, y], landmark? }"}
+            raise ValueError("expected { target: [x, y], landmark? }")
         target = data.get("target")
         if not (isinstance(target, (list, tuple)) and len(target) >= 2):
-            return {"ok": False, "error": "target must be [x_px, y_px]"}
+            raise ValueError("target must be [x_px, y_px]")
         try:
             target_px = [float(target[0]), float(target[1])]
-        except (TypeError, ValueError):
-            return {"ok": False, "error": "target must be numeric"}
+        except (TypeError, ValueError) as exc:
+            raise ValueError("target must be numeric") from exc
 
         now = time.time()
         frames = [
@@ -657,10 +657,7 @@ class PoseToMirrorDriver(BaseProcessor):
             if now - raw["ts"] <= SAMPLE_MAX_AGE_S and raw.get("body_pose")
         ]
         if len(frames) < SAMPLE_MIN_FRAMES:
-            return {
-                "ok": False,
-                "error": f"need {SAMPLE_MIN_FRAMES} recent pose frames, have {len(frames)}",
-            }
+            raise RuntimeError(f"need {SAMPLE_MIN_FRAMES} recent pose frames, have {len(frames)}")
 
         raw_landmark = data.get("landmark")
         landmark = (
@@ -669,14 +666,11 @@ class PoseToMirrorDriver(BaseProcessor):
             else _pick_fingertip(frames)
         )
         if landmark is None:
-            return {"ok": False, "error": "no visible index fingertip (raise a hand)"}
+            raise RuntimeError("no visible index fingertip (raise a hand)")
 
         vis = _median_visibility(frames, landmark)
         if vis < MIN_FINGERTIP_VISIBILITY:
-            return {
-                "ok": False,
-                "error": f"fingertip landmark {landmark} barely visible ({vis:.2f})",
-            }
+            raise RuntimeError(f"fingertip landmark {landmark} barely visible ({vis:.2f})")
 
         self._samples.append({"target": target_px, "landmark": landmark, "frames": frames})
         # Frames must not leak into the next target's sample; the history
@@ -696,10 +690,7 @@ class PoseToMirrorDriver(BaseProcessor):
         live config unless called with ``{"apply": false}``.
         """
         if len(self._samples) < SOLVE_MIN_SAMPLES:
-            return {
-                "ok": False,
-                "error": f"need at least {SOLVE_MIN_SAMPLES} samples, have {len(self._samples)}",
-            }
+            raise RuntimeError(f"need at least {SOLVE_MIN_SAMPLES} samples, have {len(self._samples)}")
         apply_fit = True
         if isinstance(data, dict) and "apply" in data:
             apply_fit = bool(data["apply"])
@@ -710,7 +701,7 @@ class PoseToMirrorDriver(BaseProcessor):
             if fit is not None and (best is None or fit["rmse"] < best["rmse"]):
                 best = fit
         if best is None:
-            return {"ok": False, "error": "could not project samples (poses unusable)"}
+            raise RuntimeError("could not project samples (poses unusable)")
 
         # Two refinement passes, each covering +-1 coarse cell around the
         # running optimum (the second pass recenters, so a coarse pick one cell

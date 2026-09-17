@@ -18,8 +18,7 @@ from typing import Any, ClassVar
 
 import numpy as np
 
-from gosai_py.driver import DriverContext
-from gosai_py.processor import BaseProcessor
+from gosai_py.driver import BaseDriver, DriverContext
 from gosai_py.runtime import RuntimeInfo
 from gosai_py.runtime.models import Model, resolve_model
 
@@ -64,13 +63,15 @@ class SileroVad:
         return float(out[0, 0])
 
 
-class SpeechActivityDriver(BaseProcessor):
+class SpeechActivityDriver(BaseDriver):
     name: ClassVar[str] = "speech_activity_detection"
     description: ClassVar[str] = "Silero-VAD voice activity detection."
     events: ClassVar[tuple[str, ...]] = ("activity",)
     actions: ClassVar[tuple[str, ...]] = ("predict",)
     dependencies: ClassVar[tuple[str, ...]] = ("microphone",)
     subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("microphone", "audio_stream"),)
+    # Silero keeps state across chunks and needs contiguous audio.
+    subscription_queue_size: ClassVar[int | None] = 64
     loop_interval_s: ClassVar[float | None] = None
 
     SAMPLE_RATE: ClassVar[int] = 16_000
@@ -81,7 +82,6 @@ class SpeechActivityDriver(BaseProcessor):
         self._warned_samplerate = False
 
     def pre_run(self) -> None:
-        super().pre_run()
         self._load_model()
 
     def execute(self, action: str, data: Any) -> Any:
@@ -143,9 +143,9 @@ class SpeechActivityDriver(BaseProcessor):
 
     def _predict(self, audio: Any) -> dict[str, Any]:
         if self._model is None:
-            return {"ok": False, "error": "model not loaded"}
+            raise RuntimeError("model not loaded")
         if audio is None:
-            return {"ok": False, "error": "audio buffer is None"}
+            raise ValueError("audio buffer is None")
         arr = np.asarray(audio, dtype=np.float32)
         if arr.ndim > 1:
             arr = arr[:, 0]
