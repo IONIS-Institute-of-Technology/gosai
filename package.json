@@ -37,7 +37,7 @@
     "@types/bun": "^1.4.2",
     "@types/node": "^22.20.3",
     "prettier": "^3.9.7",
-    "typescript": "^5.9.3"
+    "typescript": "^7.0.2"
   },
   "engines": {
     "bun": ">=1.4.2",
