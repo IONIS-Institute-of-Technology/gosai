@@ -32,8 +32,9 @@ space.
   - `projected_data` — same reflection but still in millimeters (pre
     pixel-mapping); useful for calibration/debugging.
 - **Actions:**
-  - `set_mirror_config` — merge a partial config dict (see `DEFAULT_CONFIG`)
-    and/or the fitted `affine` (`[ax, bx, ay, by]` mm→px mapping).
+  - `set_mirror_config` — change any of the settings in `MirrorSettings`,
+    including the fitted `affine` (`[ax, bx, ay, by]` mm→px mapping) and
+    `face_mesh` (false sends empty face meshes), and return all of them.
   - `capture_calibration_sample` — `{ target: [x_px, y_px], landmark? }`:
     snapshot the recent raw-pose frames for one calibration target (the user's
     index fingertip reflection aligned with a dot at `target`).
