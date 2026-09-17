@@ -10,7 +10,7 @@ authors = [{ name = "GOSAI" }]
 dependencies = [
     "numpy>=2.5.0",
     "opencv-contrib-python>=5.0.0",
-    "mediapipe>=0.10.35",
+    "mediapipe>=1.0.1",
     "sounddevice>=0.5.0",
 ]
 
