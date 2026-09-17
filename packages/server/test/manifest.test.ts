@@ -147,6 +147,7 @@ describe('validateManifest', () => {
           exclusive: true,
           allowed: ['menu'],
         },
+        { slug: 'menu', name: 'Menu', entry: './menu.ts' },
       ],
     });
     expect(m.experiences[0]?.drivers).toEqual(['camera', 'hand_pose']);
@@ -251,5 +252,104 @@ describe('validateManifest', () => {
         calibration: { entry: 'dist/calibration.js' },
       }),
     ).toThrow(ManifestError);
+  });
+
+  const base = {
+    slug: 'app',
+    name: 'App',
+    version: '1.0.0',
+    experiences: [{ slug: 'main', name: 'Main', entry: 'dist/main.js' }],
+  };
+  const errorOf = (value: unknown): string => {
+    try {
+      validateManifest(PATH, value);
+    } catch (err) {
+      return (err as Error).message;
+    }
+    throw new Error('expected the manifest to be rejected');
+  };
+
+  test('accepts $schema and leaves it out of the parsed manifest', () => {
+    const m = validateManifest(PATH, { $schema: '../schema.json', ...base });
+    expect(m).not.toHaveProperty('$schema');
+  });
+
+  test('rejects unknown fields, including builtin, which only the install location decides', () => {
+    expect(errorOf({ ...base, builtin: true })).toContain('builtin');
+    expect(errorOf({ ...base, experiences: [{ ...base.experiences[0], extra: 1 }] })).toContain(
+      'extra',
+    );
+  });
+
+  test('checks experience references', () => {
+    const experiences = [
+      { slug: 'main', name: 'Main', entry: 'dist/main.js', required: ['setup'] },
+      { slug: 'setup', name: 'Setup', entry: 'dist/setup.js' },
+    ];
+    expect(validateManifest(PATH, { ...base, experiences, startup: ['main'] }).startup).toEqual([
+      'main',
+    ]);
+    expect(errorOf({ ...base, startup: ['missing'] })).toContain('startup.0');
+    expect(
+      errorOf({
+        ...base,
+        experiences: [{ ...experiences[0], required: ['nope'] }, experiences[1]],
+      }),
+    ).toContain('"nope" does not match');
+    expect(
+      errorOf({
+        ...base,
+        experiences: [
+          { slug: 'a', name: 'A', entry: 'a.js', required: ['b'] },
+          { slug: 'b', name: 'B', entry: 'b.js', required: ['a'] },
+        ],
+      }),
+    ).toContain('a -> b -> a');
+    expect(errorOf({ ...base, experiences: [base.experiences[0], base.experiences[0]] })).toContain(
+      'duplicate experience slug',
+    );
+  });
+
+  test('rejects wrong types instead of dropping or coercing them', () => {
+    expect(
+      errorOf({ ...base, experiences: [{ ...base.experiences[0], exclusive: 'yes' }] }),
+    ).toContain('exclusive');
+    expect(
+      errorOf({ ...base, experiences: [{ ...base.experiences[0], drivers: ['camera', 3] }] }),
+    ).toContain('drivers.1');
+    const select = (options: unknown, def?: unknown): unknown => ({
+      ...base,
+      settings: {
+        groups: [
+          {
+            label: 'G',
+            fields: [{ key: 'mode', label: 'Mode', type: 'select', options, default: def }],
+          },
+        ],
+      },
+    });
+    expect(errorOf(select([{ value: 1, label: 'One' }]))).toContain('value');
+    expect(errorOf(select([{ value: 'a', label: 'A' }], 'b'))).toContain('not one of the options');
+    expect(errorOf({ ...base, settings: { storageKey: '../x', groups: [] } })).toContain(
+      'storageKey',
+    );
+  });
+
+  test('checks icons and entries stay inside the app', () => {
+    expect(validateManifest(PATH, { ...base, icon: 'assets/icon.png', author: 'Me' }).icon).toBe(
+      'assets/icon.png',
+    );
+    expect(errorOf({ ...base, icon: '../outside.png' })).toContain('icon');
+    expect(
+      errorOf({ ...base, experiences: [{ ...base.experiences[0], entry: '/etc/passwd' }] }),
+    ).toContain('entry');
+  });
+
+  test('accepts requestable capabilities only', () => {
+    expect(validateManifest(PATH, { ...base, capabilities: ['logs:read'] }).capabilities).toEqual([
+      'logs:read',
+    ]);
+    expect(errorOf({ ...base, capabilities: ['apps:manage'] })).toContain('only the dashboard');
+    expect(errorOf({ ...base, capabilities: ['fly'] })).toContain('unknown capability');
   });
 });
