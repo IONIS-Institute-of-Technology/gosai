@@ -62,3 +62,11 @@ def test_reset_and_validation() -> None:
     assert driver.execute("reset", None) == {"ok": True}
     with pytest.raises(ValueError, match="amount"):
         driver.execute("interpolate_points", {"amount": 0})
+
+
+def test_int_targets_ease_from_float_values() -> None:
+    from gosai_py.drivers.interpolate import _interpolate
+
+    assert _interpolate([[0.5, 1.5]], [[1, 2]], factor=0.5, depth=1) == [[0.75, 1.75]]
+    assert _interpolate(0.5, 1, factor=0.5, depth=0) == 0.75
+    assert _interpolate([0.5], ["a"], factor=0.5, depth=1) == ["a"]

@@ -148,6 +148,9 @@ def _is_number(value: Any) -> bool:
 
 
 def _same_shape(a: Any, b: Any) -> bool:
+    # JSON from JavaScript sends whole numbers as ints, so 1 and 0.5 match.
+    if _is_number(a) and _is_number(b):
+        return True
     if type(a) is not type(b):
         return False
     if isinstance(a, list):
