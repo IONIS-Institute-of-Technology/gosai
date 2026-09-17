@@ -406,8 +406,6 @@ export class DriverManager {
     this.broadcastList();
   }
 
-  // Reconciliation
-
   private scheduleReconcile(): Promise<void> {
     this.reconcileRequested = true;
     this.reconciling ??= this.runReconcile();
@@ -587,8 +585,6 @@ export class DriverManager {
     return names;
   }
 
-  // Event and state routing
-
   private handleDriverEvent(
     instance: string,
     driver: string,
@@ -661,8 +657,6 @@ export class DriverManager {
     }
   }
 
-  // Sharing policy and instance resolution
-
   /** Resolve the instance namespace a new lease for `binding` uses. */
   private instanceFor(binding: string, driver: string): string {
     if (!this.isEffectivelyShared(driver)) return binding;
@@ -703,8 +697,6 @@ export class DriverManager {
     }
     return true;
   }
-
-  // Broadcasts and projections
 
   private toDriverInfo(
     entry: DriverManifestEntry,
