@@ -10,6 +10,7 @@ import {
 import { join } from 'node:path';
 import { mintAppToken } from '@gosai/shared/auth';
 import { IPC_CHANNELS } from './channels.js';
+import { reportUnauthorized } from './server-auth.js';
 
 interface WindowRegistryOptions {
   readonly rootDir: string;
@@ -92,7 +93,7 @@ export class WindowRegistry {
     this.serverPort = addr.port;
   }
 
-  private get serverBaseUrl(): string {
+  get serverBaseUrl(): string {
     return `http://${this.serverHost}:${this.serverPort}`;
   }
 
@@ -518,7 +519,9 @@ export class WindowRegistry {
         authorization: `Bearer ${this.options.dashboardToken}`,
       },
       body: JSON.stringify({ appSlug, experienceSlug }),
-    }).catch(() => undefined);
+    })
+      .then((res) => reportUnauthorized(res.status))
+      .catch(() => undefined);
   }
 
   private notifyExperienceEnded(appSlug: string, experienceSlug: string): void {

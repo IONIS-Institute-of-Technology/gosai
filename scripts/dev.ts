@@ -4,9 +4,9 @@
  * windows. Set GOSAI_DASHBOARD_TOKEN to choose the token yourself.
  */
 
-import { randomBytes } from 'node:crypto';
+import { generateDashboardToken } from '@gosai/shared/auth';
 
-const token = process.env.GOSAI_DASHBOARD_TOKEN || randomBytes(32).toString('base64url');
+const token = process.env.GOSAI_DASHBOARD_TOKEN || generateDashboardToken();
 
 const child = Bun.spawn({
   cmd: [

@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import { generateDashboardToken } from '@gosai/shared/auth';
 import { registerIpc } from './ipc.js';
 import { installWebContentsGuards } from './security.js';
+import { checkServerToken } from './server-auth.js';
 import { WindowRegistry } from './windows.js';
 import { ServerRunner, shouldAutostartServer } from './server-runner.js';
 import { applyKioskPaths, resolveKioskConfig, runKiosk } from './kiosk.js';
@@ -59,6 +60,7 @@ app.whenReady().then(async () => {
     serverRunner = await startEmbeddedServer();
   }
   windows.openDashboard();
+  void checkServerToken(windows.serverBaseUrl, dashboardToken);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

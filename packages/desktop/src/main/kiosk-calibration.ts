@@ -14,6 +14,7 @@
  * storage inside the kiosk home, so it persists across launches.
  */
 
+import { reportUnauthorized } from './server-auth.js';
 import type { WindowRegistry } from './windows.js';
 
 export const CALIBRATION_SLUG = 'calibration';
@@ -50,6 +51,7 @@ export async function isCalibrated(
       `${server.baseUrl}/v1/apps/${appSlug}/storage/${encodeURIComponent(statusKey)}`,
       { headers: serverHeaders(server) },
     );
+    reportUnauthorized(res.status);
     return res.status === 200;
   } catch {
     return false;
@@ -60,6 +62,7 @@ export async function isCalibrated(
 export async function hasCalibrationRunner(server: ServerAccess): Promise<boolean> {
   try {
     const res = await fetch(`${server.baseUrl}/v1/apps`, { headers: serverHeaders(server) });
+    reportUnauthorized(res.status);
     if (!res.ok) return false;
     const data = (await res.json()) as { apps: Array<{ manifest: { slug: string } }> };
     return data.apps.some((a) => a.manifest.slug === CALIBRATION_SLUG);
@@ -90,6 +93,7 @@ export async function runKioskCalibration(options: RunKioskCalibrationOptions): 
     }),
   });
   if (!startRes.ok) {
+    reportUnauthorized(startRes.status);
     throw new Error(`could not start calibration experience: ${await startRes.text()}`);
   }
 

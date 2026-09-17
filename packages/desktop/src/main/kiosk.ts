@@ -18,6 +18,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { app, screen } from 'electron';
 import { ServerRunner } from './server-runner.js';
+import { reportUnauthorized } from './server-auth.js';
 import { ensurePythonRuntime } from './python-bootstrap.js';
 import { SplashWindow } from './splash.js';
 import {
@@ -372,6 +373,7 @@ async function startExperienceWithRetry(
         body: JSON.stringify({ appSlug, experienceSlug }),
       });
       if (res.ok) return true;
+      reportUnauthorized(res.status);
       console.error(`[gosai-kiosk] experience start failed (${res.status}): ${await res.text()}`);
     } catch (err) {
       console.error(`[gosai-kiosk] experience start attempt ${i + 1} failed: ${String(err)}`);
