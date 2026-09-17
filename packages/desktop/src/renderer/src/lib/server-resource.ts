@@ -54,8 +54,13 @@ export class ServerResource<C extends CommandName, T> {
   private snapshot: ResourceSnapshot<T> = { data: undefined, error: null, loading: false };
   private readonly listeners = new Set<() => void>();
   private offs: Array<() => void> = [];
-  /** Bumped by every load and every event update; older loads are dropped. */
+  /** Bumped by every load and every `set`; older loads are dropped. */
   private version = 0;
+  /**
+   * Events that arrived while a load was pending. They are replayed onto the
+   * loaded value, so an event never makes the load's result get dropped.
+   */
+  private queued: Array<(current: T | undefined) => T | typeof RELOAD | undefined> = [];
 
   constructor(
     private readonly client: ResourceClient,
@@ -84,12 +89,15 @@ export class ServerResource<C extends CommandName, T> {
         this.client.request as (command: C, payload?: CommandRequest<C>) => Promise<unknown>
       )(this.request.command, this.request.payload);
       const select = this.request.select ?? ((value: CommandResponse<C>) => value as T);
-      const data = select(response as CommandResponse<C>);
-      if (version === this.version) this.update({ data, error: null, loading: false });
+      const loaded = select(response as CommandResponse<C>);
+      if (version !== this.version) return loaded;
+      const data = this.replayQueued(loaded);
+      this.update({ data, error: null, loading: false });
       return data;
     } catch (err) {
       if (version === this.version) {
-        this.update({ error: requestErrorMessage(err), loading: false });
+        const data = this.replayQueued(this.snapshot.data);
+        this.update({ data, error: requestErrorMessage(err), loading: false });
       }
       return undefined;
     }
@@ -98,6 +106,8 @@ export class ServerResource<C extends CommandName, T> {
   /** Replaces the value, for example with what a save returned. */
   readonly set = (data: T): void => {
     this.version++;
+    // Events queued for a pending load are older than this value.
+    this.queued = [];
     this.update({ data, error: null, loading: false });
   };
 
@@ -106,18 +116,37 @@ export class ServerResource<C extends CommandName, T> {
     this.offs = [
       ...Object.entries(this.events).map(([name, apply]) =>
         this.client.on(name, (payload) => {
-          const next = (apply as (payload: unknown, current: T | undefined) => unknown)(
-            payload,
-            this.snapshot.data,
-          );
+          const run = (current: T | undefined): T | typeof RELOAD | undefined =>
+            (apply as (payload: unknown, current: T | undefined) => T | typeof RELOAD | undefined)(
+              payload,
+              current,
+            );
+          if (this.snapshot.loading) {
+            this.queued.push(run);
+            return;
+          }
+          const next = run(this.snapshot.data);
           if (next === RELOAD) void this.reload();
-          else if (next !== undefined) this.set(next as T);
+          else if (next !== undefined) this.set(next);
         }),
       ),
       this.client.onStatus((status) => {
         if (status === 'connected') void this.reload();
       }),
     ];
+  }
+
+  /** Applies the queued events to `data`. One asking for a reload starts another load. */
+  private replayQueued(data: T | undefined): T | undefined {
+    let value = data;
+    let reload = false;
+    for (const run of this.queued.splice(0)) {
+      const next = run(value);
+      if (next === RELOAD) reload = true;
+      else if (next !== undefined) value = next;
+    }
+    if (reload) queueMicrotask(() => void this.reload());
+    return value;
   }
 
   private stop(): void {

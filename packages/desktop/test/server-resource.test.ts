@@ -118,6 +118,55 @@ describe('ServerResource', () => {
     expect(calibration.getSnapshot().data).toMatchObject({ calibrated: true });
   });
 
+  test('replays events that arrive during a load onto its result', async () => {
+    const client = new FakeClient();
+    const pending: Array<(value: unknown) => void> = [];
+    const history = (): Promise<unknown> => new Promise((resolve) => pending.push(resolve));
+    client.responses.push(history, history);
+    const logs = resource(
+      client,
+      { command: 'logs:history', select: (r) => r.logs.map((entry) => entry.message) },
+      { 'server:log': (entry, current) => [...(current ?? []), entry.message] },
+    );
+    logs.subscribe(() => undefined);
+    client.emit('server:log', { message: 'c' });
+    pending.shift()?.({ logs: [{ message: 'a' }, { message: 'b' }] });
+    await settle();
+    expect(logs.getSnapshot()).toEqual({ data: ['a', 'b', 'c'], error: null, loading: false });
+
+    // The same on a reconnect, and a failed load keeps the event.
+    client.setStatus('disconnected');
+    client.setStatus('connected');
+    client.emit('server:log', { message: 'd' });
+    pending.shift()?.({ logs: [{ message: 'a' }, { message: 'b' }, { message: 'c' }] });
+    await settle();
+    expect(logs.getSnapshot().data).toEqual(['a', 'b', 'c', 'd']);
+
+    client.responses.push(() => Promise.reject(new Error('boom')));
+    const failed = logs.reload();
+    client.emit('server:log', { message: 'e' });
+    await failed;
+    expect(logs.getSnapshot()).toMatchObject({ data: ['a', 'b', 'c', 'd', 'e'], error: 'boom' });
+  });
+
+  test('an event asking for a reload during a load loads again afterwards', async () => {
+    const client = new FakeClient();
+    let resolveFirst: (value: unknown) => void = () => undefined;
+    client.responses.push(() => new Promise((resolve) => (resolveFirst = resolve)));
+    const calibration = resource(
+      client,
+      { command: 'calibration:get', payload: { appSlug: 'pool' } },
+      { 'calibration:changed': () => RELOAD },
+    );
+    calibration.subscribe(() => undefined);
+    client.emit('calibration:changed', { appSlug: 'pool', calibrated: true });
+    resolveFirst({ calibrated: false });
+    await settle();
+    await settle();
+    expect(client.requests).toHaveLength(2);
+    expect(calibration.getSnapshot().data as unknown).toEqual({ loaded: 2 });
+  });
+
   test('drops a load that finishes after a newer value', async () => {
     const client = new FakeClient();
     let resolveSlow: (value: unknown) => void = () => undefined;
