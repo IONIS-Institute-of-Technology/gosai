@@ -6,6 +6,16 @@ publishes the version to npm with the section below as its release notes. The
 Release SDK workflow needs an `NPM_TOKEN` secret; see
 `.github/workflows/release-sdk.yml`.
 
+## Unreleased
+
+- Apps can ship Python drivers: the manifest's `python.drivers` names the
+  package and `python.requirements` its requirements file. They run in their
+  own process and Python environment, named `<app slug>/<driver>`.
+- `gosai-sdk gen-driver-types` accepts app driver names such as
+  `my-app/counter`, from `python -m gosai_py.schemas --app <dir>`.
+- The manifest schema drops the placeholder `python.module` and per-experience
+  `python` fields. GOSAI ignores them with a warning.
+
 ## 0.1.0
 
 First public release.

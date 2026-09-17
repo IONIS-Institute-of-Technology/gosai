@@ -8,7 +8,8 @@ TypeScript SDK for building GOSAI apps.
   window, usually fullscreen on a projector or display.
 - A **driver** is a Python module in the GOSAI runtime that produces live data
   (camera frames, hand landmarks, audio analysis) and accepts actions. Apps
-  subscribe to drivers through the SDK.
+  subscribe to drivers through the SDK, and can ship drivers of their own (see
+  [Python drivers](#python-drivers)).
 
 ## Install
 
@@ -48,7 +49,7 @@ A starter app lives in [`templates/basic`](https://github.com/IONIS-Institute-of
       "name": "Main",
       "description": "Shown as rt.app.experience.description",
       "entry": "dist/main.js", // browser ESM module, relative to the app root
-      "drivers": ["hand_pose"], // started with the experience
+      "drivers": ["hand_pose", "my-app/counter"], // started with the experience
       "exclusive": false, // stop the app's other experiences when this one starts
       "allowed": [], // experiences an exclusive experience keeps running
       "required": [], // experiences started together with this one
@@ -96,6 +97,11 @@ A starter app lives in [`templates/basic`](https://github.com/IONIS-Institute-of
   "network": {
     // origins beyond the defaults, see "Network access" below
     "connect": ["ws://relay.local:8080"],
+  },
+  "python": {
+    // the app's own drivers, see "Python drivers" below
+    "drivers": "python/my_app_drivers",
+    "requirements": "python/requirements.txt", // optional
   },
 }
 ```
@@ -382,16 +388,129 @@ helpers `DriverEventData<'pose', 'raw_data'>`, `DriverActionParams` and
 
 A driver the SDK doesn't know still works, with `unknown` data. To type your
 own drivers, generate a module augmentation from their schemas, the JSON that
-`python -m gosai_py.schemas` prints or the server's `drivers:schema` reply:
+`python -m gosai_py.schemas --app .` prints (see [Python drivers](#python-drivers))
+or the server's `drivers:schema` reply:
 
 ```bash
-bunx gosai-sdk gen-driver-types --schemas schemas.json --drivers my_driver \
+bunx gosai-sdk gen-driver-types --schemas schemas.json --drivers my-app/counter \
   --out src/driver-types.ts --docs DRIVERS.md
 ```
 
-The file adds `my_driver` to `DriverRegistry`, so `rt.drivers.on('my_driver', ...)`
-is typed wherever the file is part of your TypeScript project. The `heartbeat`
+The file adds `my-app/counter` to `DriverRegistry`, so
+`rt.drivers.on('my-app/counter', ...)` is typed wherever the file is part of
+your TypeScript project. `--drivers` picks drivers out of a larger list, such as
+a `drivers:schema` reply. The `heartbeat`
 driver ticks steadily and is handy for testing.
+
+## Python drivers
+
+An app can ship drivers of its own, written in Python like the built-in ones.
+Put them in a package directory and name it in the manifest:
+
+```
+my-app/
+├── gosai.app.json
+└── python/
+    ├── requirements.txt       optional
+    └── my_app_drivers/
+        ├── __init__.py
+        └── counter.py
+```
+
+```jsonc
+{
+  "slug": "my-app",
+  "python": {
+    "drivers": "python/my_app_drivers", // its name must be a Python module name
+    "requirements": "python/requirements.txt",
+  },
+  "experiences": [
+    { "slug": "main", "name": "Main", "entry": "dist/main.js", "drivers": ["my-app/counter"] },
+  ],
+}
+```
+
+GOSAI imports the package and every module directly inside it, except names
+starting with `_`, and runs each `BaseDriver` subclass defined there:
+
+```python
+from collections.abc import Mapping
+from typing import ClassVar
+
+import msgspec
+
+from gosai_py import BaseDriver, DriverContext, Event, action
+
+
+class Count(msgspec.Struct, kw_only=True):
+    count: int
+
+
+class CounterDriver(BaseDriver):
+    name = "counter"
+    description = "Counts up once a second."
+    events: ClassVar[Mapping[str, Event]] = {"count": Event(Count, "The current count.")}
+    loop_interval_s = 1.0
+
+    def __init__(self, context: DriverContext) -> None:
+        super().__init__(context)
+        self._count = 0
+
+    def loop(self) -> None:
+        self._count += 1
+        self.emit("count", Count(count=self._count))
+
+    @action("Start counting again from `start`.")
+    def reset(self, start: int) -> Count:
+        self._count = start
+        return Count(count=start)
+```
+
+The server names the driver `<app slug>/<name>`, here `my-app/counter`, so it
+never collides with a built-in driver or another app's. Use that name
+everywhere: in `drivers`, with `rt.drivers.on('my-app/counter', 'count', ...)`,
+and in the dashboard's Drivers panel. Inside the package, `dependencies` and
+`subscribe` use the plain names of the package's own drivers. Other apps may use
+your drivers too, like built-in ones: each app gets its own instance of an
+exclusive driver, and a `shared` driver has one instance for everyone.
+
+**Process.** Your drivers run in a bridge process of their own, never in the
+one that hosts the built-in drivers. When it crashes or stops answering, GOSAI
+restarts it and starts the drivers your experiences still use, while built-in
+drivers and other apps keep running. Leases, restarts, schemas and logs work as
+for built-in drivers. A driver can only depend on drivers of the same package,
+since other drivers run in other processes. To run a built-in driver in your
+process, subclass it in your package; it then opens its own device. The process
+gets `GOSAI_APP_SLUG`, `GOSAI_APP_DIR` and `GOSAI_APP_DATA_DIR` (the app's data
+directory, which may not exist yet) in its environment.
+
+**Environment.** Installing the app builds a Python environment for it with uv,
+in `<GOSAI home>/python-envs/installed/<slug>/` (`builtin/<slug>/` for apps
+bundled with GOSAI, built when the server starts). It is layered on GOSAI's own
+environment: `gosai_py`, numpy, OpenCV, MediaPipe, ONNX Runtime and msgspec are
+already importable. Never list `gosai-py` itself. uv installs your requirements
+file on top. A package GOSAI's environment also has is pinned
+to GOSAI's version, so a requirement that needs another version fails the
+install with uv's explanation instead of breaking GOSAI's drivers. GOSAI builds
+the environment again when the requirements file or its own environment
+changes, for example after an update. An app with Python drivers can't be
+installed when GOSAI has no Python runtime.
+
+**Types.** Print the schemas of your drivers with GOSAI's Python, then generate
+types as for any driver (see [Driver data](#driver-data)). From a GOSAI
+checkout:
+
+```bash
+uv run --project <gosai>/python --with-requirements python/requirements.txt \
+  python -m gosai_py.schemas --app . > schemas.json
+bunx gosai-sdk gen-driver-types --schemas schemas.json --out src/driver-types.ts
+```
+
+Leave out `--with-requirements` without a requirements file. With an app
+already installed, the environment GOSAI built works too:
+`~/.gosai/python-envs/installed/my-app/.venv/bin/python -m gosai_py.schemas --app .`.
+The generated types use the qualified names, so `rt.drivers.on('my-app/counter', 'count', ({ count }) => ...)`
+is typed. The template in `templates/basic` has a counter driver to start from.
 
 ## Building
 

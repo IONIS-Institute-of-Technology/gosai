@@ -33,8 +33,8 @@ fullscreen window per running experience.
 
 - **Apps** are git repositories with a `gosai.app.json` manifest. Each app
   contains one or more **experiences** that the user launches into a
-  fullscreen window. Apps can ship Python drivers that run inside the
-  bridge process.
+  fullscreen window. Apps can ship Python drivers, which run in a bridge
+  process and Python environment of their own.
 - **Drivers** are stateful Python actors that publish events (camera
   frames, hand landmarks, audio chunks, ...) and accept actions. Apps
   subscribe to drivers via the SDK.

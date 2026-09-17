@@ -10,8 +10,12 @@ hello-gosai/
 ├── gosai.app.json   # manifest: SDK range, experiences, requirements, settings
 ├── package.json     # build script, and @gosai/sdk and TypeScript as dev dependencies
 ├── tsconfig.json
-└── src/
-    └── main.ts      # the experience
+├── src/
+│   └── main.ts      # the experience
+└── python/          # optional: an example Python driver, off until the manifest names it
+    └── hello_gosai_drivers/
+        ├── __init__.py
+        └── counter.py
 ```
 
 ## Build
@@ -58,6 +62,48 @@ by hand to its apps directory.
 - `render` scales motion by `frame.deltaMs` and draws in a 1920x1080 reference
   space that `fit()` maps onto the window.
 - `stop` saves the counter.
+
+## Python drivers (optional)
+
+`python/hello_gosai_drivers/counter.py` is an example of a driver the app ships
+itself: it counts up once a second and has a `reset` action. It does nothing
+until the manifest names its package, so an app without Python drivers can
+delete `python/`.
+
+To turn it on, add the package to `gosai.app.json` and start the driver with
+the experience:
+
+```json
+"python": { "drivers": "python/hello_gosai_drivers" },
+"experiences": [
+  { "slug": "main", "name": "Main", "entry": "dist/main.js", "drivers": ["heartbeat", "hello-gosai/counter"] }
+]
+```
+
+GOSAI names the driver `<slug>/<name>`, so it becomes `hello-gosai/counter`,
+and changes with the app's slug. When GOSAI installs the app, it builds a
+Python environment for it with uv, on top of GOSAI's own, so `gosai_py`,
+numpy, OpenCV and MediaPipe are already there. List anything else in a
+requirements file and name it in `"requirements": "python/requirements.txt"`.
+The driver runs in a process of its own: if it crashes, GOSAI restarts it and
+the built-in drivers keep running.
+
+Generate its types from a GOSAI checkout, then subscribe to it in `start`:
+
+```bash
+uv run --project <gosai>/python python -m gosai_py.schemas --app . > schemas.json
+bunx gosai-sdk gen-driver-types --schemas schemas.json --out src/driver-types.ts
+```
+
+```ts
+rt.drivers.on('hello-gosai/counter', 'count', ({ count }) => {
+  rt.log.info(`counter at ${count}`);
+});
+```
+
+The SDK README's
+[Python drivers](https://github.com/IONIS-Institute-of-Technology/gosai/blob/master/packages/sdk/README.md#python-drivers)
+section has the details.
 
 ## Network access
 
