@@ -1,98 +1,111 @@
 """Frequency-analysis driver (FFT).
 
-Subscribes to `microphone.audio_stream` and emits an `frequency` event with:
-- `max_frequency`: frequency (Hz) of the strongest bin
-- `amplitude`: amplitude at the strongest bin
-- `rfft`: magnitudes of bins below `max_frequency_hz` (truncated)
-- `blocksize`: most recent input block size
-
-The driver maintains a sliding buffer of N concatenated blocks (default 8)
-to improve frequency resolution at low cost.
+Subscribes to `microphone.audio_stream` and keeps the last `window_blocks`
+blocks of the first channel. For each block it removes the DC offset, applies
+a Hann window and emits the spectrum below `max_frequency` with its peak.
 """
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from collections.abc import Mapping
+from typing import Annotated, Any, ClassVar
 
-from gosai_py.driver import BaseDriver, DriverContext
+import msgspec
+import numpy as np
+from msgspec import Meta
+
+from gosai_py.driver import BaseDriver, DriverContext, Event, action
+
+MAX_FREQUENCY_HZ = 2_100.0
+WINDOW_BLOCKS = 8
+
+
+class FrequencyPayload(msgspec.Struct, kw_only=True):
+    # Frequency (Hz) of the strongest bin below the cutoff.
+    max_frequency: float
+    amplitude: float
+    # Magnitudes of the bins below the cutoff, from 0 Hz.
+    rfft: list[float]
+    blocksize: int
+    samplerate: int
+
+
+class MaxFrequencyResult(msgspec.Struct, kw_only=True):
+    max_frequency: float
+
+
+class WindowSizeResult(msgspec.Struct, kw_only=True):
+    window_blocks: int
+
+
+def spectrum(samples: np.ndarray, samplerate: float, max_frequency: float) -> tuple[np.ndarray, np.ndarray]:
+    """Frequencies and magnitudes below `max_frequency`, after DC removal and a Hann window."""
+    centered = samples - samples.mean()
+    magnitudes = np.abs(np.fft.rfft(centered * np.hanning(len(centered))))
+    frequencies = np.fft.rfftfreq(len(centered), 1.0 / samplerate)
+    below = frequencies < max_frequency
+    return frequencies[below], magnitudes[below]
 
 
 class FrequencyAnalysisDriver(BaseDriver):
-    name: ClassVar[str] = "frequency_analysis"
-    description: ClassVar[str] = "FFT-based frequency estimation on a microphone stream."
-    events: ClassVar[tuple[str, ...]] = ("frequency",)
-    stream_events: ClassVar[tuple[str, ...]] = ("frequency",)
-    actions: ClassVar[tuple[str, ...]] = ("set_max_frequency", "set_window_size")
-    dependencies: ClassVar[tuple[str, ...]] = ("microphone",)
-    subscribed: ClassVar[tuple[tuple[str, str], ...]] = (("microphone", "audio_stream"),)
+    name = "frequency_analysis"
+    description = "FFT-based frequency estimation on a microphone stream."
+    events: ClassVar[Mapping[str, Event]] = {
+        "frequency": Event(FrequencyPayload, "Spectrum of the latest window, once per block."),
+    }
+    stream_events = ("frequency",)
+    dependencies = ("microphone",)
+    subscribed = (("microphone", "audio_stream"),)
     # The FFT window is built from consecutive blocks, so none may be skipped.
-    subscription_queue_size: ClassVar[int | None] = 64
-    loop_interval_s: ClassVar[float | None] = None
-
-    MAX_FREQUENCY_HZ: ClassVar[float] = 2_100.0
-    WINDOW_BLOCKS: ClassVar[int] = 8
+    subscription_queue_size = 64
+    loop_interval_s = None
 
     def __init__(self, context: DriverContext) -> None:
         super().__init__(context)
-        self._buffer: list[float] = []
-        self._max_frequency = float(self.MAX_FREQUENCY_HZ)
-        self._window_blocks = int(self.WINDOW_BLOCKS)
+        self._buffer = np.empty(0, dtype=np.float32)
+        self._samplerate = 0
+        self._max_frequency = MAX_FREQUENCY_HZ
+        self._window_blocks = WINDOW_BLOCKS
 
-    def execute(self, action: str, data: Any) -> Any:
-        if action == "set_max_frequency":
-            self._max_frequency = float(data)
-            return {"max_frequency": self._max_frequency}
-        if action == "set_window_size":
-            self._window_blocks = max(int(data), 1)
-            return {"window_blocks": self._window_blocks}
-        return super().execute(action, data)
+    @action("Only report bins below this frequency (Hz).")
+    def set_max_frequency(self, hz: Annotated[float, Meta(gt=0)]) -> MaxFrequencyResult:
+        self._max_frequency = hz
+        return MaxFrequencyResult(max_frequency=hz)
+
+    @action("Analyse this many consecutive blocks at once (at least 1).")
+    def set_window_size(self, blocks: int) -> WindowSizeResult:
+        self._window_blocks = max(blocks, 1)
+        return WindowSizeResult(window_blocks=self._window_blocks)
 
     def on_data(self, driver: str, event: str, data: Any) -> None:
-        if driver != "microphone" or event != "audio_stream":
-            return
         if not isinstance(data, dict):
             return
-        block = data.get("block")
-        if not isinstance(block, list) or not block:
+        block = data.get("_block")
+        if block is None:
+            block = np.asarray(data.get("block") or [], dtype=np.float32)
+        samplerate = int(data.get("samplerate") or 0)
+        if block.size == 0 or samplerate <= 0:
             return
-        samplerate = float(data.get("samplerate", 0) or 0)
-        if samplerate <= 0:
-            return
-        # Extract the first channel from a (frames, channels) shaped block.
-        if isinstance(block[0], list):
-            samples = [float(row[0]) for row in block]
-        else:
-            samples = [float(x) for x in block]
-
+        samples = block[:, 0] if block.ndim > 1 else block
+        if samplerate != self._samplerate:
+            self._samplerate = samplerate
+            self._buffer = np.empty(0, dtype=np.float32)
         capacity = self._window_blocks * len(samples)
-        if len(self._buffer) + len(samples) > capacity:
-            overflow = len(self._buffer) + len(samples) - capacity
-            del self._buffer[: max(overflow, 0)]
-        self._buffer.extend(samples)
-
-        try:
-            import numpy as np  # type: ignore[import-not-found]
-        except ImportError as exc:
-            self.log("error", f"numpy required: {exc}")
+        self._buffer = np.concatenate([self._buffer, samples])[-capacity:]
+        if len(self._buffer) < 4:
             return
 
-        arr = np.asarray(self._buffer, dtype=np.float32)
-        if arr.size < 4:
+        frequencies, magnitudes = spectrum(self._buffer, samplerate, self._max_frequency)
+        if not len(magnitudes):
             return
-        rfft = np.abs(np.fft.rfft(arr))
-        freq = np.fft.rfftfreq(arr.size, 1.0 / samplerate)
-        mask = freq < self._max_frequency
-        if not mask.any():
-            return
-        rfft_masked = rfft[mask]
-        peak_idx = int(np.argmax(rfft))
+        peak = int(np.argmax(magnitudes))
         self.emit(
             "frequency",
             {
-                "max_frequency": float(freq[peak_idx]),
-                "amplitude": float(rfft.max()),
-                "rfft": [float(x) for x in rfft_masked.tolist()],
+                "max_frequency": float(frequencies[peak]),
+                "amplitude": float(magnitudes[peak]),
+                "rfft": magnitudes.tolist(),
                 "blocksize": len(samples),
-                "samplerate": int(samplerate),
+                "samplerate": samplerate,
             },
         )

@@ -1,52 +1,97 @@
 """Microphone driver.
 
-Captures audio from the system input device using `sounddevice` and emits
-PCM blocks on the `audio_stream` event.
+Captures audio with `sounddevice`. The stream callback only copies each block
+into a bounded queue; a worker thread emits `audio_stream`, so subscribers
+such as FFT and voice detection never run on the audio thread.
 
-The driver is callback-driven (no loop): `sounddevice` calls our callback
-from its own thread whenever a fresh block arrives. We forward the block,
-metadata, and a timestamp.
-
-Audio buffer payload:
-- `block`: list[list[float]] - shape (frames, channels), float32 normalized
-  to ~[-1, 1].
-- `samplerate`: int - samples per second.
-- `channels`: int - number of channels.
-- `blocksize`: int - frames per block.
-- `ts`: float - capture timestamp.
+In-process subscribers also get `_block`, the float32 `(frames, channels)`
+ndarray, and can skip the list conversion.
 """
 
 from __future__ import annotations
 
-import contextlib
+import time
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
-from gosai_py.driver import BaseDriver, DriverContext
+import msgspec
+import numpy as np
+
+from gosai_py import devices
+from gosai_py.driver import BaseDriver, DriverContext, Event, action
+from gosai_py.workers import BoundedQueueWorker
+
+DEFAULT_SAMPLERATE = 16_000
+BLOCKSIZE = 1024
+# Blocks waiting for the worker, about 4 s at the defaults.
+QUEUE_BLOCKS = 64
+
+
+class MicrophoneConfig(msgspec.Struct, kw_only=True):
+    device: int | None = None
+    samplerate: int | None = None
+    channels: int | None = None
+
+
+class AudioStreamPayload(msgspec.Struct, kw_only=True):
+    # (frames, channels) float32 samples in [-1, 1].
+    block: list[list[float]]
+    samplerate: int
+    channels: int
+    blocksize: int
+    ts: float
+
+
+class AudioSettingsPayload(msgspec.Struct, kw_only=True):
+    device: int | None
+    samplerate: int
+    channels: int
+    blocksize: int
+
+
+class InputDevice(msgspec.Struct, kw_only=True):
+    index: int
+    name: str
+    max_input_channels: int
+    default_samplerate: float
+
+
+class InputDevices(msgspec.Struct, kw_only=True):
+    ok: bool = True
+    default_input: int | None
+    devices: list[InputDevice]
+
+
+class DeviceResult(msgspec.Struct, kw_only=True):
+    device: int | None
+
+
+class SamplerateResult(msgspec.Struct, kw_only=True):
+    samplerate: int
 
 
 class MicrophoneDriver(BaseDriver):
-    name: ClassVar[str] = "microphone"
-    description: ClassVar[str] = "Audio input via sounddevice."
-    events: ClassVar[tuple[str, ...]] = ("audio_stream", "settings")
-    actions: ClassVar[tuple[str, ...]] = ("list_devices", "set_device", "set_samplerate")
-    loop_interval_s: ClassVar[float | None] = None  # callback driven
+    name = "microphone"
+    description = "Audio input via sounddevice."
+    events: ClassVar[Mapping[str, Event]] = {
+        "audio_stream": Event(AudioStreamPayload, "Every captured block, in order."),
+        "settings": Event(AudioSettingsPayload, "Stream settings after each (re)open."),
+    }
+    config_type = MicrophoneConfig
+    loop_interval_s = None
 
     def __init__(self, context: DriverContext) -> None:
         super().__init__(context)
         self._device: int | None = None
-        self._samplerate = 16_000
+        self._samplerate = DEFAULT_SAMPLERATE
         self._channels = 1
-        self._blocksize = 1024
         self._stream: Any = None
+        self._worker: BoundedQueueWorker | None = None
 
-    def apply_config(self, cfg: dict[str, Any]) -> None:
-        """Apply persisted settings before the input stream opens."""
-        if "device" in cfg:
-            self._device = None if cfg["device"] is None else int(cfg["device"])
-        if "samplerate" in cfg and cfg["samplerate"] is not None:
-            self._samplerate = int(cfg["samplerate"])
-        if "channels" in cfg and cfg["channels"] is not None:
-            self._channels = int(cfg["channels"])
+    def configure(self, config: MicrophoneConfig) -> None:
+        self._device = config.device
+        self._samplerate = config.samplerate or DEFAULT_SAMPLERATE
+        self._channels = config.channels or 1
 
     def pre_run(self) -> None:
         self._open_stream()
@@ -54,106 +99,101 @@ class MicrophoneDriver(BaseDriver):
     def cleanup(self) -> None:
         self._close_stream()
 
-    # ------------------------------------------------------------------
-    # Actions
-    # ------------------------------------------------------------------
-
-    def execute(self, action: str, data: Any) -> Any:
-        if action == "list_devices":
-            return self._list_devices()
-        if action == "set_device":
-            self._device = None if data is None else int(data)
-            self._reopen()
-            return {"device": self._device}
-        if action == "set_samplerate":
-            self._samplerate = int(data)
-            self._reopen()
-            return {"samplerate": self._samplerate}
-        return super().execute(action, data)
-
-    # ------------------------------------------------------------------
-    # Stream management
-    # ------------------------------------------------------------------
-
-    def _list_devices(self) -> dict[str, Any]:
-        try:
-            import sounddevice as sd  # type: ignore[import-not-found]
-        except ImportError as exc:
-            raise RuntimeError(f"sounddevice not available: {exc}") from exc
-        devices = sd.query_devices()
-        defaults = sd.default.device
-        return {
-            "ok": True,
-            "default_input": defaults[0] if isinstance(defaults, (list, tuple)) else defaults,
-            "devices": [
-                {
-                    "index": idx,
-                    "name": d.get("name"),
-                    "max_input_channels": d.get("max_input_channels", 0),
-                    "default_samplerate": d.get("default_samplerate", 0),
-                }
-                for idx, d in enumerate(devices)
-                if d.get("max_input_channels", 0) > 0
+    @action("List input devices.")
+    def list_devices(self) -> InputDevices:
+        listing = devices.audio_devices()
+        return InputDevices(
+            default_input=listing.default_input,
+            devices=[
+                InputDevice(
+                    index=d.index,
+                    name=d.name,
+                    max_input_channels=d.max_input_channels,
+                    default_samplerate=d.default_samplerate,
+                )
+                for d in listing.devices
+                if d.max_input_channels > 0
             ],
-        }
+        )
+
+    @action("Capture from another device; null picks the system default.")
+    def set_device(self, device: int | None) -> DeviceResult:
+        self._reopen(device, self._samplerate)
+        return DeviceResult(device=self._device)
+
+    @action("Capture at another sample rate.")
+    def set_samplerate(self, samplerate: int) -> SamplerateResult:
+        self._reopen(self._device, samplerate)
+        return SamplerateResult(samplerate=self._samplerate)
+
+    def _reopen(self, device: int | None, samplerate: int) -> None:
+        previous = (self._device, self._samplerate)
+        self._close_stream()
+        self._device, self._samplerate = device, samplerate
+        try:
+            self._open_stream()
+        except Exception:
+            self._device, self._samplerate = previous
+            self._open_stream()
+            raise
 
     def _open_stream(self) -> None:
-        try:
-            import sounddevice as sd  # type: ignore[import-not-found]
-        except ImportError as exc:
-            self.log("error", f"sounddevice not available: {exc}")
-            return
+        sd = devices.sounddevice()
+        samplerate, channels = self._samplerate, self._channels
+        worker = BoundedQueueWorker(
+            lambda item: self._publish(item, samplerate, channels),
+            name=f"driver:{self.name}:blocks",
+            maxsize=QUEUE_BLOCKS,
+            on_error=lambda exc: self.log("error", f"audio block failed: {exc!r}"),
+        )
 
-        def callback(indata: Any, frames: int, _time: Any, status: Any) -> None:
-            if status:
-                self.log("warn", f"microphone status: {status!s}")
-            self.emit(
-                "audio_stream",
-                {
-                    "block": indata.tolist(),
-                    "samplerate": self._samplerate,
-                    "channels": self._channels,
-                    "blocksize": frames,
-                },
-            )
+        def callback(indata: Any, _frames: int, _time: Any, status: Any) -> None:
+            worker.offer((indata.copy(), time.time(), str(status) if status else None))
 
         try:
             stream = sd.InputStream(
-                samplerate=self._samplerate,
-                channels=self._channels,
-                blocksize=self._blocksize,
+                samplerate=samplerate,
+                channels=channels,
+                blocksize=BLOCKSIZE,
                 callback=callback,
                 device=self._device,
                 dtype="float32",
             )
             stream.start()
         except Exception as exc:
-            self.log("error", f"cannot open microphone: {exc!r}")
-            return
+            worker.close()
+            worker.join(1.0)
+            raise RuntimeError(f"cannot open microphone device={self._device}: {exc}") from exc
 
-        self._stream = stream
+        self._stream, self._worker = stream, worker
         self.emit(
             "settings",
-            {
-                "device": self._device,
-                "samplerate": self._samplerate,
-                "channels": self._channels,
-                "blocksize": self._blocksize,
-            },
+            {"device": self._device, "samplerate": samplerate, "channels": channels, "blocksize": BLOCKSIZE},
         )
-        self.log(
-            "info",
-            f"microphone open device={self._device} sr={self._samplerate} ch={self._channels}",
+        self.log("info", f"microphone open device={self._device} sr={samplerate} ch={channels}")
+
+    def _publish(self, item: tuple[np.ndarray, float, str | None], samplerate: int, channels: int) -> None:
+        block, ts, status = item
+        if status:
+            self.log("warn", f"microphone status: {status}")
+        self.emit(
+            "audio_stream",
+            {
+                "block": block.tolist(),
+                "_block": block,
+                "samplerate": samplerate,
+                "channels": channels,
+                "blocksize": len(block),
+                "ts": ts,
+            },
         )
 
     def _close_stream(self) -> None:
-        if self._stream is None:
-            return
-        with contextlib.suppress(Exception):
-            self._stream.stop()
-            self._stream.close()
-        self._stream = None
-
-    def _reopen(self) -> None:
-        self._close_stream()
-        self._open_stream()
+        stream, self._stream = self._stream, None
+        worker, self._worker = self._worker, None
+        if stream is not None:
+            stream.stop()
+            stream.close()
+        if worker is not None:
+            worker.close()
+            worker.join(1.0)
