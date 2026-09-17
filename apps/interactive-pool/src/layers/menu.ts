@@ -1,26 +1,47 @@
 /**
  * Gesture-activated menu.
  *
- * Faithful port of the legacy `menu` app. Two index fingertips that pinch
- * together open the menu when spread apart; the same gesture in reverse
- * closes it. While open the user navigates with left/right arrow regions and
- * activates an app by holding their fingertip on the app card.
+ * Port of the legacy `menu` app. Two index fingertips that pinch together
+ * open the menu when spread apart; the same gesture in reverse closes it.
+ * While open the user navigates with left/right arrow regions and starts or
+ * stops a layer by holding their fingertip on its card. The cards are the
+ * layers whose definition has a `menu` entry.
  *
  * Coordinate system
  * -----------------
  * The legacy code worked in window pixels and assumed 1920x1080. We work in
  * the same reference space, so all magic numbers (90, 250, 500, 70, ...) are
- * preserved verbatim.
+ * preserved verbatim. Counters and fills that the legacy code advanced once
+ * per 60 fps frame advance by `frameSteps(deltaMs)` instead.
  *
  * The menu draws into a frame rotated 180 degrees about its anchor so the
  * UI reads correctly from the projector's perspective.
  */
 
-import { REF_HEIGHT, REF_WIDTH, type FrameContext, type Layer } from '../shared/types.js';
-import { fillRect, strokeRect } from '../shared/canvas-utils.js';
-import type { PoolFeed } from '../shared/feed.js';
-import { loadSound, type SoundHandle } from '../shared/audio.js';
-import type { MenuController } from '../shared/controller.js';
+import type { ExperienceRuntimeContext, LayerManager } from '@gosai/sdk';
+import { loadSound, type Sound } from '../shared/audio.js';
+import { fillRect, strokeRect } from '../shared/draw.js';
+import { frameSteps } from '../shared/motion.js';
+import {
+  REF_HEIGHT,
+  REF_WIDTH,
+  type PoolFrame,
+  type PoolLayer,
+  type PoolLayerDefinition,
+  type Tracking,
+} from '../shared/types.js';
+
+/** The parts of the layer manager the menu drives. */
+export type MenuLayers = Pick<
+  LayerManager<PoolFrame, PoolLayerDefinition>,
+  'definitions' | 'isRunning' | 'stop' | 'toggle'
+>;
+
+interface MenuItem {
+  readonly slug: string;
+  readonly label: string;
+  readonly autoStop: boolean;
+}
 
 const MENU_WIDTH = 300;
 const MENU_HEIGHT = 600;
@@ -28,31 +49,23 @@ const MENU_Y = REF_HEIGHT / 2;
 
 /** Auto-close menu after this many ms of no hands detected. */
 const MENU_IDLE_CLOSE_MS = 10_000;
-/** Auto-stop active app after this many ms of no hands detected (menu closed). */
+/** Stop an `autoStop` layer after this many ms of no hands detected. */
 const APP_IDLE_STOP_MS = 60_000;
-/**
- * Layer slugs that should auto-stop after a period of no hand activity.
- * Matches the legacy `no_menu_tutorial_gif` list: educational layers only.
- * Games (`rabbits_game`) and visualisations (`univers`, `ambient_display`)
- * stay running until manually stopped.
- */
-const AUTO_STOP_SLUGS = new Set(['affine', 'triangles']);
 
 /** Index-finger tip landmark (MediaPipe Hands). */
 const INDEX_TIP = 8;
 
-/** Animation speed: percentage points per 60fps-equivalent frame. */
+/** Open/close animation, in percentage points per legacy frame. */
 const ANIM_STEP = 5;
-
-/** Hover-fill rates (legacy `speed_regulator * N` per frame at 60fps). */
-const ARROW_FILL_BASE = 50;
-const APP_FILL_BASE = 50;
+/** Legacy frames a pinch stays armed, waiting for the spread. */
+const TRIGGER_FRAMES = 35;
 
 interface State {
   isOpen: boolean;
   isOpening: boolean;
   isClosing: boolean;
   triggerArmed: boolean;
+  /** Legacy frames since the trigger armed. */
   triggerCounter: number;
   yTrigger: number;
   menuX: number;
@@ -65,16 +78,56 @@ interface State {
   cooldownLeft: number;
   cooldownRight: number;
   cooldownApp: number;
-  /** ms since last frame in which any hand was detected. */
-  lastHandSeen: number;
-  /** ms when menu last opened (resets while hands are visible). */
+  /** When the menu last saw a hand while open. */
   menuOpenedAt: number;
-  /** ms since last hand seen while an app is active. */
-  lastHandSeenWhileAppActive: number;
+  /** When a hand was last seen, for stopping idle layers. */
+  lastHandSeen: number;
 }
 
-export function createMenuLayer(feed: PoolFeed, controller: MenuController): Layer {
-  const state: State = {
+interface MenuSounds {
+  readonly open: Sound;
+  readonly close: Sound;
+  readonly click: Sound;
+}
+
+interface Menu {
+  readonly state: State;
+  readonly layers: MenuLayers;
+  readonly items: readonly MenuItem[];
+  readonly sounds: MenuSounds;
+}
+
+export function createMenuLayer(rt: ExperienceRuntimeContext, layers: MenuLayers): PoolLayer {
+  const items: MenuItem[] = layers
+    .definitions()
+    .flatMap((def) =>
+      def.menu
+        ? [{ slug: def.slug, label: def.menu.label, autoStop: def.menu.autoStop ?? false }]
+        : [],
+    );
+  let menu: Menu | null = null;
+
+  return {
+    async preload(): Promise<void> {
+      const [open, close, click] = await Promise.all([
+        loadSound(rt, 'assets/audio/opening_menu.mp3'),
+        loadSound(rt, 'assets/audio/closing_menu.mp3'),
+        loadSound(rt, 'assets/audio/click.mp3'),
+      ]);
+      menu = { state: initialState(), layers, items, sounds: { open, close, click } };
+    },
+
+    render(frame: PoolFrame): void {
+      if (!menu) return;
+      step(menu, frame);
+      draw(frame.ctx, menu);
+    },
+  };
+}
+
+function initialState(): State {
+  const now = performance.now();
+  return {
     isOpen: false,
     isOpening: false,
     isClosing: false,
@@ -90,89 +143,35 @@ export function createMenuLayer(feed: PoolFeed, controller: MenuController): Lay
     cooldownLeft: 0,
     cooldownRight: 0,
     cooldownApp: 0,
-    lastHandSeen: 0,
-    menuOpenedAt: 0,
-    lastHandSeenWhileAppActive: 0,
+    menuOpenedAt: now,
+    lastHandSeen: now,
   };
-
-  let soundOpen: SoundHandle | null = null;
-  let soundClose: SoundHandle | null = null;
-  let soundClick: SoundHandle | null = null;
-
-  function ensureSounds(): void {
-    if (soundOpen === null) soundOpen = loadSound('audio/opening_menu.mp3');
-    if (soundClose === null) soundClose = loadSound('audio/closing_menu.mp3');
-    if (soundClick === null) soundClick = loadSound('audio/click.mp3');
-  }
-
-  return {
-    start(): void {
-      ensureSounds();
-      state.lastHandSeen = performance.now();
-      state.lastHandSeenWhileAppActive = performance.now();
-    },
-
-    render(frame: FrameContext): void {
-      ensureSounds();
-      step(frame, state, controller, feed, {
-        soundOpen,
-        soundClose,
-        soundClick,
-      });
-      draw(frame.ctx, state, controller);
-    },
-
-    stop(): void {
-      soundOpen = null;
-      soundClose = null;
-      soundClick = null;
-    },
-  };
-}
-
-interface MenuSounds {
-  soundOpen: SoundHandle | null;
-  soundClose: SoundHandle | null;
-  soundClick: SoundHandle | null;
 }
 
 // ---------------------------------------------------------------------------
 // Step (state update each frame)
 // ---------------------------------------------------------------------------
 
-function step(
-  frame: FrameContext,
-  state: State,
-  controller: MenuController,
-  feed: PoolFeed,
-  sounds: MenuSounds,
-): void {
-  // Normalise the frame's delta to the legacy 60fps base. At 60fps,
-  // speedReg ~= 1.0, which matches the legacy speed_regulator at 60fps.
-  const speedReg = Math.min(3, frame.deltaMs / (1000 / 60));
+function step(menu: Menu, frame: PoolFrame): void {
+  const { state, sounds } = menu;
+  const steps = frameSteps(frame.deltaMs);
+  const now = frame.timestamp;
 
-  // Locate the two index-finger tips, if available, in reference-space px.
-  const tipA = readTip(feed, 0);
-  const tipB = readTip(feed, 1);
-  const haveA = tipA !== null;
-  const haveB = tipB !== null;
+  // The two index-finger tips, if available, in reference-space px.
+  const tipA = readTip(frame.tracking, 0);
+  const tipB = readTip(frame.tracking, 1);
 
-  if (haveA) {
-    state.lastHandSeen = frame.timestamp;
-    state.lastHandSeenWhileAppActive = frame.timestamp;
-  }
-
-  // Decay trigger counter every frame regardless of state.
+  // Disarm a pinch that wasn't followed by a spread in time.
   if (state.triggerArmed) {
-    state.triggerCounter += 1;
-    if (state.triggerCounter > 35) {
+    state.triggerCounter += steps;
+    if (state.triggerCounter > TRIGGER_FRAMES) {
       state.triggerArmed = false;
       state.triggerCounter = 0;
     }
   }
 
   // Gesture detection -- only when both hands are visible.
-  if (haveA && haveB && tipA && tipB) {
+  if (tipA && tipB) {
     const gapX = Math.abs(tipA.x - tipB.x);
     const gapY = Math.abs(tipA.y - tipB.y);
 
@@ -190,7 +189,7 @@ function step(
         gapX < 500 &&
         Math.abs(state.yTrigger - tipA.y) < 70
       ) {
-        startOpen(state, sounds, frame.timestamp);
+        startOpen(state, sounds, now);
       }
     } else {
       // Open -> close path.
@@ -207,23 +206,23 @@ function step(
 
   // Animation progression.
   if (state.isOpening) {
-    state.openPct = Math.min(100, state.openPct + ANIM_STEP);
+    state.openPct = Math.min(100, state.openPct + ANIM_STEP * steps);
     if (state.openPct === 100) state.isOpening = false;
   }
   if (state.isClosing) {
-    state.openPct = Math.max(0, state.openPct - ANIM_STEP);
+    state.openPct = Math.max(0, state.openPct - ANIM_STEP * steps);
     if (state.openPct === 0) state.isClosing = false;
   }
 
   // Cool-down decay -- once started, a cooldown counts up until it loops past
   // 50 (legacy semantics: cooldown=1 means "armed but in cooldown").
-  state.cooldownLeft = tickCooldown(state.cooldownLeft, speedReg);
-  state.cooldownRight = tickCooldown(state.cooldownRight, speedReg);
-  state.cooldownApp = tickCooldown(state.cooldownApp, speedReg);
+  state.cooldownLeft = tickCooldown(state.cooldownLeft, steps);
+  state.cooldownRight = tickCooldown(state.cooldownRight, steps);
+  state.cooldownApp = tickCooldown(state.cooldownApp, steps);
 
   // Button hover progress (only when fully open and a hand is visible).
-  if (state.isOpen && state.openPct === 100 && haveA && tipA) {
-    updateButtonFills(state, tipA, speedReg, controller, sounds);
+  if (state.isOpen && state.openPct === 100 && tipA) {
+    updateButtonFills(menu, tipA, steps);
   } else {
     state.arrowLeftFill = 0;
     state.arrowRightFill = 0;
@@ -232,22 +231,19 @@ function step(
 
   // Auto-close menu when hands disappear for a while.
   if (state.isOpen) {
-    if (haveA) state.menuOpenedAt = frame.timestamp;
-    if (frame.timestamp - state.menuOpenedAt > MENU_IDLE_CLOSE_MS) {
-      startClose(state, sounds);
-    }
+    if (tipA) state.menuOpenedAt = now;
+    if (now - state.menuOpenedAt > MENU_IDLE_CLOSE_MS) startClose(state, sounds);
   }
 
-  // Auto-stop active educational app when no hands detected for a long
-  // while. Games and visualisations are excluded (matches legacy behaviour).
-  const active = controller.active();
-  if (!haveA && active !== null && AUTO_STOP_SLUGS.has(active)) {
-    if (frame.timestamp - state.lastHandSeenWhileAppActive > APP_IDLE_STOP_MS) {
-      controller.setActive(null);
-      state.lastHandSeenWhileAppActive = frame.timestamp;
+  // Stop idle educational layers when no hands were seen for a long while.
+  // Games and visualisations keep running (matches legacy behaviour).
+  if (tipA) {
+    state.lastHandSeen = now;
+  } else if (now - state.lastHandSeen > APP_IDLE_STOP_MS) {
+    for (const item of menu.items) {
+      if (item.autoStop && menu.layers.isRunning(item.slug)) void menu.layers.stop(item.slug);
     }
-  } else if (haveA) {
-    state.lastHandSeenWhileAppActive = frame.timestamp;
+    state.lastHandSeen = now;
   }
 }
 
@@ -259,11 +255,9 @@ function startOpen(state: State, sounds: MenuSounds, now: number): void {
   state.triggerCounter = 0;
   state.menuOpenedAt = now;
   // Clamp menu position so the full panel stays on-screen.
-  if (state.menuX < MENU_WIDTH / 2 + 50) state.menuX = MENU_WIDTH / 2 + 50;
-  if (state.menuX > REF_WIDTH - MENU_WIDTH / 2 - 50) {
-    state.menuX = REF_WIDTH - MENU_WIDTH / 2 - 50;
-  }
-  sounds.soundOpen?.play();
+  const margin = MENU_WIDTH / 2 + 50;
+  state.menuX = Math.min(REF_WIDTH - margin, Math.max(margin, state.menuX));
+  sounds.open.play();
 }
 
 function startClose(state: State, sounds: MenuSounds): void {
@@ -272,22 +266,17 @@ function startClose(state: State, sounds: MenuSounds): void {
   state.isOpen = false;
   state.triggerArmed = false;
   state.triggerCounter = 0;
-  sounds.soundClose?.play();
+  sounds.close.play();
 }
 
-function tickCooldown(value: number, speedReg: number): number {
+function tickCooldown(value: number, steps: number): number {
   if (value < 1) return 0;
-  const next = value + speedReg;
+  const next = value + steps;
   return next > 50 ? 0 : next;
 }
 
-function updateButtonFills(
-  state: State,
-  tip: { x: number; y: number },
-  speedReg: number,
-  controller: MenuController,
-  sounds: MenuSounds,
-): void {
+function updateButtonFills(menu: Menu, tip: { x: number; y: number }, steps: number): void {
+  const { state, sounds, items } = menu;
   // Translate-rotate(PI) inverts both axes; the legacy code does its hit
   // tests in *un-rotated* finger coords against ranges expressed in the
   // rotated frame. The arrow buttons sit menu_height * 0.375 *above* the
@@ -306,21 +295,21 @@ function updateButtonFills(
     state.cooldownApp === 0;
 
   if (inAppCard) {
-    state.appFill += speedReg * (APP_FILL_BASE / 50) * 4;
+    state.appFill += steps * 4;
     if (state.appFill > MENU_WIDTH * 0.7) {
       state.appFill = 0;
       state.cooldownApp = 1;
-      sounds.soundClick?.play();
-      toggleSelectedApp(controller, state.selectedIdx);
-      // Legacy behaviour: closing the menu after toggling so the launched
-      // layer becomes immediately visible.
+      sounds.click.play();
+      const item = items[state.selectedIdx];
+      if (item) void menu.layers.toggle(item.slug);
+      // Legacy behaviour: close the menu so the launched layer is visible.
       startClose(state, sounds);
     }
   } else {
     state.appFill = 0;
   }
 
-  // Arrow buttons row, at cy - MENU_HEIGHT*0.375 .. cy - MENU_HEIGHT*0.275.
+  // Arrow buttons row, at cy - MENU_HEIGHT*0.425 .. cy - MENU_HEIGHT*0.325.
   const inArrowRowY = tip.y < cy - MENU_HEIGHT * 0.325 && tip.y > cy - MENU_HEIGHT * 0.425;
 
   const inLeftArrow =
@@ -328,28 +317,21 @@ function updateButtonFills(
   const inRightArrow =
     tip.x > cx && tip.x < cx + MENU_WIDTH * 0.35 && inArrowRowY && state.cooldownRight === 0;
 
-  if (inLeftArrow) {
-    state.arrowRightFill += speedReg * (ARROW_FILL_BASE / 50) * 2;
-  } else {
-    state.arrowRightFill = 0;
-  }
-  if (inRightArrow) {
-    state.arrowLeftFill += speedReg * (ARROW_FILL_BASE / 50) * 2;
-  } else {
-    state.arrowLeftFill = 0;
-  }
+  // The rotation swaps sides: the left screen region fills the right button.
+  state.arrowRightFill = inLeftArrow ? state.arrowRightFill + steps * 2 : 0;
+  state.arrowLeftFill = inRightArrow ? state.arrowLeftFill + steps * 2 : 0;
 
   if (state.arrowLeftFill > MENU_WIDTH * 0.35) {
     state.arrowLeftFill = 0;
-    state.selectedIdx = wrapIdx(state.selectedIdx - 1, controller.items.length);
+    state.selectedIdx = wrapIdx(state.selectedIdx - 1, items.length);
     state.cooldownRight = 1;
-    sounds.soundClick?.play();
+    sounds.click.play();
   }
   if (state.arrowRightFill > MENU_WIDTH * 0.35) {
     state.arrowRightFill = 0;
-    state.selectedIdx = wrapIdx(state.selectedIdx + 1, controller.items.length);
+    state.selectedIdx = wrapIdx(state.selectedIdx + 1, items.length);
     state.cooldownLeft = 1;
-    sounds.soundClick?.play();
+    sounds.click.play();
   }
 }
 
@@ -358,34 +340,20 @@ function wrapIdx(idx: number, len: number): number {
   return ((idx % len) + len) % len;
 }
 
-function toggleSelectedApp(controller: MenuController, idx: number): void {
-  const item = controller.items[idx];
-  if (!item) return;
-  if (controller.active() === item.slug) {
-    controller.setActive(null);
-  } else {
-    controller.setActive(item.slug);
-  }
-}
-
-function readTip(feed: PoolFeed, handIdx: number): { x: number; y: number } | null {
-  const hand = feed.hands.hands[handIdx];
-  if (!hand) return null;
-  const tip = hand[INDEX_TIP];
-  if (!tip || tip.length < 2) return null;
-  const xn = tip[0];
-  const yn = tip[1];
-  if (typeof xn !== 'number' || typeof yn !== 'number') return null;
-  return { x: xn * REF_WIDTH, y: yn * REF_HEIGHT };
+function readTip(tracking: Tracking, handIdx: number): { x: number; y: number } | null {
+  const tip = tracking.hands[handIdx]?.[INDEX_TIP];
+  const [x, y] = tip ?? [];
+  if (x === undefined || y === undefined) return null;
+  return { x: x * REF_WIDTH, y: y * REF_HEIGHT };
 }
 
 // ---------------------------------------------------------------------------
 // Draw
 // ---------------------------------------------------------------------------
 
-function draw(ctx: CanvasRenderingContext2D, state: State, controller: MenuController): void {
-  // Show the fingertip dot while menu is *not* yet open (matches legacy debug
-  // dot behaviour). We draw a small white circle at hand-0's index tip.
+function draw(ctx: CanvasRenderingContext2D, menu: Menu): void {
+  const { state } = menu;
+  // Nothing to draw while the menu is closed.
   if (state.openPct === 0 && !state.isOpening) return;
 
   const actualW = (state.openPct * MENU_WIDTH) / 100;
@@ -395,23 +363,16 @@ function draw(ctx: CanvasRenderingContext2D, state: State, controller: MenuContr
   ctx.translate(state.menuX, MENU_Y);
   ctx.rotate(Math.PI);
 
-  // Outline.
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = '#ffffff';
   strokeRect(ctx, -actualW / 2, -actualH / 2, actualW, actualH, 2, '#ffffff');
 
   if (state.isOpen && state.openPct === 100) {
-    drawMenuContents(ctx, state, controller);
+    drawMenuContents(ctx, menu);
   }
 
   ctx.restore();
 }
 
-function drawMenuContents(
-  ctx: CanvasRenderingContext2D,
-  state: State,
-  controller: MenuController,
-): void {
+function drawMenuContents(ctx: CanvasRenderingContext2D, menu: Menu): void {
   // Header (rotated frame coords).
   ctx.fillStyle = '#ffffff';
   ctx.textAlign = 'center';
@@ -419,45 +380,35 @@ function drawMenuContents(
   ctx.font = 'bold 40px ui-monospace, monospace';
   ctx.fillText('- MENU -', 0, -(MENU_HEIGHT / 2) * 0.8);
   ctx.font = '28px ui-monospace, monospace';
-  // Two-line instruction.
-  const helpLine1 = 'Keep your index on';
-  const helpLine2 = 'an app to launch it';
-  ctx.fillText(helpLine1, 0, -(MENU_HEIGHT / 2) * 0.6 - 16);
-  ctx.fillText(helpLine2, 0, -(MENU_HEIGHT / 2) * 0.6 + 16);
+  ctx.fillText('Keep your index on', 0, -(MENU_HEIGHT / 2) * 0.6 - 16);
+  ctx.fillText('an app to launch it', 0, -(MENU_HEIGHT / 2) * 0.6 + 16);
 
-  drawAppCard(ctx, state, controller);
-  drawArrowButtons(ctx, state);
+  drawAppCard(ctx, menu);
+  drawArrowButtons(ctx, menu.state);
 }
 
-function drawAppCard(
-  ctx: CanvasRenderingContext2D,
-  state: State,
-  controller: MenuController,
-): void {
-  const item = controller.items[state.selectedIdx];
+function drawAppCard(ctx: CanvasRenderingContext2D, menu: Menu): void {
+  const { state } = menu;
+  const item = menu.items[state.selectedIdx];
   const w = MENU_WIDTH * 0.7;
   const h = MENU_HEIGHT * 0.4;
   const x = -MENU_WIDTH * 0.35;
   const y = -MENU_HEIGHT * 0.15;
 
   // Card outline (green when running, lavender otherwise).
-  const running = item && controller.active() === item.slug;
-  ctx.lineWidth = 5;
-  ctx.strokeStyle = running ? '#00ff7f' : '#d8bfd8';
-  ctx.strokeRect(x, y, w, h);
+  const running = item !== undefined && menu.layers.isRunning(item.slug);
+  strokeRect(ctx, x, y, w, h, 5, running ? '#00ff7f' : '#d8bfd8');
 
   // Hover progress fill.
   if (state.appFill > 0) {
     fillRect(ctx, x, y, Math.min(state.appFill, w), h, 'rgba(125,125,125,0.85)');
   }
 
-  // App label (legacy capitalises and replaces _ with newline).
   ctx.fillStyle = '#ffffff';
   ctx.font = '38px ui-monospace, monospace';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
-  const label = item ? item.label : '(no apps)';
-  const lines = label.split('\n');
+  const lines = (item?.label ?? '(no apps)').split('\n');
   const lineH = 44;
   const startY = y + h / 2 - ((lines.length - 1) * lineH) / 2 - 22;
   lines.forEach((line, i) => {
@@ -482,8 +433,6 @@ function drawArrowButtons(ctx: CanvasRenderingContext2D, state: State): void {
   ctx.lineTo(-MENU_WIDTH * 0.15, MENU_HEIGHT * 0.03);
   ctx.lineTo(-MENU_WIDTH * 0.225, 0);
   ctx.closePath();
-  ctx.fill();
-  ctx.beginPath();
   ctx.moveTo(MENU_WIDTH * 0.15, -MENU_HEIGHT * 0.03);
   ctx.lineTo(MENU_WIDTH * 0.15, MENU_HEIGHT * 0.03);
   ctx.lineTo(MENU_WIDTH * 0.225, 0);
@@ -491,12 +440,13 @@ function drawArrowButtons(ctx: CanvasRenderingContext2D, state: State): void {
   ctx.fill();
 
   // Fill progress (grey rectangles growing from each button's outer edge).
+  const fillW = MENU_WIDTH * 0.35;
   if (state.arrowLeftFill > 0) {
     fillRect(
       ctx,
-      -MENU_WIDTH * 0.35,
+      -fillW,
       -MENU_HEIGHT * 0.05,
-      Math.min(state.arrowLeftFill, MENU_WIDTH * 0.35),
+      Math.min(state.arrowLeftFill, fillW),
       MENU_HEIGHT * 0.1,
       'rgba(125,125,125,0.85)',
     );
@@ -506,7 +456,7 @@ function drawArrowButtons(ctx: CanvasRenderingContext2D, state: State): void {
       ctx,
       0,
       -MENU_HEIGHT * 0.05,
-      Math.min(state.arrowRightFill, MENU_WIDTH * 0.35),
+      Math.min(state.arrowRightFill, fillW),
       MENU_HEIGHT * 0.1,
       'rgba(125,125,125,0.85)',
     );

@@ -6,7 +6,8 @@
   "scripts": {
     "build": "bun build src/main.ts --target=browser --format=esm --outdir dist --external @gosai/sdk",
     "dev": "bun run build --watch",
-    "typecheck": "tsc"
+    "typecheck": "tsc && tsc -p test",
+    "test": "bun test --conditions @gosai/source"
   },
   "dependencies": {
     "@gosai/sdk": "workspace:*"
