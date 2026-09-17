@@ -2,7 +2,8 @@
 
 - `prepare` writes ``merged/datasets.json``: dataset name to Roboflow version.
 - `train` writes ``runs/<run>/provenance.json``: run name, base weights, git state, datasets.
-- `export` writes ``exports/<model>.onnx.json`` (see :func:`model_metadata`).
+- `export` writes ``exports/<model>.onnx.json`` (fields listed under "Model metadata"
+  in training/README.md).
 - `install` verifies its sha256 and copies it next to the installed model.
 """
 

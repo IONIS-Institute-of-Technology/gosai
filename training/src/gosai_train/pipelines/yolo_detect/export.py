@@ -2,7 +2,8 @@
 
 The ONNX export is the runtime target for the driver: YOLO26 exports an NMS-free
 end-to-end head with output (1, 300, 6) = [x1, y1, x2, y2, conf, cls]. After
-export the ONNX file itself is smoke-tested and scored on the merged val split,
+export the ONNX file itself is smoke-tested and scored on the merged test split
+(val when there is no test split),
 and ``exports/<model>.onnx.json`` records its provenance for `install`.
 """
 
@@ -85,16 +86,19 @@ def _match(iou: Any) -> Any:
 
 
 def _onnx_metrics(ctx: ModelContext, onnx_path: Path, size: tuple[int, int]) -> dict[str, Any] | None:
-    """Score the exported ONNX file on the merged val split.
+    """Score the exported ONNX file on the merged test split, or val when test is empty.
 
     Ultralytics' ``val()`` feeds square batches, which a fixed rectangular ONNX
     input rejects. So predictions come from ``predict()``, letterboxed to the
     export size as the driver does, and are scored with Ultralytics' AP code.
     """
-    images = list(iter_images(ctx.merged_dir / "val" / "images"))
-    if not images:
-        console.print("[yellow]val[/] no merged val split (run `prepare`); ONNX metrics not recorded")
+    split = next(
+        (s for s in ("test", "val") if any(iter_images(ctx.merged_dir / s / "images"))), None
+    )
+    if split is None:
+        console.print("[yellow]metrics[/] no merged test or val split (run `prepare`); not recorded")
         return None
+    images = list(iter_images(ctx.merged_dir / split / "images"))
 
     import numpy as np
     import torch
@@ -102,7 +106,7 @@ def _onnx_metrics(ctx: ModelContext, onnx_path: Path, size: tuple[int, int]) -> 
     from ultralytics.utils.metrics import ap_per_class, box_iou
     from ultralytics.utils.ops import xywhn2xyxy
 
-    labels_dir = ctx.merged_dir / "val" / "labels"
+    labels_dir = ctx.merged_dir / split / "labels"
     tps: list[Any] = []
     confs: list[Any] = []
     targets_total = 0
@@ -121,14 +125,14 @@ def _onnx_metrics(ctx: ModelContext, onnx_path: Path, size: tuple[int, int]) -> 
             confs.append(result.boxes.conf.cpu().numpy())
             targets_total += len(rows)
     if targets_total == 0:
-        console.print("[yellow]val[/] merged val split has no labelled boxes; ONNX metrics not recorded")
+        console.print(f"[yellow]metrics[/] merged {split} split has no labelled boxes; not recorded")
         return None
 
     tp, conf = np.concatenate(tps), np.concatenate(confs)
     # Single class: every prediction and target is class 0.
     _, _, p, r, _, ap, *_ = ap_per_class(tp, conf, np.zeros(len(conf)), np.zeros(targets_total))
     metrics = {
-        "split": "val",
+        "split": split,
         "images": len(images),
         "map50": round(float(ap[:, 0].mean()), 4),
         "map50_95": round(float(ap.mean()), 4),
@@ -136,7 +140,7 @@ def _onnx_metrics(ctx: ModelContext, onnx_path: Path, size: tuple[int, int]) -> 
         "recall": round(float(r.mean()), 4),
     }
     console.print(
-        f"[cyan]val[/] ONNX on {len(images)} images: mAP50={metrics['map50']:.3f} "
+        f"[cyan]{split}[/] ONNX on {len(images)} images: mAP50={metrics['map50']:.3f} "
         f"mAP50-95={metrics['map50_95']:.3f} P={metrics['precision']:.3f} R={metrics['recall']:.3f}"
     )
     return metrics
