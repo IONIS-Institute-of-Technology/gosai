@@ -54,7 +54,7 @@ describe('pythonExtras', () => {
 });
 
 describe('uvSyncArgs', () => {
-  const base = ['sync', '--frozen', '--no-dev', '--python', '3.12'];
+  const base = ['sync', '--frozen', '--no-dev', '--no-editable', '--python', '3.12'];
 
   test('syncs once without gpu', () => {
     expect(uvSyncArgs(['speech'], '3.12')).toEqual([[...base, '--extra', 'speech']]);
