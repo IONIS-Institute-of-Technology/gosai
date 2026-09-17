@@ -46,7 +46,12 @@ function git(args: string[], cwd: string): void {
 }
 
 /** Creates a git repository holding a minimal app with the given build script. */
-function makeRepo(root: string, slug: string, buildScript: string): string {
+function makeRepo(
+  root: string,
+  slug: string,
+  buildScript: string,
+  extra: { manifest?: object; packageJson?: object } = {},
+): string {
   const repo = join(root, `repo-${slug}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(repo, { recursive: true });
   writeFileSync(
@@ -56,11 +61,17 @@ function makeRepo(root: string, slug: string, buildScript: string): string {
       name: slug,
       version: '0.0.0',
       experiences: [{ slug: 'main', name: 'Main', entry: 'dist/main.js' }],
+      ...extra.manifest,
     }),
   );
   writeFileSync(
     join(repo, 'package.json'),
-    JSON.stringify({ name: slug, private: true, scripts: { build: buildScript } }),
+    JSON.stringify({
+      name: slug,
+      private: true,
+      scripts: { build: buildScript },
+      ...extra.packageJson,
+    }),
   );
   git(['init', '-q'], repo);
   git(['add', '.'], repo);
@@ -272,6 +283,146 @@ describe('installer', () => {
     await expect(manager.installFromGit(makeRepo(paths.root, 'orphan', 'true'))).rejects.toThrow(
       'unknown source',
     );
+  });
+
+  test("refuses an app whose sdk range excludes the server's SDK, before building it", async () => {
+    const paths = makePaths();
+    const source = makeRepo(paths.root, 'future-app', 'echo built > built.txt', {
+      manifest: { sdk: '^2.0.0' },
+    });
+    await expect(
+      installApp({
+        source,
+        paths,
+        logger: logger.child('install'),
+        allowFileSources: true,
+        sdkVersion: '0.1.0',
+      }),
+    ).rejects.toThrow('future-app needs @gosai/sdk ^2.0.0, but this GOSAI provides 0.1.0');
+    expect(existsSync(join(paths.apps, 'future-app'))).toBe(false);
+    expect(stagingEntries(paths)).toEqual([]);
+
+    const matching = makeRepo(paths.root, 'current-app', 'true', { manifest: { sdk: '^0.1.0' } });
+    await installApp({
+      source: matching,
+      paths,
+      logger: logger.child('install'),
+      allowFileSources: true,
+      sdkVersion: '0.1.3',
+    });
+    expect(existsSync(join(paths.apps, 'current-app'))).toBe(true);
+  });
+
+  test('installs only runtime dependencies, so dev-only SDK and TypeScript need no registry', async () => {
+    const paths = makePaths();
+    // Unresolvable dev dependencies would fail any install that included them.
+    const source = makeRepo(paths.root, 'dev-only-app', 'echo built > built.txt', {
+      packageJson: {
+        devDependencies: { '@gosai/sdk': 'workspace:*', typescript: 'workspace:*' },
+      },
+    });
+    await installApp({ source, paths, logger: logger.child('install'), allowFileSources: true });
+    expect(existsSync(join(paths.apps, 'dev-only-app', 'node_modules'))).toBe(false);
+    expect(readFileSync(join(paths.apps, 'dev-only-app', 'built.txt'), 'utf8').trim()).toBe(
+      'built',
+    );
+  });
+
+  test('fails when installing runtime dependencies fails', async () => {
+    const paths = makePaths();
+    const source = makeRepo(paths.root, 'workspace-app', 'true', {
+      packageJson: { dependencies: { '@gosai/sdk': 'workspace:*' } },
+    });
+    await expect(
+      installApp({ source, paths, logger: logger.child('install'), allowFileSources: true }),
+    ).rejects.toThrow(/bun install failed/);
+    expect(existsSync(join(paths.apps, 'workspace-app'))).toBe(false);
+  });
+
+  test('installs runtime dependencies from a committed lockfile without changing it', async () => {
+    const paths = makePaths();
+    const dependency = { 'local-dep': 'file:./vendor/local-dep' };
+
+    const locked = (
+      slug: string,
+      change: (packageJson: Record<string, unknown>) => void,
+    ): string => {
+      const source = makeRepo(paths.root, slug, 'true');
+      const repo = source.slice('file://'.length);
+      const dep = join(repo, 'vendor', 'local-dep');
+      mkdirSync(dep, { recursive: true });
+      writeFileSync(
+        join(dep, 'package.json'),
+        JSON.stringify({ name: 'local-dep', version: '1.0.0' }),
+      );
+      writeFileSync(join(dep, 'index.js'), 'export const answer = 42;');
+      const packageJson: Record<string, unknown> = {
+        name: slug,
+        private: true,
+        scripts: { build: 'test -f node_modules/local-dep/index.js' },
+        dependencies: { ...dependency },
+      };
+      writeFileSync(join(repo, 'package.json'), JSON.stringify(packageJson));
+      const install = Bun.spawnSync({ cmd: ['bun', 'install'], cwd: repo });
+      if (install.exitCode !== 0) throw new Error(install.stderr.toString());
+      rmSync(join(repo, 'node_modules'), { recursive: true, force: true });
+      change(packageJson);
+      writeFileSync(join(repo, 'package.json'), JSON.stringify(packageJson));
+      git(['add', '.'], repo);
+      git(['commit', '-q', '-m', 'lock'], repo);
+      return source;
+    };
+
+    const good = locked('locked-app', () => undefined);
+    await installApp({
+      source: good,
+      paths,
+      logger: logger.child('install'),
+      allowFileSources: true,
+    });
+    expect(existsSync(join(paths.apps, 'locked-app', 'node_modules', 'local-dep'))).toBe(true);
+
+    // A lockfile that no longer matches package.json fails instead of being rewritten.
+    const stale = locked('stale-app', (packageJson) => {
+      packageJson.dependencies = { ...dependency, 'other-dep': 'file:./vendor/local-dep' };
+    });
+    await expect(
+      installApp({ source: stale, paths, logger: logger.child('install'), allowFileSources: true }),
+    ).rejects.toThrow(/bun install failed[\s\S]*lockfile/);
+    expect(existsSync(join(paths.apps, 'stale-app'))).toBe(false);
+  });
+
+  test('lists an installed app whose sdk range excludes the SDK as invalid', () => {
+    const paths = makePaths();
+    const appDir = join(paths.apps, 'old-app');
+    mkdirSync(appDir, { recursive: true });
+    writeFileSync(
+      join(appDir, 'gosai.app.json'),
+      JSON.stringify({
+        slug: 'old-app',
+        name: 'Old',
+        version: '1.0.0',
+        sdk: '~0.0.1',
+        experiences: [{ slug: 'main', name: 'Main', entry: 'dist/main.js' }],
+      }),
+    );
+    const manager = new AppManager({
+      paths,
+      logger,
+      bus: new EventBus(),
+      drivers: {} as DriverManager,
+      sdkVersion: '0.1.0',
+    });
+    expect(manager.listApps()).toEqual([]);
+    expect(manager.listInvalidApps()).toEqual([
+      {
+        slug: 'old-app',
+        builtin: false,
+        error: expect.stringContaining(
+          'old-app needs @gosai/sdk ~0.0.1, but this GOSAI provides 0.1.0',
+        ),
+      },
+    ]);
   });
 
   test('uninstall validates the slug', async () => {

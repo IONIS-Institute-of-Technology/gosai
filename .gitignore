@@ -45,3 +45,6 @@ gosai-data/
 # Temp
 *.tmp
 .cache/
+
+# Packed npm tarballs
+*.tgz

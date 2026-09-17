@@ -2,8 +2,9 @@
  * Phase 7 end-to-end integration:
  *
  * 1. Boots a clean server.
- * 2. Installs the in-repo `templates/basic` "app" using a local-path source
- *    (so the test doesn't need network access).
+ * 2. Installs the in-repo `templates/basic` "app" using a local-path source.
+ *    The template only has dev dependencies, which the installer skips, so
+ *    the test doesn't need network access.
  * 3. Confirms the app is catalogued, the package was bun-installed, and the
  *    build output exists at the expected static path.
  * 4. Starts the template app's experience over WebSocket and confirms it is
@@ -11,9 +12,8 @@
  * 5. Stops the experience and verifies graceful teardown.
  * 6. Uninstalls the app and verifies the entry is removed.
  *
- * The installer normally clones from git. To keep this test hermetic and
- * offline, we pass a `file:` URL pointing at a git mirror we create from the
- * template directory.
+ * The installer normally clones from git. The test passes a `file:` URL
+ * pointing at a git repository it creates from the template directory.
  */
 
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';

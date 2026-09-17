@@ -53,8 +53,10 @@ Settings.
 Apps tab → "Install an app" → paste a git URL → Install
 ```
 
-The server clones the repo into `~/.gosai/apps/<slug>/`, runs any necessary
-`bun install` / `bun run build`, and refreshes the app list. The app now
+The server clones the repo into `~/.gosai/apps/<slug>/`, runs
+`bun install --production` when the app has runtime dependencies (with
+`--frozen-lockfile` when it commits `bun.lock`) and `bun run build`, and
+refreshes the app list. The app now
 appears under "Installed" with a "Start" button.
 
 ## 4. Start an experience
@@ -71,18 +73,27 @@ Settings tab; the next experience start uses it.
 
 The fastest path is to copy [`templates/basic/`](../templates/basic) into a
 new repo, change the manifest slug, push it to a git host, then install
-from the URL. See [`packages/sdk/README.md`](../packages/sdk/README.md) for
-the SDK reference.
+from the URL. The template is a standalone project, so it builds anywhere, not
+only inside this repository. Its dev dependencies, `@gosai/sdk` from npm and
+TypeScript, are only for your editor and type checking: the build leaves the
+SDK to GOSAI, and GOSAI's installer skips dev dependencies. See
+[`packages/sdk/README.md`](../packages/sdk/README.md) for the SDK reference
+and [`drivers.md`](drivers.md) for the drivers.
 
 ```bash
 cp -R templates/basic ~/Code/my-gosai-app
 cd ~/Code/my-gosai-app
+bun install
 # edit gosai.app.json (slug, name, description)
 # edit src/main.ts to build your experience
+bun run typecheck
 bun run build
 git init && git add . && git commit -m "initial"
 # push to a host then paste the clone URL into the dashboard
 ```
+
+The manifest's `sdk` range names the SDK versions the app works with. GOSAI
+refuses to install an app whose range doesn't include the SDK it serves.
 
 ## Environment variables
 
@@ -94,7 +105,7 @@ git init && git add . && git commit -m "initial"
 | `GOSAI_PYTHON_DIR`         | Override the Python source/venv directory. Skips the packaged first-run Python install.             |
 | `GOSAI_BUILTIN_APPS`       | Override the built-in apps discovery root.                                                          |
 | `GOSAI_PYTHON=0`           | Disable the Python bridge entirely.                                                                 |
-| `GOSAI_SDK_DIR`            | Directory of the built SDK bundle the server serves to app windows under `/sdk/`.                   |
+| `GOSAI_SDK_DIR`            | Directory of the built SDK bundle the server serves under `/sdk/<version>/`.                        |
 | `GOSAI_AUTOSTART_SERVER=1` | Make the desktop app start its own server when run from source.                                     |
 | `GOSAI_AUTOSTART_SERVER=0` | Make the packaged desktop app connect to a server started separately.                               |
 | `GOSAI_SERVER_BIN`         | Server executable the desktop app starts instead of the bundled one or the source.                  |

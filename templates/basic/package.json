@@ -8,7 +8,8 @@
     "dev": "bun build src/main.ts --target=browser --format=esm --outfile dist/main.js --external @gosai/sdk --watch",
     "typecheck": "tsc"
   },
-  "dependencies": {
-    "@gosai/sdk": "workspace:*"
+  "devDependencies": {
+    "@gosai/sdk": "^0.1.0",
+    "typescript": "^7.0.2"
   }
 }

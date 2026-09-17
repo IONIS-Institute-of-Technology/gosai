@@ -1,30 +1,63 @@
 {
   "name": "@gosai/sdk",
   "version": "0.1.0",
-  "private": false,
-  "description": "Official TypeScript SDK for building GOSAI apps",
+  "description": "TypeScript SDK for building GOSAI apps",
   "license": "GPL-3.0",
   "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/IONIS-Institute-of-Technology/gosai.git",
+    "directory": "packages/sdk"
+  },
+  "homepage": "https://github.com/IONIS-Institute-of-Technology/gosai/tree/master/packages/sdk#readme",
+  "keywords": [
+    "gosai",
+    "augmented-reality",
+    "projection",
+    "sdk"
+  ],
   "exports": {
     ".": {
-      "types": "./src/index.ts",
-      "import": "./src/index.ts"
+      "@gosai/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
     },
     "./host": {
-      "types": "./src/host.ts",
-      "import": "./src/host.ts"
-    }
+      "@gosai/source": "./src/host.ts",
+      "types": "./dist/host.d.ts",
+      "import": "./dist/host.js"
+    },
+    "./gosai.app.schema.json": "./dist/gosai.app.schema.json",
+    "./package.json": "./package.json"
+  },
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "gosai-sdk": "./dist/cli/gosai-sdk.js"
+  },
+  "files": [
+    "dist",
+    "CHANGELOG.md"
+  ],
+  "sideEffects": [
+    "./dist/app-host.js"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
-    "build": "bun build src/index.ts src/host.ts src/app-host.ts --splitting --target=browser --format=esm --outdir dist",
-    "dev": "bun run build --watch",
+    "build": "bun scripts/build.ts",
+    "dev": "bun build src/index.ts src/host.ts src/app-host.ts --splitting --target=browser --format=esm --outdir dist --watch",
     "typecheck": "tsc && tsc -p test",
     "clean": "rm -rf dist",
-    "test": "bun test"
+    "test": "bun test",
+    "pack:npm": "bun scripts/pack.ts"
   },
-  "dependencies": {
-    "@gosai/shared": "workspace:*"
+  "devDependencies": {
+    "@gosai/shared": "workspace:*",
+    "rollup": "^4.60.4",
+    "rollup-plugin-dts": "^6.5.1"
   }
 }

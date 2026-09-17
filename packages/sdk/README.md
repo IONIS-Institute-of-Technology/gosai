@@ -10,6 +10,18 @@ TypeScript SDK for building GOSAI apps.
   (camera frames, hand landmarks, audio analysis) and accepts actions. Apps
   subscribe to drivers through the SDK.
 
+## Install
+
+```bash
+bun add -d @gosai/sdk
+```
+
+The package holds the SDK's types and browser ESM bundles, with no runtime
+dependencies. Install it as a dev dependency: apps build with `@gosai/sdk`
+external (see [Building](#building)), and at runtime GOSAI serves its own copy
+of the SDK to app windows. GOSAI refuses apps whose manifest `sdk` range doesn't
+include that version.
+
 The package has two entries:
 
 | Import            | For                                                                                                                   |
@@ -17,7 +29,7 @@ The package has two entries:
 | `@gosai/sdk`      | App code: `defineExperience`, the runtime context types, layers, canvas, warp, homography and calibration helpers.    |
 | `@gosai/sdk/host` | Code that hosts experiences: `runExperience`, `ServerClient`, protocol constants and server types such as `LogEntry`. |
 
-A starter app lives in [`templates/basic`](../../templates/basic).
+A starter app lives in [`templates/basic`](https://github.com/IONIS-Institute-of-Technology/gosai/tree/master/templates/basic).
 
 ## Manifest
 
@@ -26,6 +38,7 @@ A starter app lives in [`templates/basic`](../../templates/basic).
   "slug": "my-app", // lowercase letters, digits and dashes, at most 63 characters
   "name": "My App",
   "version": "0.1.0",
+  "sdk": "^0.1.0", // @gosai/sdk versions the app works with
   "description": "What the app does",
   "author": "you",
   "default": "main", // experience the dashboard launches; defaults to the first one
@@ -87,6 +100,13 @@ A starter app lives in [`templates/basic`](../../templates/basic).
 }
 ```
 
+`sdk` is a semver range of the `@gosai/sdk` versions your app works with,
+usually `^` and the version you build against. GOSAI serves one SDK version to
+app windows; it refuses to install an app whose range excludes that version and
+lists an installed one as invalid, with the reason, in the dashboard. While the
+SDK is `0.x`, `^0.1.0` means `>=0.1.0 <0.2.0`. A prerelease SDK counts as the
+release it leads to: `0.2.0-rc.0` satisfies `^0.2.0`.
+
 `requirements` drives the per-app device pickers in the dashboard. Device
 choices are applied to your drivers automatically: `rt.drivers.on('camera', ...)`
 always reaches the camera assigned to your app.
@@ -116,7 +136,7 @@ export default defineExperience<State>({
   // Runs when the experience becomes active.
   start(rt, state) {
     rt.drivers.on('hand_pose', 'raw_data', (data) => {
-      state.hands = (data as { hands_landmarks?: unknown[] }).hands_landmarks?.length ?? 0;
+      state.hands = data.hands_landmarks.length;
     });
   },
 
@@ -174,9 +194,9 @@ Release other resources (WebGL renderers, media elements) in `stop`.
 | `rt.app.appSlug`, `rt.app.experienceSlug`      | Identity.                                                                                                                                |
 | `rt.app.manifest`, `rt.app.experience`         | The parsed manifest and this experience's entry in it.                                                                                   |
 | `rt.app.params`                                | Launch parameters of the window, such as `role` and `target` for calibration windows.                                                    |
-| `rt.drivers.on(driver, event, listener)`       | Subscribe to a driver event. Returns `{ unsubscribe() }`.                                                                                |
-| `rt.drivers.get<T>(driver, event)`             | Latest value of a driver event.                                                                                                          |
-| `rt.drivers.execute<T>(driver, action, data?)` | Run a driver action and get its result.                                                                                                  |
+| `rt.drivers.on(driver, event, listener)`       | Subscribe to a driver event, or to all of them with `'*'`. Returns `{ unsubscribe() }`. See [Driver data](#driver-data).                 |
+| `rt.drivers.get(driver, event)`                | Latest value of a driver event, or `null` before the first one.                                                                          |
+| `rt.drivers.execute(driver, action, params?)`  | Run a driver action and get its result.                                                                                                  |
 | `rt.storage.get<T>(key, fallback?)`            | Read a JSON value. Returns `T` when you pass a fallback, `T \| undefined` otherwise.                                                     |
 | `rt.storage.set(key, value)`, `remove`, `list` | Per-app key/value storage.                                                                                                               |
 | `rt.settings.get<T>()`                         | Settings from the manifest schema: stored values merged over the defaults.                                                               |
@@ -340,14 +360,38 @@ ignored, and so is a custom `statusKey`.
 
 ## Driver data
 
-Driver payloads are untyped for now; cast them to the shape the driver emits.
-The `heartbeat` driver ticks steadily and is handy for testing:
+`rt.drivers` is typed from the drivers' schemas. The
+[driver reference](https://github.com/IONIS-Institute-of-Technology/gosai/blob/master/docs/drivers.md)
+lists every built-in driver with its events, actions and types.
 
 ```ts
-rt.drivers.on('heartbeat', 'tick', (data) => {
-  const { count } = data as { count: number; now: number };
+rt.drivers.on('pose', 'raw_data', (data) => {
+  data.body_pose; // number[][]
 });
+
+const marker = await rt.drivers.execute('calibration', 'render_marker', { id: 3, size: 200 });
+marker.png_base64; // string
+
+const latest = await rt.drivers.get('heartbeat', 'tick'); // null before the first tick
 ```
+
+Misspelled events and actions and wrong params don't compile. The payload types are
+exported as `DriverTypes`, e.g. `DriverTypes.pose.RawPosePayload`, and the
+helpers `DriverEventData<'pose', 'raw_data'>`, `DriverActionParams` and
+`DriverActionResult` name them from driver and event or action names.
+
+A driver the SDK doesn't know still works, with `unknown` data. To type your
+own drivers, generate a module augmentation from their schemas, the JSON that
+`python -m gosai_py.schemas` prints or the server's `drivers:schema` reply:
+
+```bash
+bunx gosai-sdk gen-driver-types --schemas schemas.json --drivers my_driver \
+  --out src/driver-types.ts --docs DRIVERS.md
+```
+
+The file adds `my_driver` to `DriverRegistry`, so `rt.drivers.on('my_driver', ...)`
+is typed wherever the file is part of your TypeScript project. The `heartbeat`
+driver ticks steadily and is handy for testing.
 
 ## Building
 
@@ -359,7 +403,9 @@ bun build src/main.ts --target=browser --format=esm --outfile dist/main.js --ext
 
 GOSAI runs each app on its own origin, `http://<slug>.localhost:<port>`. The
 page there has an import map that resolves `@gosai/sdk` to the server's copy
-of the SDK, fetches your manifest, imports your entry and runs it. Files in
+of the SDK under `/sdk/<version>/`, fetches your manifest, imports your entry
+and runs it. The runtime checks that the server speaks the SDK's protocol
+version and shows an error instead of starting when it doesn't. Files in
 your app are served under `/v1/apps/<slug>/static/`; use `rt.assets.url` to
 build their URLs.
 
