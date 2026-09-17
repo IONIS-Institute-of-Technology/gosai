@@ -8,8 +8,5 @@
     "browser": true,
     "node": true,
     "es2022": true
-  },
-  "rules": {
-    "react/set-state-in-effect": "off"
   }
 }
