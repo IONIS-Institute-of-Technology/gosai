@@ -78,12 +78,12 @@ export class WindowRegistry {
   private shuttingDown = false;
   private serverHost: string;
   private serverPort: number;
-  private client: ServerClient;
+  /** Created on first use, so the dashboard token only goes to a known server address. */
+  private client: ServerClient | null = null;
 
   constructor(private readonly options: WindowRegistryOptions) {
     this.serverHost = options.serverHost ?? '127.0.0.1';
     this.serverPort = options.serverPort ?? 7777;
-    this.client = this.connectClient();
   }
 
   /**
@@ -94,12 +94,13 @@ export class WindowRegistry {
   setServerAddress(addr: { host: string; port: number }): void {
     this.serverHost = addr.host;
     this.serverPort = addr.port;
-    this.client.close();
-    this.client = this.connectClient();
+    this.client?.close();
+    this.client = null;
   }
 
   /** Main's connection to the server, with the dashboard token. */
   get server(): ServerClient {
+    this.client ??= this.connectClient();
     return this.client;
   }
 
@@ -532,7 +533,7 @@ export class WindowRegistry {
 
   private stopExperienceOnServer(appSlug: string, experienceSlug: string): void {
     if (this.shuttingDown) return;
-    const client = this.client;
+    const client = this.server;
     void (async () => {
       try {
         await client.ready(5_000);
