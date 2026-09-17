@@ -14,6 +14,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { delimiter, join, resolve } from 'node:path';
 import { app } from 'electron';
+import { uvCacheDir } from './python-bootstrap.js';
 
 export interface ServerRunnerOptions {
   readonly pythonDir?: string;
@@ -87,6 +88,8 @@ export class ServerRunner {
     if (app.isPackaged && !env.GOSAI_SDK_DIR) {
       env.GOSAI_SDK_DIR = resolve(process.resourcesPath, 'sdk');
     }
+    // The server finds the bundled uv itself; app environments share the runtime's cache.
+    if (app.isPackaged && !env.GOSAI_UV_CACHE_DIR) env.GOSAI_UV_CACHE_DIR = uvCacheDir();
 
     const child = spawn(command.bin, command.args, {
       env,
