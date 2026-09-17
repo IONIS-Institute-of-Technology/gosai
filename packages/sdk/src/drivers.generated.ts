@@ -35,12 +35,12 @@ export declare namespace DriverTypes {
 
     export interface Ok {
       /** @default true */
-      ok?: boolean;
+      ok: boolean;
     }
 
     export interface SizeResult {
       /** @default true */
-      ok?: boolean;
+      ok: boolean;
       width: number;
       height: number;
     }
@@ -155,7 +155,7 @@ export declare namespace DriverTypes {
 
     export interface ComputeResult {
       /** @default true */
-      ok?: boolean;
+      ok: boolean;
       matrix: number[];
       inverse: number[];
       surface_matrix: number[] | null;
@@ -172,12 +172,12 @@ export declare namespace DriverTypes {
 
     export interface Ok {
       /** @default true */
-      ok?: boolean;
+      ok: boolean;
     }
 
     export interface MarkerImage {
       /** @default true */
-      ok?: boolean;
+      ok: boolean;
       id: number;
       size: number;
       png_base64: string;
@@ -185,26 +185,26 @@ export declare namespace DriverTypes {
 
     export interface LatestFrame {
       /** @default true */
-      ok?: boolean;
+      ok: boolean;
       jpeg_base64: string;
       /** @default null */
-      width?: number | null;
+      width: number | null;
       /** @default null */
-      height?: number | null;
+      height: number | null;
       /** @default null */
-      ts?: number | null;
+      ts: number | null;
     }
 
     export interface ReprojectedPoint {
       /** @default true */
-      ok?: boolean;
+      ok: boolean;
       x: number;
       y: number;
     }
 
     export interface ReprojectedPoints {
       /** @default true */
-      ok?: boolean;
+      ok: boolean;
       points: Point[];
     }
   }
@@ -282,11 +282,11 @@ export declare namespace DriverTypes {
 
     export interface CameraFormats {
       /** @default true */
-      ok?: boolean;
+      ok: boolean;
       device: number;
       formats: CameraFormat[];
       /** @default false */
-      in_use?: boolean;
+      in_use: boolean;
     }
 
     export interface CameraFormat {
@@ -364,14 +364,14 @@ export declare namespace DriverTypes {
 
     export interface HomographyResult {
       /** @default true */
-      ok?: boolean;
+      ok: boolean;
       /** @default false */
-      cleared?: boolean;
+      cleared: boolean;
     }
 
     export interface SizeResult {
       /** @default true */
-      ok?: boolean;
+      ok: boolean;
       width: number;
       height: number;
     }
@@ -423,13 +423,13 @@ export declare namespace DriverTypes {
 
     export interface InterpolateResult {
       /** @default true */
-      ok?: boolean;
+      ok: boolean;
       name: string;
     }
 
     export interface Ok {
       /** @default true */
-      ok?: boolean;
+      ok: boolean;
     }
   }
 
@@ -461,7 +461,7 @@ export declare namespace DriverTypes {
 
     export interface InputDevices {
       /** @default true */
-      ok?: boolean;
+      ok: boolean;
       default_input: number | null;
       devices: InputDevice[];
     }
@@ -573,44 +573,44 @@ export declare namespace DriverTypes {
     /** Every setting of the driver. Distances are millimeters. */
     export interface MirrorSettings {
       /** @default "direct" */
-      mode?: 'direct' | 'reflection';
+      mode: 'direct' | 'reflection';
       /** @default "contain" */
-      fit?: 'contain' | 'cover';
+      fit: 'contain' | 'cover';
       /** @default true */
-      mirror?: boolean;
+      mirror: boolean;
       /** @default null */
-      affine?: number[] | null;
+      affine: number[] | null;
       /** @default true */
-      face_mesh?: boolean;
+      face_mesh: boolean;
       /** @default -230 */
-      x_offset?: number;
+      x_offset: number;
       /** @default 100 */
-      y_offset?: number;
+      y_offset: number;
       /** @default 392.85 */
-      screen_width_mm?: number;
+      screen_width_mm: number;
       /** @default 698.4 */
-      screen_height_mm?: number;
+      screen_height_mm: number;
       /** @default 1080 */
-      width?: number;
+      width: number;
       /** @default 1920 */
-      height?: number;
+      height: number;
       /** @default 17 */
-      tilt_deg?: number;
+      tilt_deg: number;
       /** @default 0 */
-      mirror_offset_mm?: number;
+      mirror_offset_mm: number;
       /** @default 60 */
-      hfov_deg?: number;
+      hfov_deg: number;
       /** @default 1 */
-      scale?: number;
+      scale: number;
       /** @default 1500 */
-      default_distance_mm?: number;
+      default_distance_mm: number;
       /** @default 1 */
-      zoom?: number;
+      zoom: number;
     }
 
     export interface CaptureResult {
       /** @default true */
-      ok?: boolean;
+      ok: boolean;
       samples: number;
       landmark: number;
       visibility: number;
@@ -618,7 +618,7 @@ export declare namespace DriverTypes {
 
     export interface SolveResult {
       /** @default true */
-      ok?: boolean;
+      ok: boolean;
       tilt_deg: number;
       scale: number;
       affine: number[];
@@ -631,7 +631,7 @@ export declare namespace DriverTypes {
 
     export interface ClearResult {
       /** @default true */
-      ok?: boolean;
+      ok: boolean;
       samples: number;
     }
   }
@@ -645,7 +645,7 @@ export declare namespace DriverTypes {
 
     export interface Ok {
       /** @default true */
-      ok?: boolean;
+      ok: boolean;
     }
   }
 
@@ -671,19 +671,19 @@ export declare namespace DriverTypes {
 
     export interface PlayResult {
       /** @default true */
-      ok?: boolean;
+      ok: boolean;
       queued: number;
       queued_samples: number;
     }
 
     export interface Ok {
       /** @default true */
-      ok?: boolean;
+      ok: boolean;
     }
 
     export interface OutputDevices {
       /** @default true */
-      ok?: boolean;
+      ok: boolean;
       default_output: number | null;
       devices: OutputDevice[];
     }
@@ -724,13 +724,13 @@ export declare namespace DriverTypes {
       is_speech: boolean;
       ts: number;
       /** @default true */
-      ok?: boolean;
+      ok: boolean;
       scores: number[];
     }
 
     export interface Ok {
       /** @default true */
-      ok?: boolean;
+      ok: boolean;
     }
   }
 
@@ -756,7 +756,7 @@ export declare namespace DriverTypes {
       transcription_duration_s: number;
       ts: number;
       /** @default true */
-      ok?: boolean;
+      ok: boolean;
     }
 
     export interface ModelResult {
