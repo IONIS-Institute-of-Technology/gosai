@@ -42,6 +42,7 @@ export const ClientCommands = {
 
   AppInstall: 'app:install',
   AppUninstall: 'app:uninstall',
+  AppCapabilitiesSet: 'app:capabilities:set',
   AppListInstalled: 'apps:list',
   AppBroadcast: 'app:broadcast',
   AppLog: 'app:log',

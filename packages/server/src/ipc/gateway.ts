@@ -202,9 +202,11 @@ export class WebSocketGateway {
       const data = await handler(payload, { clientId: client.id, grant: client.grant });
       this.respond(client.socket, id, data);
     } catch (err) {
+      const details = (err as { details?: unknown } | null)?.details;
       this.sendError(client.socket, id, {
         code: ErrorCodes.HandlerError,
         message: err instanceof Error ? err.message : String(err),
+        ...(details !== undefined ? { details } : {}),
       });
     }
   }

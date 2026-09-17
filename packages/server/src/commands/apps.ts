@@ -7,6 +7,7 @@ type AppCommands = Pick<
   | 'apps:list'
   | 'app:install'
   | 'app:uninstall'
+  | 'app:capabilities:set'
   | 'app:broadcast'
   | 'app:log'
   | 'app:settings:get'
@@ -27,7 +28,13 @@ export function appCommands({ apps, settings, storage, logger, bus }: ServerServ
 
   return {
     'apps:list': () => ({ apps: apps.listApps() }),
-    'app:install': ({ source }) => apps.installFromGit(source),
+    'app:install': ({ source, capabilities, reuseData }) =>
+      apps.installFromGit(source, {
+        ...(capabilities ? { capabilities } : {}),
+        ...(reuseData !== undefined ? { reuseData } : {}),
+      }),
+    'app:capabilities:set': ({ appSlug, capabilities }) =>
+      apps.approveCapabilities(appSlug, capabilities),
     'app:uninstall': async ({ slug, deleteData }) => ({
       slug,
       dataDeleted: await apps.uninstall(slug, deleteData === undefined ? {} : { deleteData }),

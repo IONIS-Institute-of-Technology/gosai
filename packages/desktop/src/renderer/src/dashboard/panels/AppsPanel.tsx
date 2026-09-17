@@ -17,7 +17,7 @@ import {
 } from '../../lib/calibration-wizard.js';
 import { stopAllAppExperiences, stopExperienceFully } from '../../lib/stop-experience.js';
 import { useServer } from '../../lib/server-context.js';
-import { isNotConnectedError } from '@gosai/shared/client';
+import { isNotConnectedError, ServerRequestError } from '@gosai/shared/client';
 import { Panel } from '../components/Panel.js';
 import { EmptyState } from '../components/EmptyState.jsx';
 import { AppSettingsModal } from '../components/AppSettingsModal.js';
@@ -123,7 +123,27 @@ export function AppsPanel(): React.ReactElement {
     setInstalling(true);
     setError(null);
     try {
-      await client.request('app:install', { source: installSource.trim() });
+      const source = installSource.trim();
+      let installed;
+      try {
+        installed = await client.request('app:install', { source });
+      } catch (err) {
+        const conflict =
+          err instanceof ServerRequestError &&
+          (err.details as { reason?: string } | undefined)?.reason === 'app-data-conflict';
+        if (!conflict || !confirm(`${err.message}\n\nInstall anyway and reuse that data?`)) {
+          throw err;
+        }
+        installed = await client.request('app:install', { source, reuseData: true });
+      }
+      // The dashboard approves what the app requests until it asks the operator first.
+      const requested = installed.manifest.capabilities ?? [];
+      if (requested.length > 0) {
+        await client.request('app:capabilities:set', {
+          appSlug: installed.manifest.slug,
+          capabilities: [...requested],
+        });
+      }
       setInstallSource('');
     } catch (err) {
       if (!isNotConnectedError(err)) {

@@ -30,6 +30,7 @@ import type { Capability } from './capabilities.js';
 import type { AppSettingsValues } from './types.js';
 
 const empty = z.strictObject({});
+const capabilitySchema = z.custom<Capability>(isCapability, 'unknown capability');
 const ok = z.object({ ok: z.literal(true) });
 const text = z.string().min(1).max(256);
 const settingsValues = z.record(z.string(), z.unknown()) as z.ZodType<AppSettingsValues>;
@@ -60,7 +61,17 @@ export const commandSchemas = {
     response: z.object({ apps: z.array(installedAppSchema) }),
   },
   'app:install': {
-    request: z.strictObject({ source: z.string().min(1).max(2048) }),
+    request: z.strictObject({
+      source: z.string().min(1).max(2048),
+      /** Requested capabilities the operator approved. The rest stay ungranted. */
+      capabilities: z.array(capabilitySchema).optional(),
+      /** Keep data an earlier app with this slug left, even from another source. */
+      reuseData: z.boolean().optional(),
+    }),
+    response: installedAppSchema,
+  },
+  'app:capabilities:set': {
+    request: z.strictObject({ appSlug: slugSchema, capabilities: z.array(capabilitySchema) }),
     response: installedAppSchema,
   },
   'app:uninstall': {

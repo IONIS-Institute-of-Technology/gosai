@@ -156,7 +156,7 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
           // in the query string.
           const scope = authenticate(req, url.searchParams.get('token'));
           if (!scope) return new Response('Unauthorized', { status: 401 });
-          const grant = grantFor(scope, (slug) => apps.getManifest(slug)?.capabilities);
+          const grant = grantFor(scope, (slug) => apps.grantedCapabilities(slug));
           const data: ClientData = { clientId: crypto.randomUUID(), grant };
           if (srv.upgrade(req, { data })) return undefined;
           return new Response('Upgrade failed', { status: 426 });

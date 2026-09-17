@@ -290,6 +290,37 @@ describe('app manager lifecycle', () => {
     expect(existsSync(join(paths.data, 'pool'))).toBe(false);
   });
 
+  test('keeps the crashed state when a failed start rolls back its requirements', async () => {
+    const { paths, drivers, create } = setup();
+    manifestApp(paths.apps, chain);
+    const manager = create();
+    drivers.failing.add('hand_pose');
+    await expect(manager.startExperience('pool', 'main')).rejects.toThrow();
+    expect(manager.getApp('pool')?.state).toBe('crashed');
+    drivers.failing.clear();
+    await manager.startExperience('pool', 'base');
+    expect(manager.getApp('pool')?.state).toBe('running');
+  });
+
+  test('grants built-in apps their requested capabilities and installed apps only approved ones', () => {
+    const { paths, create } = setup();
+    const builtin = join(paths.root, 'builtin');
+    const requesting = { ...chain, capabilities: ['logs:read', 'devices:read'] };
+    manifestApp(builtin, { ...requesting, slug: 'shipped' });
+    manifestApp(paths.apps, requesting);
+    const manager = create(builtin);
+    expect(manager.grantedCapabilities('shipped')).toEqual(['logs:read', 'devices:read']);
+    expect(manager.grantedCapabilities('pool')).toEqual([]);
+
+    // Approving something the manifest doesn't request grants nothing extra.
+    const approved = manager.approveCapabilities('pool', ['devices:read', 'app-config:write']);
+    expect(approved.grantedCapabilities).toEqual(['devices:read']);
+    expect(manager.grantedCapabilities('pool')).toEqual(['devices:read']);
+    expect(() => manager.approveCapabilities('shipped', [])).toThrow('Built-in');
+    // The approval survives a restart.
+    expect(create(builtin).grantedCapabilities('pool')).toEqual(['devices:read']);
+  });
+
   test('logs apps with an invalid manifest instead of dropping them silently', () => {
     const { paths } = setup();
     manifestApp(paths.apps, { ...chain, slug: 'broken', experiences: [] });

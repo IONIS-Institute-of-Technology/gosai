@@ -14,6 +14,7 @@ import type {
   InstalledApp,
   RunningExperience,
 } from '@gosai/shared';
+import type { Capability } from '@gosai/shared/capabilities';
 import { ServerEvents } from '@gosai/shared/events';
 import type { EventBus } from '../ipc/bus.js';
 import type { ChildLogger, Logger } from '../logger/logger.js';
@@ -21,6 +22,7 @@ import { appDataDir, type GosaiPaths } from '../paths.js';
 import type { DriverManager } from '../drivers/manager.js';
 import { discoverApps, type DiscoveredApp } from './manifest.js';
 import { installApp, uninstallApp } from './installer.js';
+import { gitOrigin, InstallRecords } from './install-records.js';
 
 export interface AppManagerOptions {
   readonly paths: GosaiPaths;
@@ -30,6 +32,26 @@ export interface AppManagerOptions {
   readonly builtinAppsDir?: string;
   /** Let installs clone `file:` URLs. Only for tests. */
   readonly allowFileInstalls?: boolean;
+}
+
+export interface InstallOptions {
+  /** Requested capabilities the operator approved. Others stay ungranted. */
+  readonly capabilities?: readonly Capability[];
+  /**
+   * Keep data left by an earlier app with this slug even when it was installed
+   * from another source, or the source is unknown.
+   */
+  readonly reuseData?: boolean;
+}
+
+/** Thrown when an install would inherit another app's data. */
+export class AppDataConflictError extends Error {
+  readonly details = { reason: 'app-data-conflict' } as const;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'AppDataConflictError';
+  }
 }
 
 export interface StartExperienceOptions {
@@ -52,9 +74,11 @@ export class AppManager {
   private readonly log: ChildLogger;
   private readonly catalogue = new Map<string, AppRecord>();
   private readonly running = new Map<string, ExperienceRecord>();
+  private readonly records: InstallRecords;
 
   constructor(private readonly options: AppManagerOptions) {
     this.log = options.logger.child('apps');
+    this.records = new InstallRecords(options.paths, this.log);
     this.removeLeftoverStaging();
     this.discover();
   }
@@ -74,7 +98,7 @@ export class AppManager {
   }
 
   listApps(): InstalledApp[] {
-    return Array.from(this.catalogue.values(), toPublicApp);
+    return Array.from(this.catalogue.values(), (record) => this.toPublicApp(record));
   }
 
   listRunningExperiences(): RunningExperience[] {
@@ -83,7 +107,7 @@ export class AppManager {
 
   getApp(slug: string): InstalledApp | undefined {
     const record = this.catalogue.get(slug);
-    return record && toPublicApp(record);
+    return record && this.toPublicApp(record);
   }
 
   getManifest(slug: string): AppManifest | undefined {
@@ -95,20 +119,70 @@ export class AppManager {
     return this.catalogue.get(slug)?.installPath;
   }
 
-  async installFromGit(source: string): Promise<InstalledApp> {
+  /**
+   * Capabilities an app's tokens hold beyond the defaults: the manifest's
+   * requests for built-in apps, and the approved requests for installed ones.
+   */
+  grantedCapabilities(slug: string): readonly Capability[] {
+    const record = this.catalogue.get(slug);
+    if (!record) return [];
+    const requested = record.manifest.capabilities ?? [];
+    if (record.builtin) return requested;
+    const approved = new Set(this.records.get(slug)?.approvedCapabilities ?? []);
+    return requested.filter((capability) => approved.has(capability));
+  }
+
+  /** Records which of an installed app's requested capabilities the operator approved. */
+  approveCapabilities(slug: string, capabilities: readonly Capability[]): InstalledApp {
+    const record = this.requireApp(slug);
+    if (record.builtin) throw new Error(`Built-in app ${slug} holds its requested capabilities`);
+    const current = this.records.get(slug);
+    this.records.set(slug, {
+      source: current?.source ?? gitOrigin(record.installPath) ?? '',
+      installedAt: current?.installedAt ?? record.installedAt,
+      approvedCapabilities: approvedSubset(record.manifest, capabilities),
+    });
+    this.log.info('approved app capabilities', { app: slug, capabilities: [...capabilities] });
+    this.broadcastList();
+    return this.toPublicApp(record);
+  }
+
+  async installFromGit(source: string, options: InstallOptions = {}): Promise<InstalledApp> {
+    const trimmed = source.trim();
     const result = await installApp({
-      source,
+      source: trimmed,
       logger: this.log,
       paths: this.options.paths,
       allowFileSources: this.options.allowFileInstalls === true,
+      checkManifest: (manifest) => {
+        if (!options.reuseData) this.checkLeftoverData(manifest.slug, trimmed);
+      },
     });
-    const installed = toPublicApp(this.ingest(result.app, false));
+    const slug = result.app.manifest.slug;
+    this.records.set(slug, {
+      source: trimmed,
+      installedAt: Date.now(),
+      approvedCapabilities: approvedSubset(result.app.manifest, options.capabilities ?? []),
+    });
+    const installed = this.toPublicApp(this.ingest(result.app, false));
     this.options.bus.emit(ServerEvents.AppInstalled, installed, 'apps');
     this.broadcastList();
     return installed;
   }
 
   /** Removes the app's checkout. Its data stays unless `deleteData` is set. */
+  /** Refuses data left by an app from another, or an unknown, source. */
+  private checkLeftoverData(slug: string, source: string): void {
+    const dataDir = appDataDir(this.options.paths, slug);
+    if (!existsSync(dataDir)) return;
+    const previous = this.records.get(slug)?.source;
+    if (previous === source) return;
+    const origin = previous ? `installed from ${previous}` : 'from an unknown source';
+    throw new AppDataConflictError(
+      `Data for ${slug} ${origin} already exists at ${dataDir}. Reuse it explicitly, or delete it first.`,
+    );
+  }
+
   async uninstall(slug: string, options: { deleteData?: boolean } = {}): Promise<boolean> {
     const record = this.catalogue.get(slug);
     if (!record) throw new Error(`App ${slug} not installed`);
@@ -264,7 +338,8 @@ export class AppManager {
     await this.releaseDrivers(current.driverBinding, drivers ?? [], key);
     this.running.delete(key);
     this.broadcastExperience({ ...current, state: 'idle' });
-    if (record && !this.hasRunningExperienceFor(appSlug)) {
+    // A crash stays visible until the next successful start.
+    if (record && record.state !== 'crashed' && !this.hasRunningExperienceFor(appSlug)) {
       record.state = 'installed';
       this.broadcastList();
     }
@@ -335,6 +410,17 @@ export class AppManager {
     } catch (err) {
       this.log.warn('could not remove install staging directory', { err: String(err) });
     }
+  }
+
+  private toPublicApp(record: AppRecord): InstalledApp {
+    return {
+      manifest: record.manifest,
+      installedAt: record.installedAt,
+      source: record.builtin ? 'builtin' : 'git',
+      builtin: record.builtin,
+      grantedCapabilities: this.grantedCapabilities(record.manifest.slug),
+      state: record.state,
+    };
   }
 
   private ingest(found: DiscoveredApp, builtin: boolean): AppRecord {
@@ -410,16 +496,6 @@ function installTime(installPath: string): number {
   }
 }
 
-function toPublicApp(record: AppRecord): InstalledApp {
-  return {
-    manifest: record.manifest,
-    installedAt: record.installedAt,
-    source: record.builtin ? 'builtin' : 'git',
-    builtin: record.builtin,
-    state: record.state,
-  };
-}
-
 function toPublicExperience(record: RunningExperience): RunningExperience {
   return {
     appSlug: record.appSlug,
@@ -427,4 +503,13 @@ function toPublicExperience(record: RunningExperience): RunningExperience {
     state: record.state,
     startedAt: record.startedAt,
   };
+}
+
+/** The approved capabilities the manifest actually requests. */
+function approvedSubset(
+  manifest: AppManifest,
+  approved: readonly Capability[],
+): readonly Capability[] {
+  const allowed = new Set(approved);
+  return (manifest.capabilities ?? []).filter((capability) => allowed.has(capability));
 }

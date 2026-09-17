@@ -204,6 +204,11 @@ export interface InstalledApp {
   readonly source: 'builtin' | 'git';
   /** True for apps shipped with GOSAI. They can't be uninstalled. */
   readonly builtin: boolean;
+  /**
+   * Requested capabilities the app's tokens hold: all of them for built-in
+   * apps, the approved ones for installed apps.
+   */
+  readonly grantedCapabilities: readonly Capability[];
   readonly state: AppState;
 }
 

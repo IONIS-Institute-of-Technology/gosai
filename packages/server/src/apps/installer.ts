@@ -9,6 +9,7 @@
 import { randomUUID } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import type { AppManifest } from '@gosai/shared';
 import { assertSlug } from '@gosai/shared/slug';
 import type { ChildLogger } from '../logger/logger.js';
 import type { GosaiPaths } from '../paths.js';
@@ -30,6 +31,8 @@ export interface InstallOptions {
   /** Accept `file:` URLs. Only for tests. */
   readonly allowFileSources?: boolean;
   readonly timeouts?: Partial<InstallTimeouts>;
+  /** Runs once the manifest is read, before the build. Throw to refuse the app. */
+  readonly checkManifest?: (manifest: AppManifest) => void;
 }
 
 export interface InstallResult {
@@ -116,6 +119,7 @@ export async function installApp(options: InstallOptions): Promise<InstallResult
     if (existsSync(finalPath)) {
       throw new Error(`App ${slug} is already installed at ${finalPath}`);
     }
+    options.checkManifest?.(manifest);
 
     await maybeInstallJsDeps({ appPath: stagingPath, logger, timeoutMs: timeouts.jsInstallMs });
     await maybeRunBuild({ appPath: stagingPath, logger, timeoutMs: timeouts.buildMs });
