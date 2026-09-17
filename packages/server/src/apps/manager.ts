@@ -29,6 +29,8 @@ export interface AppManagerOptions {
   readonly bus: EventBus;
   readonly drivers: DriverManager;
   readonly builtinAppsDir?: string;
+  /** Let installs clone `file:` URLs. Only for tests. */
+  readonly allowFileInstalls?: boolean;
 }
 
 export interface StartExperienceOptions {
@@ -78,6 +80,7 @@ export class AppManager {
       source,
       logger: this.log,
       paths: this.options.paths,
+      allowFileSources: this.options.allowFileInstalls === true,
     });
     this.ingest(result.app, result.app.installPath, false);
     const record = this.catalogue.get(result.app.manifest.slug);

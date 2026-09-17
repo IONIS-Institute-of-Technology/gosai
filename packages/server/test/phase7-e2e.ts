@@ -85,6 +85,7 @@ const server = await createServer({
   builtinAppsDir: join(REPO_ROOT, 'apps'),
   enablePython: true,
   dashboardToken: TOKEN,
+  allowFileInstalls: true,
 });
 
 const baseUrl = `http://127.0.0.1:${PORT}`;

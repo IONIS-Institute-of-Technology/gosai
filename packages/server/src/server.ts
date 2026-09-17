@@ -38,6 +38,8 @@ export interface ServerOptions {
   readonly allowedOrigins?: readonly string[];
   /** Extra Host header names allowed besides loopback names and the bind host. */
   readonly allowedHosts?: readonly string[];
+  /** Let `app:install` clone `file:` URLs. Only for tests. */
+  readonly allowFileInstalls?: boolean;
 }
 
 export interface GosaiServer {
@@ -99,6 +101,7 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
     bus,
     drivers,
     builtinAppsDir: options.builtinAppsDir,
+    allowFileInstalls: options.allowFileInstalls === true,
   });
   const storage = new AppStorage(options.paths);
 
