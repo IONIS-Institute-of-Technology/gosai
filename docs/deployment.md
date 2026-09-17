@@ -98,8 +98,8 @@ At launch the shell:
    identical requirements share one installation.
 3. Starts the embedded server on an **ephemeral port** (`GOSAI_PORT=0`; the
    OS picks a free one), so any number of kiosks can run side by side with
-   no port configuration. The chosen port is written to
-   `<home>/server-info.json`.
+   no port configuration. The server prints the chosen port on its
+   `GOSAI_READY` line, which the kiosk reads.
 4. Starts the app's experience and opens it fullscreen on the primary
    display (or the display index baked in at packaging time).
 
@@ -127,9 +127,11 @@ deployed kiosk can be re-pointed without rebuilding:
 | `GOSAI_KIOSK_CALIBRATE=1` | Force the calibration wizard on this launch |
 
 Device assignments (which camera / microphone / resolution the app uses)
-live in `<home>/apps/<slug>/_config/settings.json` and persist across
+live in `<home>/data/<slug>/device-settings.json` and persist across
 launches. App key/value storage (calibration profiles, ...) is under
-`<home>/apps/<slug>/_data/`; logs under `<home>/logs/`.
+`<home>/data/<slug>/storage/`; logs under `<home>/logs/`. The server moves data
+from the old `<home>/apps/<slug>/_data` and `_config` locations on its first
+start, and uninstalling an app keeps its data.
 
 ### Calibration
 
@@ -150,7 +152,7 @@ are packaged together with the built-in calibration runner. On the kiosk:
   The wizard runs first, then the app starts as usual. Subsequent normal
   launches reuse the new profile.
 
-The profile lives in `<home>/apps/<slug>/_data/`, so wiping the data
+The profile lives in `<home>/data/<slug>/storage/`, so wiping the data
 directory also clears calibration.
 
 For unattended operation, a systemd user unit keeps the kiosk alive:

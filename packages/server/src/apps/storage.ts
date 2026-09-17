@@ -1,40 +1,41 @@
 /**
- * Per-app storage: simple JSON key/value store stored at
- * `paths.apps/<slug>/_data/storage/<key>.json`.
- *
- * Keys are sanitised to prevent path traversal. Values must be JSON-serializable.
+ * Per-app key/value storage: one JSON file per key at
+ * `paths.data/<slug>/storage/<key>.json`. Keys are checked against the
+ * protocol's storage key pattern, so they can't leave the directory.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { assertSlug } from '@gosai/shared/slug';
-import type { GosaiPaths } from '../paths.js';
+import { STORAGE_KEY_PATTERN } from '@gosai/shared/schemas';
+import { writeJsonAtomic } from '../config/config.js';
+import { appDataDir, type GosaiPaths } from '../paths.js';
 
-const KEY_PATTERN = /^[a-zA-Z0-9._-]+$/;
+export const STORAGE_DIR = 'storage';
+
+export type StoredValue =
+  { readonly found: true; readonly value: unknown } | { readonly found: false };
 
 export class AppStorage {
-  constructor(private readonly paths: GosaiPaths) {}
+  constructor(private readonly paths: Pick<GosaiPaths, 'data'>) {}
 
-  get(slug: string, key: string): unknown {
-    this.assertKey(key);
+  /** Throws when the stored file isn't valid JSON, rather than hiding the value. */
+  get(slug: string, key: string): StoredValue {
     const path = this.keyPath(slug, key);
-    if (!existsSync(path)) return undefined;
+    if (!existsSync(path)) return { found: false };
     try {
-      return JSON.parse(readFileSync(path, 'utf8'));
-    } catch {
-      return undefined;
+      return { found: true, value: JSON.parse(readFileSync(path, 'utf8')) as unknown };
+    } catch (err) {
+      throw new Error(`Stored value ${key} of ${slug} is corrupt: ${String(err)}`);
     }
   }
 
   set(slug: string, key: string, value: unknown): void {
-    this.assertKey(key);
-    const dir = this.storageDir(slug);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(this.keyPath(slug, key), JSON.stringify(value, null, 2), 'utf8');
+    const path = this.keyPath(slug, key);
+    mkdirSync(this.storageDir(slug), { recursive: true });
+    writeJsonAtomic(path, value === undefined ? null : value);
   }
 
   remove(slug: string, key: string): boolean {
-    this.assertKey(key);
     const path = this.keyPath(slug, key);
     if (!existsSync(path)) return false;
     rmSync(path, { force: true });
@@ -46,20 +47,17 @@ export class AppStorage {
     if (!existsSync(dir)) return [];
     return readdirSync(dir)
       .filter((entry) => entry.endsWith('.json'))
-      .map((entry) => entry.replace(/\.json$/, ''));
-  }
-
-  private assertKey(key: string): void {
-    if (!KEY_PATTERN.test(key)) {
-      throw new Error(`Invalid storage key: ${key}`);
-    }
+      .map((entry) => entry.slice(0, -'.json'.length))
+      .filter((key) => STORAGE_KEY_PATTERN.test(key))
+      .sort();
   }
 
   private storageDir(slug: string): string {
-    return join(this.paths.apps, assertSlug(slug, 'app slug'), '_data', 'storage');
+    return join(appDataDir(this.paths, slug), STORAGE_DIR);
   }
 
   private keyPath(slug: string, key: string): string {
+    if (!STORAGE_KEY_PATTERN.test(key)) throw new Error(`Invalid storage key: ${key}`);
     return join(this.storageDir(slug), `${key}.json`);
   }
 }

@@ -188,7 +188,7 @@ object in its manifest:
 Each declared slot shows up in the dashboard's per-app **device assignments**
 panel, where you pick the concrete camera / microphone / speaker and the target
 display (with a fullscreen ⇄ windowed toggle). Assignments persist to
-`~/.gosai/apps/<slug>/_config/settings.json` and are applied when the app starts
+`~/.gosai/data/<slug>/device-settings.json` and are applied when the app starts
 (camera/microphone changes also hot-apply to a running instance).
 
 Calibration is also per app, but it is declared separately with a top-level

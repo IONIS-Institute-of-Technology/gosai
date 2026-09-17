@@ -38,12 +38,21 @@ bun run typecheck     # tsc --noEmit
 
 The optional `live` layer mirrors ball positions to an external WebSocket
 endpoint. The URL is read from the app's key/value storage under
-`live_server_url`; if empty the layer is dormant. Set it via the dashboard
-(or any other gosai-2 storage tool):
+`live_server_url`; if empty the layer is dormant. Set it with the server's
+`storage:set` command, for example from a WebSocket client holding the
+dashboard token:
 
-```
-POST /v1/apps/interactive-pool/storage/live_server_url
-"wss://example.com/realtimepool/ws"
+```json
+{
+  "v": 1,
+  "id": "1",
+  "type": "storage:set",
+  "payload": {
+    "appSlug": "interactive-pool",
+    "key": "live_server_url",
+    "value": "wss://example.com/realtimepool/ws"
+  }
+}
 ```
 
 ## Audio
