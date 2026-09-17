@@ -11,8 +11,28 @@ export { defineExperience } from './experience.js';
 export { runExperience } from './runtime.js';
 export type { RuntimeHandle, RuntimeOptions } from './runtime.js';
 
-export { createCanvas, fitCanvas, fullscreenContainer } from './renderer.js';
-export type { CanvasOptions } from './renderer.js';
+export {
+  computeFit,
+  createCanvas,
+  createFullscreenCanvas,
+  fitCanvas,
+  fullscreenContainer,
+} from './canvas.js';
+export type {
+  CanvasOptions,
+  FitMode,
+  FitTransform,
+  FittableCanvas,
+  FullscreenCanvas,
+  FullscreenCanvasOptions,
+  Size,
+} from './canvas.js';
+
+export { LayerManager } from './layers.js';
+export type { Layer, LayerDefinition, LayerManagerOptions, LayerPhase } from './layers.js';
+
+export { applyQuadWarp, clearQuadWarp } from './warp.js';
+export type { QuadWarpOptions, WarpTarget } from './warp.js';
 
 export { ServerClient } from './connection.js';
 export type { ConnectionStatus } from './connection.js';
