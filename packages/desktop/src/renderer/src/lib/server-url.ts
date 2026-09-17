@@ -16,8 +16,3 @@ export const SERVER_WS_URL = `ws://${SERVER_HOST}:${SERVER_PORT}/ws`;
 
 /** Dashboard token for the dashboard window, app token for app windows. */
 export const SERVER_TOKEN: string = params.get('token') ?? '';
-
-/** Headers for HTTP calls to the server. */
-export function serverHeaders(extra: Record<string, string> = {}): Record<string, string> {
-  return SERVER_TOKEN ? { ...extra, authorization: `Bearer ${SERVER_TOKEN}` } : extra;
-}

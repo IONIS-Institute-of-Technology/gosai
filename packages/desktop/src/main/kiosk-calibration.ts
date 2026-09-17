@@ -6,33 +6,20 @@
  * 1. Start the built-in `calibration` app's `calibrate` experience with the
  *    target app as driver binding (so it uses the target's camera).
  * 2. Open the control window and the fullscreen projector window.
- * 3. Follow `app:calibration:wizard:*` events over a WebSocket connection to
- *    the embedded server - hiding the control window during background
- *    capture and tearing everything down when the wizard finishes.
+ * 3. Follow `app:calibration:wizard:*` events over main's server connection,
+ *    hiding the control window during background capture and tearing
+ *    everything down when the wizard finishes.
  *
  * The resulting profile is written by the wizard into the target app's own
  * storage inside the kiosk home, so it persists across launches.
  */
 
-import { reportUnauthorized } from './server-auth.js';
+import type { ServerClient } from '@gosai/shared/client';
 import type { WindowRegistry } from './windows.js';
 
 export const CALIBRATION_SLUG = 'calibration';
 const CALIBRATE_EXPERIENCE = 'calibrate';
 export const DEFAULT_CALIBRATION_STATUS_KEY = 'calibration_status';
-
-/** Where Electron main reaches the embedded server, with the dashboard token. */
-export interface ServerAccess {
-  readonly baseUrl: string;
-  readonly token: string;
-}
-
-export function serverHeaders(
-  server: ServerAccess,
-  extra: Record<string, string> = {},
-): Record<string, string> {
-  return { ...extra, authorization: `Bearer ${server.token}` };
-}
 
 export interface CalibrationSchema {
   required?: boolean;
@@ -42,37 +29,31 @@ export interface CalibrationSchema {
 
 /** True when the target app's calibration status key exists in storage. */
 export async function isCalibrated(
-  server: ServerAccess,
+  server: ServerClient,
   appSlug: string,
   statusKey: string,
 ): Promise<boolean> {
   try {
-    const res = await fetch(
-      `${server.baseUrl}/v1/apps/${appSlug}/storage/${encodeURIComponent(statusKey)}`,
-      { headers: serverHeaders(server) },
-    );
-    reportUnauthorized(res.status);
-    return res.status === 200;
-  } catch {
+    return (await server.request('storage:get', { appSlug, key: statusKey })).found;
+  } catch (err) {
+    console.error(`[gosai-kiosk] could not read the calibration status: ${String(err)}`);
     return false;
   }
 }
 
 /** True when the calibration runner app is installed on the server. */
-export async function hasCalibrationRunner(server: ServerAccess): Promise<boolean> {
+export async function hasCalibrationRunner(server: ServerClient): Promise<boolean> {
   try {
-    const res = await fetch(`${server.baseUrl}/v1/apps`, { headers: serverHeaders(server) });
-    reportUnauthorized(res.status);
-    if (!res.ok) return false;
-    const data = (await res.json()) as { apps: Array<{ manifest: { slug: string } }> };
-    return data.apps.some((a) => a.manifest.slug === CALIBRATION_SLUG);
-  } catch {
+    const { apps } = await server.request('apps:list');
+    return apps.some((a) => a.manifest.slug === CALIBRATION_SLUG);
+  } catch (err) {
+    console.error(`[gosai-kiosk] could not list apps: ${String(err)}`);
     return false;
   }
 }
 
 export interface RunKioskCalibrationOptions {
-  readonly server: ServerAccess;
+  readonly server: ServerClient;
   readonly windows: WindowRegistry;
   readonly targetAppSlug: string;
   readonly displayId: number;
@@ -83,28 +64,11 @@ export async function runKioskCalibration(options: RunKioskCalibrationOptions): 
   const { server, windows, targetAppSlug, displayId } = options;
   const driverBinding = targetAppSlug;
 
-  const startRes = await fetch(`${server.baseUrl}/v1/experiences/start`, {
-    method: 'POST',
-    headers: serverHeaders(server, { 'content-type': 'application/json' }),
-    body: JSON.stringify({
-      appSlug: CALIBRATION_SLUG,
-      experienceSlug: CALIBRATE_EXPERIENCE,
-      driverBinding,
-    }),
+  await server.request('experience:start', {
+    appSlug: CALIBRATION_SLUG,
+    experienceSlug: CALIBRATE_EXPERIENCE,
+    driverBinding,
   });
-  if (!startRes.ok) {
-    reportUnauthorized(startRes.status);
-    throw new Error(`could not start calibration experience: ${await startRes.text()}`);
-  }
-
-  const wsUrl = new URL('/ws', server.baseUrl.replace(/^http/, 'ws'));
-  wsUrl.searchParams.set('token', server.token);
-  const events = new EventSocket(wsUrl.toString());
-  await events.connect();
-  events.subscribe([
-    `app:${CALIBRATION_SLUG}:wizard:step`,
-    `app:${CALIBRATION_SLUG}:wizard:finished`,
-  ]);
 
   // Control before projector, mirroring the dashboard flow (macOS tears down
   // a fullscreen window when an always-on-top window is created after it).
@@ -131,74 +95,24 @@ export async function runKioskCalibration(options: RunKioskCalibrationOptions): 
     const finish = (): void => {
       if (done) return;
       done = true;
-      events.close();
+      offStep();
+      offFinished();
       // Tears down both windows and stops the experience on the server.
       windows.endExperience(CALIBRATION_SLUG, CALIBRATE_EXPERIENCE);
       resolve();
     };
 
-    events.on(`app:${CALIBRATION_SLUG}:wizard:step`, (payload) => {
-      const step = (payload as { step?: string } | null)?.step;
-      if (!step) return;
+    const offStep = server.on(`app:${CALIBRATION_SLUG}:wizard:step`, (payload) => {
+      const step = (payload as { step?: unknown } | null)?.step;
+      if (typeof step !== 'string') return;
       // The control window must not pollute the camera's view of the
       // projected pattern during background capture.
       windows.setControlWindowVisible(control.id, step !== 'background');
     });
-    events.on(`app:${CALIBRATION_SLUG}:wizard:finished`, finish);
+    const offFinished = server.on(`app:${CALIBRATION_SLUG}:wizard:finished`, finish);
 
     // Operator closed a window manually: treat as the end of the wizard.
     projector.window.on('closed', finish);
     control.window.on('closed', finish);
   });
-}
-
-/**
- * Minimal WebSocket event listener speaking the GOSAI server protocol. Only
- * supports subscribe + event dispatch - enough for the calibration flow.
- * Uses the WebSocket client built into Electron's Node runtime.
- */
-class EventSocket {
-  private ws: WebSocket | null = null;
-  private readonly listeners = new Map<string, (payload: unknown) => void>();
-
-  constructor(private readonly url: string) {}
-
-  connect(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const ws = new WebSocket(this.url);
-      this.ws = ws;
-      ws.addEventListener('open', () => resolve());
-      ws.addEventListener('error', () => {
-        // The URL carries the token, so leave the query out of the message.
-        reject(new Error(`WebSocket failed: ${this.url.split('?')[0]}`));
-      });
-      ws.addEventListener('message', (ev) => {
-        let parsed: { type?: string; payload?: unknown };
-        try {
-          parsed = JSON.parse(String(ev.data)) as typeof parsed;
-        } catch {
-          return;
-        }
-        if (!parsed.type) return;
-        this.listeners.get(parsed.type)?.(parsed.payload);
-      });
-    });
-  }
-
-  subscribe(eventNames: string[]): void {
-    this.ws?.send(JSON.stringify({ v: 1, type: 'subscribe', payload: { events: eventNames } }));
-  }
-
-  on(event: string, listener: (payload: unknown) => void): void {
-    this.listeners.set(event, listener);
-  }
-
-  close(): void {
-    try {
-      this.ws?.close();
-    } catch {
-      // ignore
-    }
-    this.ws = null;
-  }
 }

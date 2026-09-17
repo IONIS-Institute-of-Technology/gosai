@@ -1,5 +1,5 @@
 import { type JSX, useEffect, useState } from 'react';
-import { SERVER_BASE_URL, SERVER_TOKEN, serverHeaders } from '../lib/server-url.js';
+import { SERVER_BASE_URL, SERVER_TOKEN } from '../lib/server-url.js';
 
 interface LoadResult {
   status: 'loading' | 'ready' | 'error';
@@ -36,23 +36,19 @@ export function AppHost(): JSX.Element {
         )) as typeof import('@gosai/sdk');
         if (cancelled) return;
 
-        const manifestRes = await fetch(`${SERVER_BASE_URL}/v1/apps`, {
-          headers: serverHeaders(),
-        });
+        // The manifest is one of the app's static files.
+        const manifestRes = await fetch(
+          `${SERVER_BASE_URL}/v1/apps/${appSlug}/static/gosai.app.json`,
+        );
         if (cancelled) return;
-        if (!manifestRes.ok) throw new Error(`Cannot fetch apps list (${manifestRes.status})`);
-        const apps = (await manifestRes.json()) as {
-          apps: Array<{
-            manifest: {
-              slug: string;
-              experiences: Array<{ slug: string; entry: string }>;
-            };
-          }>;
+        if (!manifestRes.ok) throw new Error(`App ${appSlug} is not installed`);
+        const app = {
+          manifest: (await manifestRes.json()) as {
+            experiences: Array<{ slug: string; entry: string }>;
+          },
         };
         if (cancelled) return;
 
-        const app = apps.apps.find((a) => a.manifest.slug === appSlug);
-        if (!app) throw new Error(`App ${appSlug} is not installed`);
         const exp = app.manifest.experiences.find((e) => e.slug === experienceSlug);
         if (!exp) throw new Error(`Experience ${experienceSlug} not declared in ${appSlug}`);
 

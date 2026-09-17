@@ -9,8 +9,8 @@ import {
 } from 'electron';
 import { join } from 'node:path';
 import { mintAppToken } from '@gosai/shared/auth';
+import { ServerClient } from '@gosai/shared/client';
 import { IPC_CHANNELS } from './channels.js';
-import { reportUnauthorized } from './server-auth.js';
 
 interface WindowRegistryOptions {
   readonly rootDir: string;
@@ -78,19 +78,39 @@ export class WindowRegistry {
   private shuttingDown = false;
   private serverHost: string;
   private serverPort: number;
+  private client: ServerClient;
 
   constructor(private readonly options: WindowRegistryOptions) {
     this.serverHost = options.serverHost ?? '127.0.0.1';
     this.serverPort = options.serverPort ?? 7777;
+    this.client = this.connectClient();
   }
 
   /**
-   * Points every window opened from now on at the given server. Called after
-   * the embedded server reports its (possibly ephemeral) port.
+   * Points every window opened from now on, and main's own connection, at the
+   * given server. Called after the embedded server reports its (possibly
+   * ephemeral) port.
    */
   setServerAddress(addr: { host: string; port: number }): void {
     this.serverHost = addr.host;
     this.serverPort = addr.port;
+    this.client.close();
+    this.client = this.connectClient();
+  }
+
+  /** Main's connection to the server, with the dashboard token. */
+  get server(): ServerClient {
+    return this.client;
+  }
+
+  private connectClient(): ServerClient {
+    const client = new ServerClient({
+      url: `ws://${this.serverHost}:${this.serverPort}/ws`,
+      token: this.options.dashboardToken,
+    });
+    client.onError((err, context) => console.error(`[gosai-desktop] ${context} failed`, err));
+    client.connect();
+    return client;
   }
 
   get serverBaseUrl(): string {
@@ -512,16 +532,15 @@ export class WindowRegistry {
 
   private stopExperienceOnServer(appSlug: string, experienceSlug: string): void {
     if (this.shuttingDown) return;
-    void fetch(`${this.serverBaseUrl}/v1/experiences/stop`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${this.options.dashboardToken}`,
-      },
-      body: JSON.stringify({ appSlug, experienceSlug }),
-    })
-      .then((res) => reportUnauthorized(res.status))
-      .catch(() => undefined);
+    const client = this.client;
+    void (async () => {
+      try {
+        await client.ready(5_000);
+        await client.request('experience:stop', { appSlug, experienceSlug });
+      } catch (err) {
+        console.error(`[gosai-desktop] could not stop ${appSlug}/${experienceSlug}`, err);
+      }
+    })();
   }
 
   private notifyExperienceEnded(appSlug: string, experienceSlug: string): void {
