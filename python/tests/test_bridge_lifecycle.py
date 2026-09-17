@@ -607,3 +607,44 @@ def test_serial_queue_close_cancels_pending_tasks() -> None:
     assert queue.join(5.0)
     assert ran == ["slow"]
     assert cancelled == ["queued"]
+
+
+def test_buffered_events_keep_order_and_bound_memory() -> None:
+    written: list[bytes] = []
+    first_write = threading.Event()
+    release = threading.Event()
+
+    def slow_sink(chunk: memoryview) -> int:
+        first_write.set()
+        release.wait(5.0)
+        written.append(bytes(chunk))
+        return len(chunk)
+
+    writer = _Writer(slow_sink, _Metrics())
+    writer.start()
+    key = ("app", "microphone", "audio_stream")
+    try:
+        writer.post_buffered(key, {"type": "event", "data": 0}, maxsize=10)
+        assert first_write.wait(5.0)
+        for value in range(1, 100):
+            writer.post_buffered(key, {"type": "event", "data": value}, maxsize=10)
+            if value % 10 == 0:
+                writer.post({"type": "log", "message": f"log {value}"})
+        writer.post({"type": "result", "id": "r", "ok": True})
+    finally:
+        release.set()
+        writer.close(5.0)
+
+    messages = [msgspec.json.decode(line) for line in b"".join(written).splitlines()]
+    assert [m["data"] for m in messages if m["type"] == "event"] == [0, *range(90, 100)]
+    assert len([m for m in messages if m["type"] == "log"]) == 9
+    assert [m["id"] for m in messages if m["type"] == "result"] == ["r"]
+    dropped = [m for m in messages if m["type"] == "performance"]
+    assert [(m["metric"], m["count"]) for m in dropped] == [("audio_stream_dropped", 89)]
+
+
+def test_microphone_audio_is_buffered_not_coalesced() -> None:
+    from gosai_py.drivers.microphone import MicrophoneDriver
+
+    assert MicrophoneDriver.buffered_events["audio_stream"] > 0
+    assert "audio_stream" not in MicrophoneDriver.stream_events

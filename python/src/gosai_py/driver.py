@@ -77,8 +77,11 @@ class BaseDriver:
       starts them first, in the same instance namespace.
     - `stream_events`: high-rate events (frames, per-frame results) where only
       the newest value matters. When Node reads slower than the driver emits,
-      the bridge sends only the latest value of these. Every other event is
-      delivered in order.
+      the bridge sends only the latest value of these.
+    - `buffered_events`: event name to queue size, for continuous data where
+      every value matters but memory must stay bounded, such as audio. The
+      bridge sends these in order and drops the oldest when a slow reader lets
+      the queue fill. Every other event is delivered in order without drops.
     - `subscribed`: `(driver, event)` pairs delivered to `on_data` once
       `pre_run` succeeds.
     - `subscription_queue_size`: how `subscribed` events are delivered. None
@@ -95,6 +98,7 @@ class BaseDriver:
     actions: ClassVar[tuple[str, ...]] = ()
     dependencies: ClassVar[tuple[str, ...]] = ()
     stream_events: ClassVar[tuple[str, ...]] = ()
+    buffered_events: ClassVar[dict[str, int]] = {}
     subscribed: ClassVar[tuple[tuple[str, str], ...]] = ()
     subscription_queue_size: ClassVar[int | None] = None
     loop_interval_s: ClassVar[float | None] = 0.01
