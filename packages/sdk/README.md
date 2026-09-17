@@ -483,19 +483,45 @@ for built-in drivers. A driver can only depend on drivers of the same package,
 since other drivers run in other processes. To run a built-in driver in your
 process, subclass it in your package; it then opens its own device. The process
 gets `GOSAI_APP_SLUG`, `GOSAI_APP_DIR` and `GOSAI_APP_DATA_DIR` (the app's data
-directory, which may not exist yet) in its environment.
+directory, which may not exist yet) in its environment. It writes Python
+bytecode into its environment, never into the app directory, which may be read
+only or inside a signed application bundle.
+
+When an app is uninstalled, or replaced by a new install with the same slug,
+GOSAI stops its driver process, and first stops every running experience, of
+any app, that uses its drivers. Start them again once the new version is
+installed.
 
 **Environment.** Installing the app builds a Python environment for it with uv,
 in `<GOSAI home>/python-envs/installed/<slug>/` (`builtin/<slug>/` for apps
 bundled with GOSAI, built when the server starts). It is layered on GOSAI's own
 environment: `gosai_py`, numpy, OpenCV, MediaPipe, ONNX Runtime and msgspec are
 already importable. Never list `gosai-py` itself. uv installs your requirements
-file on top. A package GOSAI's environment also has is pinned
-to GOSAI's version, so a requirement that needs another version fails the
-install with uv's explanation instead of breaking GOSAI's drivers. GOSAI builds
-the environment again when the requirements file or its own environment
-changes, for example after an update. An app with Python drivers can't be
-installed when GOSAI has no Python runtime.
+file on top. A package GOSAI's environment also has is pinned to GOSAI's
+version, so a requirement that needs another version fails the install with
+uv's explanation instead of breaking GOSAI's drivers. GOSAI builds the
+environment again when the requirements file or its own environment changes,
+for example after an update. An app with Python drivers can't be installed when
+GOSAI has no Python runtime.
+
+A few things to know about requirements:
+
+- uv doesn't see the packages your environment borrows from GOSAI's. When one
+  of your requirements depends on one of them, such as a library that needs
+  numpy, uv installs another copy into your environment, at GOSAI's version.
+  That takes the download (or uv's cache) and disk space, up to hundreds of MB
+  for OpenCV, and your process imports that copy. Listing numpy yourself has
+  the same effect, so leave out what GOSAI already has.
+- Editable local requirements (`-e ./python/mypkg`) are refused, because the
+  environment is built before the app moves into place. List the path without
+  `-e`: uv installs a copy.
+- Requirements may name other package indexes, and may install modules that
+  shadow GOSAI's. Both only affect your own environment and driver process,
+  never the built-in drivers or other apps.
+- The first build can take minutes. An experience that starts meanwhile fails
+  after 30 seconds with "Python environment for <slug> is still being
+  prepared" while the build goes on; start it again once it is done. The
+  Logs panel shows uv's progress.
 
 **Types.** Print the schemas of your drivers with GOSAI's Python, then generate
 types as for any driver (see [Driver data](#driver-data)). From a GOSAI
