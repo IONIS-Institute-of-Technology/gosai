@@ -97,7 +97,14 @@ interface Menu {
   readonly sounds: MenuSounds;
 }
 
-export function createMenuLayer(rt: ExperienceRuntimeContext, layers: MenuLayers): PoolLayer {
+/** Loads a sound by app path. Defaults to `loadSound` through the runtime; tests replace it. */
+export type SoundLoader = (path: string) => Promise<Sound>;
+
+export function createMenuLayer(
+  rt: ExperienceRuntimeContext,
+  layers: MenuLayers,
+  load: SoundLoader = (path) => loadSound(rt, path),
+): PoolLayer {
   const items: MenuItem[] = layers
     .definitions()
     .flatMap((def) =>
@@ -110,9 +117,9 @@ export function createMenuLayer(rt: ExperienceRuntimeContext, layers: MenuLayers
   return {
     async preload(): Promise<void> {
       const [open, close, click] = await Promise.all([
-        loadSound(rt, 'assets/audio/opening_menu.mp3'),
-        loadSound(rt, 'assets/audio/closing_menu.mp3'),
-        loadSound(rt, 'assets/audio/click.mp3'),
+        load('assets/audio/opening_menu.mp3'),
+        load('assets/audio/closing_menu.mp3'),
+        load('assets/audio/click.mp3'),
       ]);
       menu = { state: initialState(), layers, items, sounds: { open, close, click } };
     },
