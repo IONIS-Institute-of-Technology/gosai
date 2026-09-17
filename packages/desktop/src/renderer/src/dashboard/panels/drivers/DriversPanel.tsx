@@ -1,5 +1,11 @@
 import { useState } from 'react';
-import type { DriverInfo, DriverRuntimeInfo, DriverSchema } from '@gosai/shared';
+import {
+  splitDriverName,
+  type DriverInfo,
+  type DriverRuntimeInfo,
+  type DriverSchema,
+} from '@gosai/shared';
+import { groupDrivers } from '../../../lib/drivers.js';
 import { useServerResource } from '../../../lib/use-server-resource.js';
 import { EmptyState } from '../../components/EmptyState.js';
 import { ErrorText } from '../../components/ErrorText.js';
@@ -8,7 +14,8 @@ import { SchemaTree } from './SchemaTree.js';
 
 /**
  * Every driver the server knows, including drivers no installed app uses, with
- * the events, actions and config its schema declares.
+ * the events, actions and config its schema declares. Drivers apps ship are
+ * listed under their app.
  */
 export function DriversPanel(): React.ReactElement {
   const drivers = useServerResource(
@@ -33,16 +40,25 @@ export function DriversPanel(): React.ReactElement {
         {list.length === 0 ? (
           <EmptyState message={drivers.data ? 'No drivers registered' : 'Loading…'} />
         ) : (
-          <ul className="divide-y divide-neutral-800 overflow-hidden rounded border border-neutral-800">
-            {list.map((driver) => (
-              <DriverRow
-                key={driver.name}
-                driver={driver}
-                schema={schemas.data?.[driver.name]?.schema ?? null}
-                schemaLoading={schemas.loading}
-              />
+          <div className="space-y-4">
+            {groupDrivers(list).map((group) => (
+              <section key={group.app ?? ''} className="space-y-1.5">
+                <h3 className="font-mono text-[10px] tracking-wider text-neutral-500 uppercase">
+                  {group.app === null ? 'Built-in' : `App ${group.app}`} ({group.drivers.length})
+                </h3>
+                <ul className="divide-y divide-neutral-800 overflow-hidden rounded border border-neutral-800">
+                  {group.drivers.map((driver) => (
+                    <DriverRow
+                      key={driver.name}
+                      driver={driver}
+                      schema={schemas.data?.[driver.name]?.schema ?? null}
+                      schemaLoading={schemas.loading}
+                    />
+                  ))}
+                </ul>
+              </section>
             ))}
-          </ul>
+          </div>
         )}
       </Panel>
     </div>
@@ -76,8 +92,14 @@ function DriverRow({
         >
           ▸
         </span>
-        <span className="w-48 shrink-0 truncate font-mono text-sm text-neutral-100">
-          {driver.name}
+        <span
+          className="w-48 shrink-0 truncate font-mono text-sm text-neutral-100"
+          title={driver.name}
+        >
+          {splitDriverName(driver.name).app ? (
+            <span className="text-neutral-500">{splitDriverName(driver.name).app}/</span>
+          ) : null}
+          {splitDriverName(driver.name).driver}
         </span>
         <StatePill state={driver.state} />
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-neutral-500">

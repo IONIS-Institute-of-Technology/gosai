@@ -72,7 +72,9 @@ export function sdkRangeLabel(manifest: Pick<InstalledApp['manifest'], 'sdk'>): 
 /** Whether the app asks for anything an operator should review. */
 export function hasPermissionRequests(app: InstalledApp): boolean {
   return (
-    (app.manifest.capabilities?.length ?? 0) > 0 || (app.manifest.network?.connect?.length ?? 0) > 0
+    (app.manifest.capabilities?.length ?? 0) > 0 ||
+    (app.manifest.network?.connect?.length ?? 0) > 0 ||
+    app.manifest.python !== undefined
   );
 }
 

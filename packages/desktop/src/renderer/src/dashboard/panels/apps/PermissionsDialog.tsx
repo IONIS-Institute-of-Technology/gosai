@@ -140,6 +140,29 @@ function PermissionsForm({
         </section>
       ) : null}
 
+      {manifest.python ? (
+        <section className="space-y-2">
+          <h3 className="font-mono text-[10px] tracking-wider text-neutral-400 uppercase">
+            Python drivers
+          </h3>
+          <p className="text-[11px] text-neutral-400">
+            The app ships Python drivers from{' '}
+            <code className="font-mono text-neutral-200">{manifest.python.drivers}</code>. They run
+            as Python code on this computer, outside the app window&apos;s sandbox, in a bridge
+            process and environment of their own
+            {manifest.python.requirements ? (
+              <>
+                {' '}
+                with the packages in{' '}
+                <code className="font-mono text-neutral-200">{manifest.python.requirements}</code>
+              </>
+            ) : null}
+            . Their drivers are listed in the Drivers tab as{' '}
+            <code className="font-mono text-neutral-200">{manifest.slug}/…</code>.
+          </p>
+        </section>
+      ) : null}
+
       {readOnly ? (
         <p className="text-[11px] text-neutral-500">
           Built-in apps hold every capability they request.

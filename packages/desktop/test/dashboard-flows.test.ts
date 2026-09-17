@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import type { InstalledApp } from '@gosai/shared';
+import type { DriverInfo, InstalledApp } from '@gosai/shared';
+import { groupDrivers } from '../src/renderer/src/lib/drivers.js';
 import { ServerRequestError } from '@gosai/shared/client';
 import {
   cameraDevicePatch,
@@ -112,6 +113,9 @@ describe('install and capability approval', () => {
       },
     ]);
     expect(hasPermissionRequests(app({ capabilities: [] }))).toBe(false);
+    expect(hasPermissionRequests(app({ capabilities: [], python: { drivers: 'drivers' } }))).toBe(
+      true,
+    );
     expect(
       hasPermissionRequests(
         app({ capabilities: [], network: { connect: ['ws://relay.local:8080'] } }),
@@ -164,5 +168,23 @@ describe('camera pickers', () => {
     expect(() => parseCameraFormats({ ok: true, device: 0, formats: [] })).toThrow(
       'No supported camera modes detected',
     );
+  });
+});
+
+describe('driver groups', () => {
+  test("lists built-in drivers first, then each app's drivers under the app", () => {
+    const driver = (name: string) => ({ name }) as DriverInfo;
+    const groups = groupDrivers([
+      driver('zeta/counter'),
+      driver('camera'),
+      driver('hello-gosai/counter'),
+      driver('hand_pose'),
+      driver('hello-gosai/clock'),
+    ]);
+    expect(groups.map((g) => [g.app, g.drivers.map((d) => d.name)])).toEqual([
+      [null, ['camera', 'hand_pose']],
+      ['hello-gosai', ['hello-gosai/counter', 'hello-gosai/clock']],
+      ['zeta', ['zeta/counter']],
+    ]);
   });
 });
