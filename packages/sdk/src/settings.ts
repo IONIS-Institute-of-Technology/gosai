@@ -36,15 +36,72 @@ export function createSettingsClient(backend: SettingsBackend): SettingsClient {
  * checks each value against its declared field.
  */
 export function serverSettingsBackend(appSlug: string, server: ServerConnection): SettingsBackend {
+  const load = async (): Promise<SettingsObject> => ({
+    ...(await server.request('app:settings:get', { appSlug })),
+  });
+  const listeners = new Set<(settings: SettingsObject) => void>();
+  /** JSON of the settings listeners last saw, or `null` before the first known value. */
+  let last: string | null = null;
+  /** Bumped on every change, so a slower load can't replace newer settings. */
+  let version = 0;
+  let release: (() => void) | null = null;
+
+  /** Notifies listeners unless the settings equal the ones they last saw. */
+  const publish = (settings: SettingsObject): void => {
+    const json = JSON.stringify(settings);
+    version += 1;
+    if (json === last) return;
+    last = json;
+    for (const listener of [...listeners]) listener({ ...settings });
+  };
+
+  /**
+   * Loads the settings. `announce` publishes them; otherwise they only become
+   * the last seen settings, when none are known yet.
+   */
+  const refresh = (announce: boolean): void => {
+    const started = version;
+    load().then(
+      (settings) => {
+        if (version !== started) return;
+        if (announce) publish(settings);
+        else last ??= JSON.stringify(settings);
+      },
+      () => undefined,
+    );
+  };
+
+  const start = (): (() => void) => {
+    // Changes broadcast while disconnected are lost, so a reconnect reloads.
+    const offChange = server.on('app:settings-changed', (change) => {
+      if (change.appSlug === appSlug) publish({ ...change.values });
+    });
+    const offStatus = server.onStatus((status) => {
+      if (status === 'connected') refresh(true);
+    });
+    refresh(false);
+    return () => {
+      offChange();
+      offStatus();
+      last = null;
+      version += 1;
+    };
+  };
+
   return {
-    load: async () => ({ ...(await server.request('app:settings:get', { appSlug })) }),
+    load,
     update: async (values) => {
       await server.request('app:settings:set', { appSlug, values: settingValues(values) });
     },
-    subscribe: (listener) =>
-      server.on('app:settings-changed', (change) => {
-        if (change.appSlug === appSlug) listener({ ...change.values });
-      }),
+    subscribe: (listener) => {
+      listeners.add(listener);
+      release ??= start();
+      return () => {
+        if (!listeners.delete(listener) || listeners.size > 0) return;
+        release?.();
+        release = null;
+      };
+    },
   };
 }
 

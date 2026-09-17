@@ -200,7 +200,8 @@ export interface SettingsClient {
   set(values: Readonly<Record<string, unknown>>): Promise<void>;
   /**
    * Called with the settings, shaped like `get` returns them, each time they
-   * change, for example from the dashboard. Returns a function that removes
+   * change, for example from the dashboard. Changes made while the connection
+   * was down are reported after it reconnects. Returns a function that removes
    * the listener. Listeners still set when the experience stops are removed.
    */
   onChange<T extends object = Record<string, unknown>>(listener: (settings: T) => void): () => void;

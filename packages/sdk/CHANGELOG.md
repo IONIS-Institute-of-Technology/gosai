@@ -23,8 +23,9 @@ Breaking:
 Added:
 
 - `rt.settings.onChange(listener)` follows changes to the app's settings, for
-  example from the dashboard. The runtime removes the listener when the
-  experience stops.
+  example from the dashboard, including changes made while the connection was
+  down: a reconnect reloads the settings. The runtime removes the listener when
+  the experience stops.
 
 ## 0.1.0
 

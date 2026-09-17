@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import { createSettingsClient, serverSettingsBackend } from '../src/settings.js';
 import { FakeServer } from './fakes.js';
+import type { WelcomePayload } from '@gosai/shared/protocol';
+
+const WELCOME = { protocolVersion: 1 } as WelcomePayload;
+
+const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe('settings', () => {
   test('get returns the settings app:settings:get merged with the defaults', async () => {
@@ -49,5 +54,51 @@ describe('settings', () => {
       update: async () => undefined,
     });
     expect(() => settings.onChange(() => undefined)()).not.toThrow();
+  });
+
+  test('onChange reloads after a reconnect and reports settings changed meanwhile', async () => {
+    const server = new FakeServer();
+    let stored: Record<string, unknown> = { debug: false };
+    server.reply = (type) => (type === 'app:settings:get' ? stored : { ok: true });
+    const settings = createSettingsClient(serverSettingsBackend('demo', server.connection));
+    const seen: unknown[] = [];
+    const off = settings.onChange((values) => seen.push(values));
+    await settle();
+
+    // Reconnecting with nothing changed stays quiet.
+    server.reconnect(WELCOME);
+    await settle();
+    expect(seen).toEqual([]);
+
+    stored = { debug: true };
+    server.reconnect(WELCOME);
+    await settle();
+    expect(seen).toEqual([{ debug: true }]);
+
+    // The broadcast that follows the same change isn't reported twice.
+    server.emit('app:settings-changed', { appSlug: 'demo', values: { debug: true } });
+    expect(seen).toHaveLength(1);
+
+    off();
+    stored = { debug: false };
+    server.reconnect(WELCOME);
+    await settle();
+    expect(seen).toHaveLength(1);
+    expect(server.requestsOf('app:settings:get')).toHaveLength(3);
+  });
+
+  test('a reload that started before a broadcast does not undo it', async () => {
+    const server = new FakeServer();
+    let resolveLoad: (values: unknown) => void = () => undefined;
+    server.reply = () => new Promise((resolve) => (resolveLoad = resolve));
+    const settings = createSettingsClient(serverSettingsBackend('demo', server.connection));
+    const seen: unknown[] = [];
+    settings.onChange((values) => seen.push(values));
+
+    server.reconnect(WELCOME);
+    server.emit('app:settings-changed', { appSlug: 'demo', values: { debug: true } });
+    resolveLoad({ debug: false });
+    await settle();
+    expect(seen).toEqual([{ debug: true }]);
   });
 });
