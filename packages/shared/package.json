@@ -54,6 +54,10 @@
       "types": "./src/slug.ts",
       "import": "./src/slug.ts"
     },
+    "./driver-names": {
+      "types": "./src/driver-names.ts",
+      "import": "./src/driver-names.ts"
+    },
     "./auth": {
       "types": "./src/auth.ts",
       "import": "./src/auth.ts"
