@@ -86,7 +86,8 @@ export class WindowRegistry {
   private dashboard: BrowserWindow | null = null;
   private readonly appHosts = new Map<number, AppHostHandle>();
   private readonly controlWindows = new Map<number, ControlWindowHandle>();
-  private readonly endingExperiences = new Set<string>();
+  private readonly endingExperiences = new Map<string, Promise<void>>();
+  private readonly userCloseListeners = new Set<(window: AppWindowInfo) => void>();
   private powerSaveBlockerId: number | null = null;
   private shuttingDown = false;
   private displayEventsInstalled = false;
@@ -425,10 +426,21 @@ export class WindowRegistry {
       void this.stopAndDestroy(win);
     });
     win.on('closed', () => {
+      // Main removes the handle before closing a window itself, so a handle
+      // still here means the user or the window manager closed it.
       if (!this.appHosts.delete(handle.id)) return;
       this.windowsChanged();
+      for (const listener of Array.from(this.userCloseListeners)) {
+        listener({
+          windowId: handle.id,
+          appSlug: handle.appSlug,
+          experienceSlug: handle.experienceSlug,
+          role: 'app',
+          displayId: handle.displayId,
+        });
+      }
       if (this.hasControlFor(opts.appSlug, opts.experienceSlug)) return;
-      this.stopExperienceOnServer(opts.appSlug, opts.experienceSlug);
+      void this.stopExperienceOnServer(opts.appSlug, opts.experienceSlug);
     });
 
     return handle;
@@ -498,7 +510,7 @@ export class WindowRegistry {
     win.on('close', (event) => {
       if (this.shuttingDown) return;
       event.preventDefault();
-      this.endExperience(opts.appSlug, opts.experienceSlug);
+      void this.endExperience(opts.appSlug, opts.experienceSlug);
     });
 
     return handle;
@@ -541,21 +553,29 @@ export class WindowRegistry {
    * the server once they are gone, so its stop hooks run while its drivers
    * still do.
    */
-  endExperience(appSlug: string, experienceSlug: string): void {
-    if (this.shuttingDown) return;
+  endExperience(appSlug: string, experienceSlug: string): Promise<void> {
+    if (this.shuttingDown) return Promise.resolve();
     const key = `${appSlug}:${experienceSlug}`;
-    if (this.endingExperiences.has(key)) return;
-    this.endingExperiences.add(key);
-    void this.closeExperienceWindowsNow(appSlug, experienceSlug).then(() => {
-      this.stopExperienceOnServer(appSlug, experienceSlug);
-      this.endingExperiences.delete(key);
-    });
+    const pending = this.endingExperiences.get(key);
+    if (pending) return pending;
+    const ending = (async () => {
+      await this.closeExperienceWindowsNow(appSlug, experienceSlug);
+      await this.stopExperienceOnServer(appSlug, experienceSlug);
+    })().finally(() => this.endingExperiences.delete(key));
+    this.endingExperiences.set(key, ending);
+    return ending;
+  }
+
+  /** Calls `listener` when the user or the window manager closes an app window. */
+  onAppWindowClosedByUser(listener: (window: AppWindowInfo) => void): () => void {
+    this.userCloseListeners.add(listener);
+    return () => this.userCloseListeners.delete(listener);
   }
 
   /** Stops and closes the experience's windows, for an experience the server already stopped. */
-  closeExperienceWindows(appSlug: string, experienceSlug: string): void {
-    if (this.shuttingDown) return;
-    void this.closeExperienceWindowsNow(appSlug, experienceSlug);
+  closeExperienceWindows(appSlug: string, experienceSlug: string): Promise<void> {
+    if (this.shuttingDown) return Promise.resolve();
+    return this.closeExperienceWindowsNow(appSlug, experienceSlug);
   }
 
   private async closeExperienceWindowsNow(appSlug: string, experienceSlug: string): Promise<void> {
@@ -579,17 +599,16 @@ export class WindowRegistry {
     return false;
   }
 
-  private stopExperienceOnServer(appSlug: string, experienceSlug: string): void {
+  /** Never rejects. */
+  private async stopExperienceOnServer(appSlug: string, experienceSlug: string): Promise<void> {
     if (this.shuttingDown) return;
     const client = this.server;
-    void (async () => {
-      try {
-        await client.ready(5_000);
-        await client.request('experience:stop', { appSlug, experienceSlug });
-      } catch (err) {
-        console.error(`[gosai-desktop] could not stop ${appSlug}/${experienceSlug}`, err);
-      }
-    })();
+    try {
+      await client.ready(5_000);
+      await client.request('experience:stop', { appSlug, experienceSlug });
+    } catch (err) {
+      console.error(`[gosai-desktop] could not stop ${appSlug}/${experienceSlug}`, err);
+    }
   }
 
   /** Updates the power save blocker and tells the dashboard. */

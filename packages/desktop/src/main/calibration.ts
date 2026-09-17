@@ -7,8 +7,8 @@
  *    binding so it uses the app's camera, or the app's own `experience`.
  * 2. Starts the flow's experience and opens its control window, then its
  *    fullscreen projector window. Both get `role` and `target` params.
- * 3. Resolves with the flow's `wizard:finished` result, and closes both
- *    windows and stops the experience. Closing a window, a crashed window, a
+ * 3. On the flow's `wizard:finished` result, closes both windows, stops the
+ *    experience, and then resolves with the result. Closing a window, a crashed window, a
  *    failed start or a lost server connection end the run too, so the caller
  *    never waits forever.
  *
@@ -45,8 +45,8 @@ export interface CalibrationWindows extends DisplaySource {
   readonly server: CalibrationServer;
   openControlWindow(options: OpenControlWindowOptions): CalibrationWindowHandle;
   openAppHost(options: OpenAppHostOptions): CalibrationWindowHandle;
-  /** Closes the experience's windows and stops it on the server. */
-  endExperience(appSlug: string, experienceSlug: string): void;
+  /** Closes the experience's windows, then stops it on the server. */
+  endExperience(appSlug: string, experienceSlug: string): Promise<void>;
 }
 
 /**
@@ -127,9 +127,15 @@ export class CalibrationOrchestrator {
         if (finished) return;
         finished = true;
         for (const cleanup of cleanups) cleanup();
-        this.windows.endExperience(flow.appSlug, flow.experienceSlug);
-        release();
-        resolve(result);
+        // Keep the claim until the windows are gone and the server stopped the
+        // flow, so a reconnect meanwhile doesn't open a plain window for it.
+        void this.windows
+          .endExperience(flow.appSlug, flow.experienceSlug)
+          .catch(() => undefined)
+          .finally(() => {
+            release();
+            resolve(result);
+          });
       };
 
       cleanups.push(
