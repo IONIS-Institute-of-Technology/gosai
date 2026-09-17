@@ -9,6 +9,7 @@
 import {
   ALL_CAPABILITIES,
   CAPABILITY_INFO,
+  Capabilities,
   DEFAULT_APP_CAPABILITIES,
   type Capability,
 } from '@gosai/shared/capabilities';
@@ -23,7 +24,6 @@ import {
 } from '@gosai/shared/events';
 import type { CommandName, FixedEventPayloads, ParsedCommandRequest } from '@gosai/shared/protocol';
 import type { TokenScope } from '@gosai/shared/auth';
-import { Capabilities } from '@gosai/shared/capabilities';
 
 export interface Grant {
   readonly scope: TokenScope;

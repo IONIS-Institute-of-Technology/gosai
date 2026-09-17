@@ -78,6 +78,7 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
   const config = new ConfigStore(paths.config, bus, logger.child('config'));
   const deviceSettings = new AppSettingsStore(paths, bus, logger.child('app-config'));
 
+  // Without a Python directory the bridge never starts and driver commands fail.
   const drivers = new DriverManager({
     pythonDir: options.pythonDir ?? '',
     logger,
