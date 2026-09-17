@@ -10,6 +10,7 @@ authors = [{ name = "GOSAI" }]
 dependencies = [
     "numpy>=2.5.0",
     "msgpack>=1.2.0",
+    "msgspec>=0.21.1",
     "opencv-contrib-python>=5.0.0",
     "mediapipe>=0.10.35",
     "pillow>=12.0.0",
