@@ -19,6 +19,28 @@ from ...context import ModelContext
 from ...util import console, iter_images, load_yaml
 from .sources import collect_datasets, load_overrides
 
+GLARE_PREFIX = "synthetic-glare"
+
+
+def pool_prefix(path: Path) -> str:
+    """Source name of a pool image, from its ``<source>__<index>`` file name."""
+    return path.name.split("__", 1)[0]
+
+
+def prune_pool(pool_dir: Path, enabled_names: set[str]) -> dict[str, int]:
+    """Delete pool images not from an enabled source (including old synthetic glare).
+
+    Returns how many images each enabled source still has, so they aren't fetched again.
+    """
+    kept: dict[str, int] = {}
+    for image in list(iter_images(pool_dir)):
+        prefix = pool_prefix(image)
+        if prefix in enabled_names:
+            kept[prefix] = kept.get(prefix, 0) + 1
+        else:
+            image.unlink()
+    return kept
+
 
 def _images_dir(ctx: ModelContext) -> Path:
     d = ctx.neg_pool_dir / "images"
@@ -142,7 +164,7 @@ def _glare_overlay(ctx: ModelContext, count: int) -> int:
         glow3 = (glow[:, :, None] * strength)
         warm = np.array([235, 245, 255], dtype=np.float32)  # BGR, slightly warm white
         blended = img.astype(np.float32) * (1 - glow3) + warm * glow3
-        dst = out / f"synthetic-glare__{i:05d}.jpg"
+        dst = out / f"{GLARE_PREFIX}__{i:05d}.jpg"
         cv2.imwrite(str(dst), np.clip(blended, 0, 255).astype("uint8"))
         made += 1
     return made
@@ -153,19 +175,26 @@ def run(ctx: ModelContext, args: Namespace) -> None:
     sources = cfg.get("sources") or []
     glare = cfg.get("glare_overlay") or {}
 
-    # The pool is rebuilt from scratch so disabled sources and old glare frames don't linger.
-    if ctx.neg_pool_dir.exists():
-        shutil.rmtree(ctx.neg_pool_dir)
+    enabled = [s for s in sources if s.get("enabled")]
+    enabled_names = {s.get("name", "source") for s in enabled}
+    # Glare is regenerated below; enabled sources already in the pool aren't downloaded again.
+    fetched = prune_pool(ctx.neg_pool_dir, enabled_names - {GLARE_PREFIX})
 
     total = 0
-    enabled = [s for s in sources if s.get("enabled")]
-    if enabled:
-        with tempfile.TemporaryDirectory() as td:
-            tmp = Path(td)
-            for source in enabled:
-                added = _fetch_source(ctx, source, tmp)
-                total += added
-                console.print(f"[green]+{added}[/] negatives from {source.get('name', 'source')}")
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        for source in enabled:
+            name = source.get("name", "source")
+            if fetched.get(name):
+                console.print(
+                    f"[yellow]skip[/] {name}: {fetched[name]} negatives already in the pool "
+                    "(delete them to fetch again)"
+                )
+                total += fetched[name]
+                continue
+            added = _fetch_source(ctx, source, tmp)
+            total += added
+            console.print(f"[green]+{added}[/] negatives from {name}")
 
     if glare.get("enabled"):
         added = _glare_overlay(ctx, int(glare.get("count", 200)))
