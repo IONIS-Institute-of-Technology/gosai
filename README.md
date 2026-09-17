@@ -44,11 +44,12 @@ fullscreen window per running experience.
 ## Repository Layout
 
 ```
-gosai-2/
+gosai/
 ├── packages/
 │   ├── shared/      shared TS types + protocol
 │   ├── server/      Bun/TypeScript server
 │   ├── sdk/         TypeScript SDK for app authors
+│   ├── cli/         CLI (kiosk launcher, ...)
 │   └── desktop/     Electron + React frontend
 ├── python/          Python runtime (uv-managed)
 │   └── src/gosai_py/
@@ -56,10 +57,9 @@ gosai-2/
 │        ├── driver.py    BaseDriver
 │        ├── processor.py BaseProcessor
 │        └── drivers/     Built-in drivers (camera, pose, hand_pose, ...)
-├── apps/calibration/   Built-in calibration app
+├── apps/               Built-in apps (calibration, interactive-pool, second-self)
 ├── templates/basic/    Starter template
-├── training/           Model training pipeline (per-model under training/models/)
-└── memory/             Phase notes (development history)
+└── training/           Model training pipeline (per-model under training/models/)
 ```
 
 The `ball` driver used by `interactive-pool` runs a fine-tuned single-class

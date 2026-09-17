@@ -2,10 +2,11 @@
  * Dance: follow a reference choreography.
  *
  * Ports the legacy `dance` app (components/dance.js). A reference dancer (the
- * `dance02.gif`) is overlaid, scaled and positioned to the user via a
- * nose/hip anchor. The user advances through the choreography (`dance02.json`)
- * only by matching each target pose: the mean keypoint distance over a set of
- * studied joints must drop below a threshold. A countdown limits each attempt.
+ * `dance02.webp` reference animation) is overlaid, scaled and positioned to
+ * the user via a nose/hip anchor. The user advances through the choreography
+ * (`dance02.json`) only by matching each target pose: the mean keypoint
+ * distance over a set of studied joints must drop below a threshold. A
+ * countdown limits each attempt.
  *
  * Unlike the legacy version, scoring is **translation-invariant**: each target
  * pose is compared relative to the current move's nose, anchored at the user's
@@ -18,8 +19,9 @@
  * low-visibility joints are excluded from the score rather than silently
  * contributing zero distance.
  *
- * The reference gif is played frame-accurately via the `ImageDecoder` API when
- * available (Chromium app-host), falling back to an animated <img> overlay.
+ * The reference animation is played frame-accurately via the `ImageDecoder`
+ * API when available (Chromium app-host), falling back to an animated <img>
+ * overlay.
  */
 
 import { drawText, fillRect, strokeLine } from '../shared/canvas.js';
@@ -56,14 +58,14 @@ type Moves = Record<string, Array<[number, number, number]>> & {
   length: number;
 };
 
-interface GifFrames {
+interface ReferenceFrames {
   frameCount: number;
   decode(index: number): Promise<ImageBitmap | null>;
 }
 
 export function createDanceLayer(deps: LayerDeps): Layer {
   let moves: Moves | null = null;
-  let gif: GifFrames | null = null;
+  let reference: ReferenceFrames | null = null;
   let fallbackImg: HTMLImageElement | null = null;
 
   let frameBitmap: ImageBitmap | null = null;
@@ -95,17 +97,17 @@ export function createDanceLayer(deps: LayerDeps): Layer {
   return {
     async preload(): Promise<void> {
       const movesUrl = deps.assetUrl('dance/dance02.json');
-      const gifUrl = deps.assetUrl('dance/dance02.gif');
+      const refUrl = deps.assetUrl('dance/dance02.webp');
       try {
         const resp = await fetch(movesUrl);
         moves = (await resp.json()) as Moves;
       } catch (err) {
         deps.rt.log.warn('dance: failed to load moves', { err: String(err) });
       }
-      gif = await loadGif(gifUrl).catch(() => null);
-      if (!gif) {
+      reference = await loadReference(refUrl).catch(() => null);
+      if (!reference) {
         fallbackImg = new Image();
-        fallbackImg.src = gifUrl;
+        fallbackImg.src = refUrl;
       }
     },
 
@@ -183,8 +185,9 @@ export function createDanceLayer(deps: LayerDeps): Layer {
       movesIndex++;
     }
 
-    // Advance the reference gif one frame per tick toward the current move
-    // (legacy behavior) so the dancer animates smoothly instead of jumping.
+    // Advance the reference animation one frame per tick toward the current
+    // move (legacy behavior) so the dancer animates smoothly instead of
+    // jumping.
     if (movesIndex > videoIndex) videoIndex++;
   }
 
@@ -228,7 +231,7 @@ export function createDanceLayer(deps: LayerDeps): Layer {
   }
 
   function drawReference(ctx: CanvasRenderingContext2D): void {
-    if (gif) {
+    if (reference) {
       ensureFrame(videoIndex);
       if (frameBitmap) ctx.drawImage(frameBitmap, offset[0], offset[1], size[0], size[1]);
     } else if (fallbackImg && fallbackImg.complete && fallbackImg.naturalWidth > 0) {
@@ -237,11 +240,11 @@ export function createDanceLayer(deps: LayerDeps): Layer {
   }
 
   function ensureFrame(index: number): void {
-    if (!gif || decoding) return;
-    const clamped = Math.max(0, Math.min(index, gif.frameCount - 1));
+    if (!reference || decoding) return;
+    const clamped = Math.max(0, Math.min(index, reference.frameCount - 1));
     if (clamped === decodedIndex) return;
     decoding = true;
-    void gif
+    void reference
       .decode(clamped)
       .then((bmp) => {
         if (bmp) {
@@ -294,7 +297,7 @@ export function createDanceLayer(deps: LayerDeps): Layer {
   }
 }
 
-async function loadGif(url: string): Promise<GifFrames | null> {
+async function loadReference(url: string): Promise<ReferenceFrames | null> {
   const Decoder = (globalThis as unknown as { ImageDecoder?: unknown }).ImageDecoder as
     | (new (init: { data: ArrayBuffer; type: string }) => {
         tracks: { ready: Promise<void>; selectedTrack?: { frameCount: number } };
@@ -305,7 +308,7 @@ async function loadGif(url: string): Promise<GifFrames | null> {
   try {
     const resp = await fetch(url);
     const buf = await resp.arrayBuffer();
-    const dec = new Decoder({ data: buf, type: 'image/gif' });
+    const dec = new Decoder({ data: buf, type: 'image/webp' });
     await dec.tracks.ready;
     const frameCount = dec.tracks.selectedTrack?.frameCount ?? 1;
     return {

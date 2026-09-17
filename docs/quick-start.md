@@ -6,8 +6,8 @@ minutes.
 ## 1. Bootstrap
 
 ```bash
-git clone https://github.com/gosai/gosai-2 ~/Repos/gosai-2
-cd ~/Repos/gosai-2
+git clone https://github.com/gosai/gosai ~/Repos/gosai
+cd ~/Repos/gosai
 bun install
 bun run python:sync                # builds python/.venv with uv
 bun run build:sdk                  # builds /sdk-runtime.js for app-host windows
