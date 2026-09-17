@@ -202,7 +202,8 @@ describe('cleanStaleRuntimes', () => {
       mkdirSync(join(runtimeRoot, name), { recursive: true });
       return join(runtimeRoot, name);
     };
-    dir('python-current');
+    mkdirSync(join(dir('python-current'), '.in-use'));
+    writeFileSync(join(runtimeRoot, 'python-current', '.in-use', String(dead)), '');
     writeFileSync(join(dir('python-used'), COMPLETE_MARKER), '');
     mkdirSync(join(runtimeRoot, 'python-used', '.in-use'));
     writeFileSync(join(runtimeRoot, 'python-used', '.in-use', String(live)), '');
@@ -233,6 +234,7 @@ describe('cleanStaleRuntimes', () => {
     );
     // Dead users are pruned from runtimes that stay.
     expect(readdirSync(join(runtimeRoot, 'python-used', '.in-use'))).toEqual([String(live)]);
+    expect(readdirSync(join(runtimeRoot, 'python-current', '.in-use'))).toEqual([]);
   });
 
   test('releaseInUse lets a runtime be cleaned', async () => {

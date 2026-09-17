@@ -321,6 +321,7 @@ export function cleanStaleRuntimes(
   isAlive: (pid: number) => boolean = isProcessAlive,
 ): string[] {
   if (!existsSync(runtimeRoot)) return [];
+  hasLiveUsers(join(runtimeRoot, keep), isAlive); // prunes dead users
   const removed: string[] = [];
   for (const name of readdirSync(runtimeRoot)) {
     const path = join(runtimeRoot, name);

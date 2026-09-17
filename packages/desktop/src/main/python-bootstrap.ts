@@ -65,7 +65,8 @@ export async function ensurePythonRuntime(
   });
   console.log(`[gosai-python] using ${pythonDir}`);
 
-  app.once('will-quit', () => releaseInUse(join(runtimeRoot, name)));
+  // Best effort: cleanup also ignores users whose process is gone.
+  process.once('exit', () => releaseInUse(join(runtimeRoot, name)));
   try {
     for (const removed of cleanStaleRuntimes(runtimeRoot, name)) {
       console.log(`[gosai-python] removed the unused runtime ${removed}`);
