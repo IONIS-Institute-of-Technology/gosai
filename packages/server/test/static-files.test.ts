@@ -36,6 +36,32 @@ describe('static file resolution', () => {
     expect(resolveStaticFile(app, 'dist/main.js\0.png')).toBeNull();
   });
 
+  test("rejects the app's private data, settings and dot paths", () => {
+    const { app } = fixture();
+    mkdirSync(join(app, '_data', 'storage'), { recursive: true });
+    writeFileSync(join(app, '_data', 'storage', 'secret.json'), '{}');
+    mkdirSync(join(app, '_config'));
+    writeFileSync(join(app, '_config', 'settings.json'), '{}');
+    mkdirSync(join(app, '.git'));
+    writeFileSync(join(app, '.git', 'config'), '');
+    writeFileSync(join(app, '.env'), 'KEY=1');
+    writeFileSync(join(app, 'dist', '.secret'), '');
+    // Only the top-level directories are private.
+    mkdirSync(join(app, 'dist', '_data'));
+    writeFileSync(join(app, 'dist', '_data', 'level.json'), '{}');
+
+    expect(resolveStaticFile(app, '_data/storage/secret.json')).toBeNull();
+    expect(resolveStaticFile(app, 'dist/../_data/storage/secret.json')).toBeNull();
+    expect(resolveStaticFile(app, '_config/settings.json')).toBeNull();
+    expect(resolveStaticFile(app, '.git/config')).toBeNull();
+    expect(resolveStaticFile(app, '.env')).toBeNull();
+    expect(resolveStaticFile(app, 'dist/.secret')).toBeNull();
+    expect(resolveStaticFile(app, 'dist/_data/level.json')).toEndWith(join('_data', 'level.json'));
+
+    symlinkSync(join(app, '_data', 'storage', 'secret.json'), join(app, 'dist', 'alias.json'));
+    expect(resolveStaticFile(app, 'dist/alias.json')).toBeNull();
+  });
+
   test('rejects symlinks that leave the app', () => {
     const { app, root, secret } = fixture();
     symlinkSync(secret, join(app, 'dist', 'leak.txt'));

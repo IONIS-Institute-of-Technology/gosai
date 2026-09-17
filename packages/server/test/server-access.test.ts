@@ -37,7 +37,8 @@ beforeAll(async () => {
   for (const dir of Object.values(paths)) mkdirSync(dir, { recursive: true });
   const builtin = join(tmp, 'builtin');
   writeApp(join(builtin, 'pool'), 'pool');
-  writeApp(join(builtin, 'other'), 'other');
+  // Installed apps keep storage and settings inside their install directory.
+  writeApp(join(paths.apps, 'other'), 'other');
   writeFileSync(join(tmp, 'outside.txt'), 'outside');
   symlinkSync(join(tmp, 'outside.txt'), join(builtin, 'pool', 'dist', 'leak.txt'));
 
@@ -122,6 +123,31 @@ describe('HTTP access', () => {
       headers: bearer(SECRET),
     });
     expect(await dashboardRead.json()).toBe(3);
+  });
+
+  test("static route doesn't serve app storage, settings or dot files", async () => {
+    const write = await fetch(`${base}/v1/apps/other/storage/secret`, {
+      method: 'POST',
+      headers: { ...bearer(SECRET), 'content-type': 'application/json' },
+      body: JSON.stringify('hidden'),
+    });
+    expect(write.status).toBe(200);
+    const code = await fetch(`${base}/v1/apps/other/static/dist/main.js`);
+    expect(code.status).toBe(200);
+
+    for (const path of [
+      '_data/storage/secret.json',
+      '_DATA/storage/secret.json',
+      'dist/..%2F_data/storage/secret.json',
+      '_config/settings.json',
+      'gosai.app.json/../_data/storage/secret.json',
+    ]) {
+      for (const headers of [{}, bearer(POOL_TOKEN), { origin: 'null' }]) {
+        const res = await fetch(`${base}/v1/apps/other/static/${path}`, { headers });
+        expect(res.status).not.toBe(200);
+        expect(await res.text()).not.toContain('hidden');
+      }
+    }
   });
 
   test('rejects invalid slugs in routes', async () => {
