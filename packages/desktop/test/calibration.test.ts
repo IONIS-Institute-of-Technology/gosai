@@ -69,7 +69,18 @@ class FakeServer {
 
 class FakeWindow {
   private readonly closedListeners: Array<() => void> = [];
+  private readonly goneListeners: Array<(event: unknown, details: { reason: string }) => void> = [];
   closed = false;
+  readonly webContents = {
+    once: (
+      _event: 'render-process-gone',
+      listener: (event: unknown, details: { reason: string }) => void,
+    ) => this.goneListeners.push(listener),
+  };
+
+  crash(reason: string): void {
+    for (const listener of this.goneListeners.splice(0)) listener({}, { reason });
+  }
 
   once(_event: 'closed', listener: () => void): this {
     this.closedListeners.push(listener);
@@ -190,6 +201,16 @@ describe('CalibrationOrchestrator', () => {
       error: 'The calibration window was closed',
     });
     expect(windows.projectors[0]?.window.closed).toBe(true);
+    expect(windows.ended).toEqual(['calibration/calibrate']);
+  });
+
+  test('a crashed window ends the run and closes both windows', async () => {
+    const windows = new FakeWindows();
+    const run = new CalibrationOrchestrator(windows).run({ appSlug: 'pool' });
+    await windowsOpen(windows);
+    windows.projectors[0]?.window.crash('crashed');
+    expect(await run).toEqual({ ok: false, error: 'The projector window crashed (crashed)' });
+    expect(windows.controls[0]?.window.closed).toBe(true);
     expect(windows.ended).toEqual(['calibration/calibrate']);
   });
 

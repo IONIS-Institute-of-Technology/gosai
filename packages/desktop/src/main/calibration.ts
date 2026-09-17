@@ -8,8 +8,9 @@
  * 2. Starts the flow's experience and opens its control window, then its
  *    fullscreen projector window. Both get `role` and `target` params.
  * 3. Resolves with the flow's `wizard:finished` result, and closes both
- *    windows and stops the experience. Closing a window, a failed start or a
- *    lost server connection end the run too, so the caller never waits forever.
+ *    windows and stops the experience. Closing a window, a crashed window, a
+ *    failed start or a lost server connection end the run too, so the caller
+ *    never waits forever.
  *
  * No Electron import, so tests can drive it with fakes.
  */
@@ -27,7 +28,15 @@ import type { OpenAppHostOptions, OpenControlWindowOptions } from './windows.js'
 export type CalibrationServer = Pick<ServerClient, 'ready' | 'request' | 'on' | 'onStatus'>;
 
 export interface CalibrationWindowHandle {
-  readonly window: { once(event: 'closed', listener: () => void): unknown };
+  readonly window: {
+    once(event: 'closed', listener: () => void): unknown;
+    readonly webContents: {
+      once(
+        event: 'render-process-gone',
+        listener: (event: unknown, details: { readonly reason: string }) => void,
+      ): unknown;
+    };
+  };
 }
 
 /** The parts of the WindowRegistry the orchestrator uses. */
@@ -126,30 +135,34 @@ export class CalibrationOrchestrator {
           ...(driverBinding ? { driverBinding } : {}),
         });
         if (finished) return;
-        const closed = (): void =>
-          finish({ ok: false, cancelled: true, error: 'The calibration window was closed' });
+        const watch = ({ window }: CalibrationWindowHandle, name: string): void => {
+          window.once('closed', () =>
+            finish({ ok: false, cancelled: true, error: 'The calibration window was closed' }),
+          );
+          window.webContents.once('render-process-gone', (_event, details) =>
+            finish({ ok: false, error: `The ${name} window crashed (${details.reason})` }),
+          );
+        };
         const launch = { appSlug: flow.appSlug, experienceSlug: flow.experienceSlug };
         // Control first: on macOS, creating an always-on-top window after a
         // fullscreen one takes the fullscreen window out of fullscreen.
-        this.windows
-          .openControlWindow({
-            ...launch,
-            targetAppSlug: appSlug,
-            ...(driverBinding ? { driverBinding } : {}),
-            title: `Calibration · ${appSlug}`,
-            width: 960,
-            height: 720,
-          })
-          .window.once('closed', closed);
-        this.windows
-          .openAppHost({
-            ...launch,
-            displayId: projectorDisplay,
-            targetAppSlug: appSlug,
-            ...(driverBinding ? { driverBinding } : {}),
-            fullscreen: true,
-          })
-          .window.once('closed', closed);
+        const control = this.windows.openControlWindow({
+          ...launch,
+          targetAppSlug: appSlug,
+          ...(driverBinding ? { driverBinding } : {}),
+          title: `Calibration · ${appSlug}`,
+          width: 960,
+          height: 720,
+        });
+        watch(control, 'control');
+        const projector = this.windows.openAppHost({
+          ...launch,
+          displayId: projectorDisplay,
+          targetAppSlug: appSlug,
+          ...(driverBinding ? { driverBinding } : {}),
+          fullscreen: true,
+        });
+        watch(projector, 'projector');
       })().catch((err: unknown) => finish({ ok: false, error: errorMessage(err) }));
     });
   }
