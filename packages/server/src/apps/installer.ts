@@ -1,17 +1,25 @@
 /**
- * App installation. Clones a git repository into the apps directory, validates
- * its manifest, and (optionally) installs Python requirements via uv and
- * JavaScript dependencies + build steps via bun.
- *
- * Each step is best-effort and surfaces clear errors if anything goes wrong.
- * A failed install always cleans up the staged directory.
+ * App installation. Clones a git repository into a staging directory,
+ * validates its manifest, installs JavaScript dependencies, runs the build and
+ * (optionally) installs Python requirements via uv. The app only moves into
+ * the apps directory once every step succeeded; a failed install removes the
+ * staging directory.
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { assertSlug } from '@gosai/shared/slug';
 import type { ChildLogger } from '../logger/index.js';
 import type { GosaiPaths } from '../paths.js';
 import { parseManifest, type DiscoveredApp } from './manifest.js';
+
+export interface InstallTimeouts {
+  readonly gitMs: number;
+  readonly jsInstallMs: number;
+  readonly buildMs: number;
+  readonly pythonMs: number;
+}
 
 export interface InstallOptions {
   readonly source: string;
@@ -19,6 +27,9 @@ export interface InstallOptions {
   readonly logger: ChildLogger;
   readonly paths: GosaiPaths;
   readonly pythonDir?: string;
+  /** Accept `file:` URLs. Only for tests. */
+  readonly allowFileSources?: boolean;
+  readonly timeouts?: Partial<InstallTimeouts>;
 }
 
 export interface InstallResult {
@@ -26,41 +37,99 @@ export interface InstallResult {
   readonly cloned: boolean;
 }
 
-const GIT_TIMEOUT_MS = 5 * 60 * 1000;
+const DEFAULT_TIMEOUTS: InstallTimeouts = {
+  gitMs: 5 * 60 * 1000,
+  jsInstallMs: 10 * 60 * 1000,
+  buildMs: 10 * 60 * 1000,
+  pythonMs: 15 * 60 * 1000,
+};
+
+/** How long to keep reading output after a killed step exits. */
+const OUTPUT_GRACE_MS = 1000;
+const ERROR_TAIL_LINES = 20;
+
+/** `user@host:path`, git's scp-like ssh syntax. */
+const SCP_LIKE_SOURCE = /^[A-Za-z0-9._~-]+@[A-Za-z0-9.-]+:[A-Za-z0-9._~/+@-]+$/;
+
+/** Slugs with an install or uninstall in progress. */
+const busySlugs = new Set<string>();
+
+/**
+ * Checks that `source` is an https or ssh git URL (or `file:` when allowed).
+ * Anything else, such as `ext::` transports or local paths, throws.
+ */
+export function validateGitSource(source: string, allowFile = false): string {
+  const trimmed = source.trim();
+  if (trimmed.length === 0 || /[\s\0]/.test(trimmed) || trimmed.startsWith('-')) {
+    throw new Error('Install source must be an https or ssh git URL');
+  }
+  if (SCP_LIKE_SOURCE.test(trimmed)) return trimmed;
+
+  let url: URL | null = null;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    url = null;
+  }
+  if (url) {
+    if ((url.protocol === 'https:' || url.protocol === 'ssh:') && url.hostname !== '') {
+      return trimmed;
+    }
+    if (url.protocol === 'file:' && allowFile) return trimmed;
+  }
+  throw new Error('Install source must be an https or ssh git URL');
+}
 
 export async function installApp(options: InstallOptions): Promise<InstallResult> {
-  const { source, logger, paths } = options;
+  const { logger, paths } = options;
+  const allowFile = options.allowFileSources === true;
+  const source = validateGitSource(options.source, allowFile);
+  const timeouts = { ...DEFAULT_TIMEOUTS, ...options.timeouts };
+
   const stagingRoot = join(paths.apps, '.staging');
   mkdirSync(stagingRoot, { recursive: true });
-  const stagingPath = join(stagingRoot, `install-${Date.now()}-${randomSuffix()}`);
+  const stagingPath = join(stagingRoot, `install-${Date.now()}-${randomUUID().slice(0, 8)}`);
+  let lockedSlug: string | null = null;
 
   try {
     logger.info(`cloning ${source}`);
-    await runGitClone(source, stagingPath);
+    await runChecked({
+      label: 'git clone',
+      cmd: ['git', 'clone', '--depth', '1', '--', source, stagingPath],
+      env: gitEnv(allowFile),
+      timeoutMs: timeouts.gitMs,
+      logger,
+    });
     const manifestPath = join(stagingPath, 'gosai.app.json');
     if (!existsSync(manifestPath)) {
       throw new Error('Cloned repository does not contain gosai.app.json');
     }
     const manifest = parseManifest(manifestPath);
-    const slug = options.slugOverride ?? manifest.slug;
+    const slug = assertSlug(options.slugOverride ?? manifest.slug, 'app slug');
+    if (busySlugs.has(slug)) {
+      throw new Error(`App ${slug} is already being installed or uninstalled`);
+    }
+    busySlugs.add(slug);
+    lockedSlug = slug;
+
     const finalPath = join(paths.apps, slug);
     if (existsSync(finalPath)) {
       throw new Error(`App ${slug} is already installed at ${finalPath}`);
     }
-    safeRename(stagingPath, finalPath);
 
-    // Install JS deps and build if the app has a package.json. This is the
-    // overwhelming-majority case for SDK-based apps.
-    await maybeInstallJsDeps({ appPath: finalPath, logger });
-    await maybeRunBuild({ appPath: finalPath, logger });
+    await maybeInstallJsDeps({ appPath: stagingPath, logger, timeoutMs: timeouts.jsInstallMs });
+    await maybeRunBuild({ appPath: stagingPath, logger, timeoutMs: timeouts.buildMs });
 
     if (manifest.python?.requirements && options.pythonDir) {
       await installPythonRequirements({
-        appPath: finalPath,
+        appPath: stagingPath,
         requirements: manifest.python.requirements,
         logger,
+        timeoutMs: timeouts.pythonMs,
       });
     }
+
+    moveIntoPlace(stagingPath, finalPath);
     return {
       cloned: true,
       app: {
@@ -70,23 +139,28 @@ export async function installApp(options: InstallOptions): Promise<InstallResult
       },
     };
   } catch (err) {
-    if (existsSync(stagingPath)) {
-      try {
-        rmSync(stagingPath, { recursive: true, force: true });
-      } catch {
-        // best-effort
-      }
-    }
+    rmSync(stagingPath, { recursive: true, force: true });
     throw err;
+  } finally {
+    if (lockedSlug !== null) busySlugs.delete(lockedSlug);
   }
 }
 
 export async function uninstallApp(slug: string, paths: GosaiPaths): Promise<void> {
+  assertSlug(slug, 'app slug');
+  if (busySlugs.has(slug)) {
+    throw new Error(`App ${slug} is already being installed or uninstalled`);
+  }
   const target = join(paths.apps, slug);
   if (!existsSync(target)) {
     throw new Error(`App ${slug} is not installed`);
   }
-  rmSync(target, { recursive: true, force: true });
+  busySlugs.add(slug);
+  try {
+    rmSync(target, { recursive: true, force: true });
+  } finally {
+    busySlugs.delete(slug);
+  }
 }
 
 export function linkBuiltinApp(sourcePath: string): DiscoveredApp {
@@ -102,31 +176,22 @@ export function linkBuiltinApp(sourcePath: string): DiscoveredApp {
   };
 }
 
-async function runGitClone(source: string, dest: string): Promise<void> {
-  const child = Bun.spawn({
-    cmd: ['git', 'clone', '--depth', '1', source, dest],
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-  const timeout = setTimeout(() => {
-    try {
-      child.kill();
-    } catch {
-      // ignore
-    }
-  }, GIT_TIMEOUT_MS);
-  const code = await child.exited;
-  clearTimeout(timeout);
-  if (code !== 0) {
-    const stderr = await new Response(child.stderr).text();
-    throw new Error(`git clone failed (exit ${code}): ${stderr.trim() || 'unknown error'}`);
-  }
+function gitEnv(allowFile: boolean): Record<string, string> {
+  return {
+    // Never wait for a username, password or passphrase on a terminal.
+    GIT_TERMINAL_PROMPT: '0',
+    GCM_INTERACTIVE: 'never',
+    GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND ?? 'ssh -o BatchMode=yes',
+    // Also covers redirects and submodules.
+    GIT_ALLOW_PROTOCOL: allowFile ? 'https:ssh:file' : 'https:ssh',
+  };
 }
 
 interface PyInstallOptions {
   readonly appPath: string;
   readonly requirements: string;
   readonly logger: ChildLogger;
+  readonly timeoutMs: number;
 }
 
 async function installPythonRequirements(opts: PyInstallOptions): Promise<void> {
@@ -138,21 +203,19 @@ async function installPythonRequirements(opts: PyInstallOptions): Promise<void> 
   opts.logger.info('installing python requirements via uv pip', {
     requirements: requirementsPath,
   });
-  const child = Bun.spawn({
+  await runChecked({
+    label: 'uv pip install',
     cmd: ['uv', 'pip', 'install', '-r', requirementsPath],
-    stdout: 'pipe',
-    stderr: 'pipe',
+    cwd: opts.appPath,
+    timeoutMs: opts.timeoutMs,
+    logger: opts.logger,
   });
-  const code = await child.exited;
-  if (code !== 0) {
-    const stderr = await new Response(child.stderr).text();
-    throw new Error(`uv pip install failed: ${stderr.trim() || 'unknown error'}`);
-  }
 }
 
 interface JsInstallOptions {
   readonly appPath: string;
   readonly logger: ChildLogger;
+  readonly timeoutMs: number;
 }
 
 async function maybeInstallJsDeps(opts: JsInstallOptions): Promise<void> {
@@ -177,25 +240,22 @@ async function maybeInstallJsDeps(opts: JsInstallOptions): Promise<void> {
   }
 
   opts.logger.info('installing app dependencies via bun', { count: externalDeps.length });
-  const child = Bun.spawn({
-    cmd: ['bun', 'install', '--silent'],
+  const result = await runStep({
+    label: 'bun install',
+    cmd: ['bun', 'install'],
     cwd: opts.appPath,
-    stdout: 'pipe',
-    stderr: 'pipe',
+    timeoutMs: opts.timeoutMs,
+    logger: opts.logger,
   });
-  const code = await child.exited;
-  if (code !== 0) {
-    const stderr = await new Response(child.stderr).text();
-    // Don't hard-fail if the SDK workspace alias is missing; the build step
-    // marks it as `--external` so it doesn't need to be present.
-    if (stderr.includes('@gosai/sdk') && stderr.includes('workspace')) {
-      opts.logger.warn('bun install warned about @gosai/sdk workspace ref; continuing', {
-        stderr: stderr.trim().slice(0, 200),
-      });
-      return;
-    }
-    throw new Error(`bun install failed: ${stderr.trim() || 'unknown error'}`);
+  if (result.code === 0) return;
+  const output = result.tail.join('\n');
+  // Don't hard-fail if the SDK workspace alias is missing; the build step
+  // marks it as `--external` so it doesn't need to be present.
+  if (output.includes('@gosai/sdk') && output.includes('workspace')) {
+    opts.logger.warn('bun install warned about @gosai/sdk workspace ref; continuing');
+    return;
   }
+  throw stepError('bun install', result);
 }
 
 async function maybeRunBuild(opts: JsInstallOptions): Promise<void> {
@@ -212,31 +272,137 @@ async function maybeRunBuild(opts: JsInstallOptions): Promise<void> {
   }
   if (!parsed.scripts?.build) return;
   opts.logger.info('running app build script');
-  const child = Bun.spawn({
+  await runChecked({
+    label: 'app build',
     cmd: ['bun', 'run', 'build'],
     cwd: opts.appPath,
+    timeoutMs: opts.timeoutMs,
+    logger: opts.logger,
+  });
+}
+
+interface StepOptions {
+  readonly label: string;
+  readonly cmd: string[];
+  readonly cwd?: string;
+  readonly env?: Record<string, string>;
+  readonly timeoutMs: number;
+  readonly logger: ChildLogger;
+}
+
+interface StepResult {
+  readonly code: number;
+  /** Last lines of combined stdout and stderr. */
+  readonly tail: readonly string[];
+}
+
+/**
+ * Runs one install step. stdout and stderr stream to the logger line by line,
+ * so a noisy step can't fill a pipe and block. The step is killed after
+ * `timeoutMs`, which rejects.
+ */
+async function runStep(opts: StepOptions): Promise<StepResult> {
+  const env: Record<string, string | undefined> = { ...process.env, ...opts.env };
+  // App build scripts are third-party code and must not see server secrets.
+  delete env.GOSAI_DASHBOARD_TOKEN;
+
+  const child = Bun.spawn({
+    cmd: opts.cmd,
+    ...(opts.cwd ? { cwd: opts.cwd } : {}),
+    env,
+    stdin: 'ignore',
     stdout: 'pipe',
     stderr: 'pipe',
   });
+
+  const tail: string[] = [];
+  const onLine = (line: string, stream: 'stdout' | 'stderr'): void => {
+    if (line.trim() === '') return;
+    opts.logger.info(`[${opts.label}] ${line}`, { stream });
+    tail.push(line);
+    if (tail.length > ERROR_TAIL_LINES) tail.shift();
+  };
+  const readers = [child.stdout.getReader(), child.stderr.getReader()] as const;
+  const pumps = Promise.all([
+    pumpLines(readers[0], (line) => onLine(line, 'stdout')),
+    pumpLines(readers[1], (line) => onLine(line, 'stderr')),
+  ]);
+
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    child.kill('SIGKILL');
+  }, opts.timeoutMs);
   const code = await child.exited;
-  if (code !== 0) {
-    const stderr = await new Response(child.stderr).text();
-    throw new Error(`app build failed: ${stderr.trim() || 'unknown error'}`);
+  clearTimeout(timer);
+
+  // A killed step can leave grandchildren holding the pipes open, so stop
+  // reading after a short grace period.
+  let graceTimer: ReturnType<typeof setTimeout> | undefined;
+  const grace = new Promise<void>((resolve) => {
+    graceTimer = setTimeout(resolve, OUTPUT_GRACE_MS);
+  });
+  await Promise.race([pumps, grace]);
+  clearTimeout(graceTimer);
+  for (const reader of readers) void reader.cancel().catch(() => undefined);
+
+  if (timedOut) {
+    throw new Error(`${opts.label} timed out after ${Math.round(opts.timeoutMs / 1000)}s`);
   }
+  return { code, tail };
 }
 
-function safeRename(from: string, to: string): void {
-  // fs.renameSync is atomic on the same volume but cross-volume moves throw.
+async function runChecked(opts: StepOptions): Promise<void> {
+  const result = await runStep(opts);
+  if (result.code !== 0) throw stepError(opts.label, result);
+}
+
+function stepError(label: string, result: StepResult): Error {
+  const output = result.tail.join('\n').trim();
+  return new Error(`${label} failed (exit ${result.code}): ${output || 'no output'}`);
+}
+
+interface ChunkReader {
+  read(): Promise<{ done: boolean; value?: Uint8Array }>;
+}
+
+async function pumpLines(reader: ChunkReader, onLine: (line: string) => void): Promise<void> {
+  const decoder = new TextDecoder();
+  let buffer = '';
   try {
-    const fs = require('node:fs') as typeof import('node:fs');
-    fs.renameSync(from, to);
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() ?? '';
+      for (const line of lines) onLine(line);
+    }
   } catch {
-    const fs = require('node:fs') as typeof import('node:fs');
-    fs.cpSync(from, to, { recursive: true });
-    fs.rmSync(from, { recursive: true, force: true });
+    // Reader cancelled after a timeout.
   }
+  buffer += decoder.decode();
+  if (buffer !== '') onLine(buffer);
 }
 
-function randomSuffix(): string {
-  return Math.random().toString(36).slice(2, 10);
+/**
+ * Renames the finished staging directory into place. Copies only when the
+ * apps directory is on another filesystem (EXDEV), and never over an
+ * existing directory.
+ */
+function moveIntoPlace(from: string, to: string): void {
+  if (existsSync(to)) throw new Error(`${to} already exists`);
+  try {
+    renameSync(from, to);
+    return;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err;
+  }
+  try {
+    cpSync(from, to, { recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true });
+  } catch (err) {
+    rmSync(to, { recursive: true, force: true });
+    throw err;
+  }
+  rmSync(from, { recursive: true, force: true });
 }

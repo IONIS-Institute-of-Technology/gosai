@@ -22,6 +22,8 @@ import { join, resolve } from 'node:path';
 import { createServer } from '../src/server.js';
 
 const PORT = 17_795;
+const TOKEN = 'e2e-dashboard-token';
+const AUTH = { authorization: `Bearer ${TOKEN}` };
 const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..');
 const TEMPLATE_DIR = join(REPO_ROOT, 'templates', 'basic');
 
@@ -82,6 +84,8 @@ const server = await createServer({
   pythonDir: join(REPO_ROOT, 'python'),
   builtinAppsDir: join(REPO_ROOT, 'apps'),
   enablePython: true,
+  dashboardToken: TOKEN,
+  allowFileInstalls: true,
 });
 
 const baseUrl = `http://127.0.0.1:${PORT}`;
@@ -89,7 +93,7 @@ const baseUrl = `http://127.0.0.1:${PORT}`;
 try {
   // 1. Install from the file-based git repo we just created.
   console.log('[phase7] installing app from', sourceRepo);
-  const installRes = await fetch(`${baseUrl}/v1/info`);
+  const installRes = await fetch(`${baseUrl}/v1/info`, { headers: AUTH });
   if (!installRes.ok) throw new Error('server not up');
 
   const ws = await openWs();
@@ -105,7 +109,7 @@ try {
 
   await rpc(ws, 'app:install', { source: `file://${sourceRepo}` });
 
-  const apps = (await (await fetch(`${baseUrl}/v1/apps`)).json()) as {
+  const apps = (await (await fetch(`${baseUrl}/v1/apps`, { headers: AUTH })).json()) as {
     apps: Array<{
       manifest: { slug: string; experiences: Array<{ slug: string }> };
       installPath: string;
@@ -120,7 +124,9 @@ try {
   console.log('[phase7] installed:', installed.manifest.slug, '@', installed.installPath);
 
   // 2. Build output (dist/main.js) should exist + be served via static route.
-  const staticRes = await fetch(`${baseUrl}/v1/apps/hello-gosai/static/dist/main.js`);
+  const staticRes = await fetch(`${baseUrl}/v1/apps/hello-gosai/static/dist/main.js`, {
+    headers: AUTH,
+  });
   if (!staticRes.ok) throw new Error(`static main.js not served: ${staticRes.status}`);
   const mainText = await staticRes.text();
   if (!mainText.includes('defineExperience')) {
@@ -138,7 +144,7 @@ try {
   }
   console.log('[phase7] experience running');
 
-  const running = (await (await fetch(`${baseUrl}/v1/experiences`)).json()) as {
+  const running = (await (await fetch(`${baseUrl}/v1/experiences`, { headers: AUTH })).json()) as {
     experiences: Array<{ appSlug: string; experienceSlug: string; state: string }>;
   };
   if (!running.experiences.some((e) => e.appSlug === 'hello-gosai')) {
@@ -147,7 +153,7 @@ try {
 
   // 4. Stop the experience.
   await rpc(ws, 'experience:stop', { appSlug: 'hello-gosai', experienceSlug: 'main' });
-  const after = (await (await fetch(`${baseUrl}/v1/experiences`)).json()) as {
+  const after = (await (await fetch(`${baseUrl}/v1/experiences`, { headers: AUTH })).json()) as {
     experiences: Array<{ appSlug: string }>;
   };
   if (after.experiences.some((e) => e.appSlug === 'hello-gosai')) {
@@ -157,7 +163,7 @@ try {
 
   // 5. Uninstall.
   await rpc(ws, 'app:uninstall', { slug: 'hello-gosai' });
-  const afterUninstall = (await (await fetch(`${baseUrl}/v1/apps`)).json()) as {
+  const afterUninstall = (await (await fetch(`${baseUrl}/v1/apps`, { headers: AUTH })).json()) as {
     apps: Array<{ manifest: { slug: string } }>;
   };
   if (afterUninstall.apps.some((a) => a.manifest.slug === 'hello-gosai')) {
@@ -174,7 +180,7 @@ try {
 
 async function openWs(): Promise<WebSocket> {
   return new Promise<WebSocket>((resolveWs, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`);
+    const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws?token=${TOKEN}`);
     const t = setTimeout(() => reject(new Error('ws open timeout')), 3_000);
     ws.addEventListener('open', () => {
       clearTimeout(t);

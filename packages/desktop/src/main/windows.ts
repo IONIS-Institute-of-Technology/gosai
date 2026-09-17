@@ -1,9 +1,21 @@
-import { app, BrowserWindow, powerSaveBlocker, screen, type Display } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  powerSaveBlocker,
+  screen,
+  type Display,
+  type WebContents,
+  type WebFrameMain,
+} from 'electron';
 import { join } from 'node:path';
+import { mintAppToken } from '@gosai/shared/auth';
 import { IPC_CHANNELS } from './channels.js';
+import { reportUnauthorized } from './server-auth.js';
 
 interface WindowRegistryOptions {
   readonly rootDir: string;
+  /** Dashboard token for this launch. App window tokens derive from it. */
+  readonly dashboardToken: string;
   readonly serverHost?: string;
   readonly serverPort?: number;
 }
@@ -81,15 +93,55 @@ export class WindowRegistry {
     this.serverPort = addr.port;
   }
 
-  private get serverBaseUrl(): string {
+  get serverBaseUrl(): string {
     return `http://${this.serverHost}:${this.serverPort}`;
   }
 
-  /** Query params every renderer window needs to find the server. */
-  private appendServerParams(query: URLSearchParams): URLSearchParams {
+  /** Query params every renderer window needs to find and authenticate with the server. */
+  private appendServerParams(query: URLSearchParams, token: string): URLSearchParams {
     query.set('serverHost', this.serverHost);
     query.set('serverPort', String(this.serverPort));
+    query.set('token', token);
     return query;
+  }
+
+  /**
+   * Token for an app window: scoped to the app, plus the target app and
+   * driver binding the dashboard asked for (the calibration runner writes
+   * into its target app's storage and uses its camera).
+   */
+  private appToken(opts: {
+    appSlug: string;
+    targetAppSlug?: string | undefined;
+    driverBinding?: string | undefined;
+  }): string {
+    const extra = [opts.targetAppSlug, opts.driverBinding].filter(
+      (slug): slug is string => slug !== undefined,
+    );
+    return mintAppToken(this.options.dashboardToken, opts.appSlug, extra);
+  }
+
+  /** True when `frame` is the dashboard's top-level frame showing the dashboard page. */
+  isDashboardFrame(frame: WebFrameMain | null | undefined): boolean {
+    const dashboard = this.dashboard;
+    if (!frame || !dashboard || dashboard.isDestroyed()) return false;
+    try {
+      const main = dashboard.webContents.mainFrame;
+      if (frame.processId !== main.processId || frame.routingId !== main.routingId) return false;
+      return new URL(frame.url).pathname.endsWith('/dashboard.html');
+    } catch {
+      return false;
+    }
+  }
+
+  /** True for app-host and control windows, which run app code. */
+  isAppWindow(contents: WebContents): boolean {
+    for (const handle of [...this.appHosts.values(), ...this.controlWindows.values()]) {
+      if (!handle.window.isDestroyed() && handle.window.webContents.id === contents.id) {
+        return true;
+      }
+    }
+    return false;
   }
 
   setShuttingDown(): void {
@@ -115,13 +167,13 @@ export class WindowRegistry {
         preload: join(this.options.rootDir, '../preload/dashboard.cjs'),
         contextIsolation: true,
         nodeIntegration: false,
-        sandbox: false,
+        sandbox: true,
       },
     });
 
     win.once('ready-to-show', () => win.show());
 
-    const query = this.appendServerParams(new URLSearchParams());
+    const query = this.appendServerParams(new URLSearchParams(), this.options.dashboardToken);
     if (isDev && process.env.ELECTRON_RENDERER_URL) {
       void win.loadURL(`${process.env.ELECTRON_RENDERER_URL}/dashboard.html?${query.toString()}`);
     } else {
@@ -148,6 +200,8 @@ export class WindowRegistry {
   }
 
   openAppHost(opts: OpenAppHostOptions): AppHostHandle {
+    // Mint first: it rejects invalid slugs before a window exists.
+    const token = this.appToken(opts);
     const display = this.findDisplay(opts.displayId);
     const bounds = display.bounds;
     const wantsFullscreen = opts.fullscreen ?? true;
@@ -167,7 +221,6 @@ export class WindowRegistry {
       autoHideMenuBar: true,
       show: false,
       webPreferences: {
-        preload: join(this.options.rootDir, '../preload/app-host.cjs'),
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
@@ -235,6 +288,7 @@ export class WindowRegistry {
         experience: opts.experienceSlug,
         display: String(display.id),
       }),
+      token,
     );
     if (opts.targetAppSlug) query.set('target', opts.targetAppSlug);
     if (opts.driverBinding) query.set('driverBinding', opts.driverBinding);
@@ -292,6 +346,7 @@ export class WindowRegistry {
   }
 
   openControlWindow(opts: OpenControlWindowOptions): ControlWindowHandle {
+    const token = this.appToken(opts);
     const dashboardDisplay = this.dashboard
       ? screen.getDisplayMatching(this.dashboard.getBounds())
       : screen.getPrimaryDisplay();
@@ -312,7 +367,6 @@ export class WindowRegistry {
       alwaysOnTop: true,
       show: false,
       webPreferences: {
-        preload: join(this.options.rootDir, '../preload/app-host.cjs'),
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
@@ -334,6 +388,7 @@ export class WindowRegistry {
         experience: opts.experienceSlug,
         role: 'control',
       }),
+      token,
     );
     if (opts.targetAppSlug) query.set('target', opts.targetAppSlug);
     if (opts.driverBinding) query.set('driverBinding', opts.driverBinding);
@@ -459,9 +514,14 @@ export class WindowRegistry {
     if (this.shuttingDown) return;
     void fetch(`${this.serverBaseUrl}/v1/experiences/stop`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${this.options.dashboardToken}`,
+      },
       body: JSON.stringify({ appSlug, experienceSlug }),
-    }).catch(() => undefined);
+    })
+      .then((res) => reportUnauthorized(res.status))
+      .catch(() => undefined);
   }
 
   private notifyExperienceEnded(appSlug: string, experienceSlug: string): void {

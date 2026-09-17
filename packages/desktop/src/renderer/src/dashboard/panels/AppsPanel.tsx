@@ -22,7 +22,7 @@ import { isNotConnectedError } from '../../lib/server-client.js';
 import { Panel } from '../components/Panel.js';
 import { EmptyState } from '../components/EmptyState.jsx';
 import { AppSettingsModal } from '../components/AppSettingsModal.js';
-import { SERVER_BASE_URL } from '../../lib/server-url.js';
+import { SERVER_BASE_URL, serverHeaders } from '../../lib/server-url.js';
 
 const DEFAULT_CALIBRATION_STATUS_KEY = 'calibration_status';
 
@@ -263,6 +263,7 @@ function AppRow({
         `${SERVER_BASE_URL}/v1/apps/${app.manifest.slug}/storage/${encodeURIComponent(
           calibrationStatusKey,
         )}`,
+        { headers: serverHeaders() },
       );
       ok = res.status === 200;
     } catch {

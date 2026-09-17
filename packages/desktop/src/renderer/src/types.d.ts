@@ -1,5 +1,4 @@
-// Window type augmentation. The Dashboard and AppHost preloads expose APIs
-// here. Declared inline (not imported from preload) so the renderer tsconfig
+// Window type augmentation. The dashboard preload exposes its API here. Declared inline (not imported from preload) so the renderer tsconfig
 // does not need to compile main/preload sources.
 
 interface DisplayBounds {
@@ -67,15 +66,9 @@ interface DashboardApi {
   ): () => void;
 }
 
-interface AppHostApi {
-  version: string;
-  platform: string;
-}
-
 declare global {
   interface Window {
     readonly gosai?: DashboardApi;
-    readonly gosaiApp?: AppHostApi;
   }
 }
 

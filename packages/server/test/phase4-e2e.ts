@@ -15,6 +15,8 @@ import { join, resolve } from 'node:path';
 import { createServer } from '../src/server.js';
 
 const PORT = 17_778;
+const TOKEN = 'e2e-dashboard-token';
+const AUTH = { authorization: `Bearer ${TOKEN}` };
 const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..');
 
 const tmp = mkdtempSync(join(tmpdir(), 'gosai-phase4-'));
@@ -47,6 +49,7 @@ const server = await createServer({
   port: PORT,
   paths,
   enablePython: true,
+  dashboardToken: TOKEN,
   pythonDir: join(REPO_ROOT, 'python'),
 });
 
@@ -63,7 +66,7 @@ try {
   );
 
   // 2. SDK runtime is served.
-  const sdkRes = await fetch(`http://127.0.0.1:${PORT}/sdk-runtime.js`);
+  const sdkRes = await fetch(`http://127.0.0.1:${PORT}/sdk-runtime.js`, { headers: AUTH });
   if (!sdkRes.ok) throw new Error(`sdk-runtime returned ${sdkRes.status}`);
   const sdkText = await sdkRes.text();
   if (!sdkText.includes('runExperience')) {
@@ -73,7 +76,9 @@ try {
 
   // 3. Static file route works.
   const entry = hello.manifest.experiences[0]!.entry;
-  const entryRes = await fetch(`http://127.0.0.1:${PORT}/v1/apps/hello-gosai/static/${entry}`);
+  const entryRes = await fetch(`http://127.0.0.1:${PORT}/v1/apps/hello-gosai/static/${entry}`, {
+    headers: AUTH,
+  });
   if (!entryRes.ok) throw new Error(`entry returned ${entryRes.status}`);
   const entryText = await entryRes.text();
   if (!entryText.includes('defineExperience')) {
@@ -84,16 +89,20 @@ try {
   // 4. Storage roundtrip.
   const setRes = await fetch(`http://127.0.0.1:${PORT}/v1/apps/hello-gosai/storage/last-tick`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { ...AUTH, 'content-type': 'application/json' },
     body: JSON.stringify(42),
   });
   if (!setRes.ok) throw new Error(`storage.set returned ${setRes.status}`);
-  const getRes = await fetch(`http://127.0.0.1:${PORT}/v1/apps/hello-gosai/storage/last-tick`);
+  const getRes = await fetch(`http://127.0.0.1:${PORT}/v1/apps/hello-gosai/storage/last-tick`, {
+    headers: AUTH,
+  });
   const getValue = await getRes.json();
   if (getValue !== 42) throw new Error(`storage roundtrip failed: ${JSON.stringify(getValue)}`);
   console.log('[phase4] storage roundtrip ok');
 
-  const listRes = await fetch(`http://127.0.0.1:${PORT}/v1/apps/hello-gosai/storage`);
+  const listRes = await fetch(`http://127.0.0.1:${PORT}/v1/apps/hello-gosai/storage`, {
+    headers: AUTH,
+  });
   const listJson = (await listRes.json()) as { keys: string[] };
   if (!listJson.keys.includes('last-tick')) {
     throw new Error(`storage list missing 'last-tick': ${JSON.stringify(listJson)}`);
@@ -101,6 +110,7 @@ try {
 
   const delRes = await fetch(`http://127.0.0.1:${PORT}/v1/apps/hello-gosai/storage/last-tick`, {
     method: 'DELETE',
+    headers: AUTH,
   });
   if (!delRes.ok) throw new Error(`storage.delete returned ${delRes.status}`);
   console.log('[phase4] storage delete ok');
@@ -172,7 +182,7 @@ try {
   console.log('[phase4] driver:event received');
 
   // Stop experience.
-  await fetch(`http://127.0.0.1:${PORT}/v1/experiences`);
+  await fetch(`http://127.0.0.1:${PORT}/v1/experiences`, { headers: AUTH });
   const stopReqId = crypto.randomUUID();
   ws.send(
     JSON.stringify({
@@ -202,14 +212,14 @@ try {
 }
 
 async function fetchJson(path: string): Promise<unknown> {
-  const res = await fetch(`http://127.0.0.1:${PORT}${path}`);
+  const res = await fetch(`http://127.0.0.1:${PORT}${path}`, { headers: AUTH });
   if (!res.ok) throw new Error(`${path} -> ${res.status}`);
   return res.json();
 }
 
 async function openWs(): Promise<WebSocket> {
   return new Promise<WebSocket>((resolveWs, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`);
+    const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws?token=${TOKEN}`);
     const t = setTimeout(() => reject(new Error('ws open timeout')), 3_000);
     ws.addEventListener('open', () => {
       clearTimeout(t);

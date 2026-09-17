@@ -20,6 +20,8 @@ interface PendingRequest {
 
 export interface ServerClientOptions {
   readonly url: string;
+  /** Token the host window received. Sent in the socket URL and on HTTP calls. */
+  readonly authToken?: string;
 }
 
 export class ServerClient implements ServerConnection {
@@ -33,6 +35,10 @@ export class ServerClient implements ServerConnection {
   private closed = false;
 
   constructor(private readonly options: ServerClientOptions) {}
+
+  get authToken(): string | undefined {
+    return this.options.authToken;
+  }
 
   connect(): void {
     if (this.ws) return;
@@ -116,7 +122,7 @@ export class ServerClient implements ServerConnection {
     this.setStatus('connecting');
     let ws: WebSocket;
     try {
-      ws = new WebSocket(this.options.url);
+      ws = new WebSocket(withToken(this.options.url, this.options.authToken));
     } catch {
       this.scheduleReconnect();
       return;
@@ -244,6 +250,13 @@ interface ResponsePayload {
   ok?: boolean;
   data?: unknown;
   error?: { code: string; message: string };
+}
+
+function withToken(url: string, token: string | undefined): string {
+  if (!token) return url;
+  const parsed = new URL(url);
+  parsed.searchParams.set('token', token);
+  return parsed.toString();
 }
 
 function randomId(): string {

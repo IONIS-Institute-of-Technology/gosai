@@ -84,17 +84,20 @@ git init && git add . && git commit -m "initial"
 
 ## Environment variables
 
-| Variable                   | Effect                                            |
-| -------------------------- | ------------------------------------------------- |
-| `GOSAI_HOST`               | Server bind host (default `127.0.0.1`).           |
-| `GOSAI_PORT`               | Server bind port (default `7777`).                |
-| `GOSAI_PYTHON_DIR`         | Override the Python source/venv directory.        |
-| `GOSAI_BUILTIN_APPS`       | Override the built-in apps discovery root.        |
-| `GOSAI_PYTHON=0`           | Disable the Python bridge entirely.               |
-| `GOSAI_AUTOSTART_SERVER=1` | Force the desktop app to spawn the server itself. |
-| `GOSAI_ACCELERATOR=auto`   | Prefer CUDA on NVIDIA and CoreML/Metal on macOS.  |
-| `GOSAI_ACCELERATOR=cpu`    | Explicit CPU mode for inference drivers.          |
-| `GOSAI_CUDA_DEVICE_ID=0`   | Select the NVIDIA GPU for CUDA inference.         |
+| Variable                   | Effect                                                       |
+| -------------------------- | ------------------------------------------------------------ |
+| `GOSAI_HOST`               | Server bind host (default `127.0.0.1`).                      |
+| `GOSAI_PORT`               | Server bind port (default `7777`).                           |
+| `GOSAI_PYTHON_DIR`         | Override the Python source/venv directory.                   |
+| `GOSAI_BUILTIN_APPS`       | Override the built-in apps discovery root.                   |
+| `GOSAI_PYTHON=0`           | Disable the Python bridge entirely.                          |
+| `GOSAI_AUTOSTART_SERVER=1` | Force the desktop app to spawn the server itself.            |
+| `GOSAI_DASHBOARD_TOKEN`    | Token shared by a server and desktop app started separately. |
+| `GOSAI_ALLOWED_ORIGINS`    | Extra allowed origins, comma-separated.                      |
+| `GOSAI_ALLOWED_HOSTS`      | Extra allowed `Host` names, e.g. a LAN address.              |
+| `GOSAI_ACCELERATOR=auto`   | Prefer CUDA on NVIDIA and CoreML/Metal on macOS.             |
+| `GOSAI_ACCELERATOR=cpu`    | Explicit CPU mode for inference drivers.                     |
+| `GOSAI_CUDA_DEVICE_ID=0`   | Select the NVIDIA GPU for CUDA inference.                    |
 
 ## Tests
 

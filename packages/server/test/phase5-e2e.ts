@@ -15,6 +15,8 @@ import { join, resolve } from 'node:path';
 import { createServer } from '../src/server.js';
 
 const PORT = 17_779;
+const TOKEN = 'e2e-dashboard-token';
+const AUTH = { authorization: `Bearer ${TOKEN}` };
 const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..');
 
 const tmp = mkdtempSync(join(tmpdir(), 'gosai-phase5-'));
@@ -38,6 +40,7 @@ const server = await createServer({
   pythonDir: join(REPO_ROOT, 'python'),
   builtinAppsDir: join(REPO_ROOT, 'apps'),
   enablePython: true,
+  dashboardToken: TOKEN,
 });
 
 try {
@@ -111,11 +114,14 @@ try {
   const fakeMatrix = [1, 0, 0, 0, 1, 0, 0, 0, 1];
   await fetch(`http://127.0.0.1:${PORT}/v1/apps/interactive-pool/storage/calibration_homography`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { ...AUTH, 'content-type': 'application/json' },
     body: JSON.stringify(fakeMatrix),
   });
   const stored = await (
-    await fetch(`http://127.0.0.1:${PORT}/v1/apps/interactive-pool/storage/calibration_homography`)
+    await fetch(
+      `http://127.0.0.1:${PORT}/v1/apps/interactive-pool/storage/calibration_homography`,
+      { headers: AUTH },
+    )
   ).json();
   if (JSON.stringify(stored) !== JSON.stringify(fakeMatrix)) {
     throw new Error(`stored matrix mismatch: ${JSON.stringify(stored)}`);
@@ -125,6 +131,7 @@ try {
   // Built-in static file route should serve the app's built JS.
   const calibrateJs = await fetch(
     `http://127.0.0.1:${PORT}/v1/apps/calibration/static/dist/calibrate.js`,
+    { headers: AUTH },
   );
   if (!calibrateJs.ok) throw new Error('static calibrate.js not found');
   const text = await calibrateJs.text();
@@ -141,14 +148,14 @@ try {
 }
 
 async function fetchJson(path: string): Promise<unknown> {
-  const res = await fetch(`http://127.0.0.1:${PORT}${path}`);
+  const res = await fetch(`http://127.0.0.1:${PORT}${path}`, { headers: AUTH });
   if (!res.ok) throw new Error(`${path} -> ${res.status}`);
   return res.json();
 }
 
 async function openWs(): Promise<WebSocket> {
   return new Promise<WebSocket>((resolveWs, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`);
+    const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws?token=${TOKEN}`);
     const t = setTimeout(() => reject(new Error('ws open timeout')), 3_000);
     ws.addEventListener('open', () => {
       clearTimeout(t);

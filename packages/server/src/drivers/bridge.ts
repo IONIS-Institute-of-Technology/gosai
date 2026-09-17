@@ -108,6 +108,8 @@ export class PythonBridge {
       GLOG_minloglevel: '2',
       TF_CPP_MIN_LOG_LEVEL: '2',
     };
+    // Python drivers must not see the server's secret.
+    delete env.GOSAI_DASHBOARD_TOKEN;
 
     this.process = Bun.spawn({
       cmd: [bridgeBin],
