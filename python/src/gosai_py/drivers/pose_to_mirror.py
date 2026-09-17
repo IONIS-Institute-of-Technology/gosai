@@ -410,7 +410,12 @@ class PoseToMirrorDriver(BaseDriver):
             if previous is not None and previous.shape == points.shape:
                 rate = np.where(points[:, 1] > 0, SMOOTHING[name], OFFSCREEN_SMOOTHING)[:, None]
                 points = points.copy()
-                points[:, :2] = lerp(previous[:, :2], points[:, :2], rate)
+                # A point missing last frame (NaN) starts fresh instead of staying NaN.
+                points[:, :2] = np.where(
+                    np.isfinite(previous[:, :2]),
+                    lerp(previous[:, :2], points[:, :2], rate),
+                    points[:, :2],
+                )
             out[name] = points
         self._previous = out
         return out

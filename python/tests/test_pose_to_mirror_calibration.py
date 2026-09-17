@@ -354,6 +354,20 @@ def test_smoothing_moves_part_of_the_way() -> None:
     assert after[0] - before[0] == pytest.approx(0.4 * unsmoothed_shift)
 
 
+def test_smoothing_recovers_after_a_missing_landmark() -> None:
+    context = RecordingContext()
+    driver = PoseToMirrorDriver(context)
+    gap, full = _live_frame(), _live_frame()
+    gap["body_pose"] = [[], *full["body_pose"][1:]]
+
+    driver.on_data("pose", "raw_data", gap)
+    driver.on_data("pose", "raw_data", full)
+
+    missing, recovered = (p["body_pose"][0] for p in context.emitted("mirrored_data"))
+    assert np.isnan(missing[:2]).all()
+    assert np.isfinite(recovered).all()
+
+
 def test_face_mesh_opt_out_sends_empty_meshes() -> None:
     context = RecordingContext()
     driver = PoseToMirrorDriver(context)
