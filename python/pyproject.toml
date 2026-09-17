@@ -23,8 +23,8 @@ realsense = [
     "pyrealsense2>=2.55.0; sys_platform != 'darwin'",
 ]
 speech = [
-    "faster-whisper>=1.1.0",
-    "torch>=2.13.0",
+    "ctranslate2>=4.8.1",
+    "faster-whisper>=1.2.1",
 ]
 [dependency-groups]
 # CPU build of ONNX Runtime, installed by default. macOS builds include CoreML.
