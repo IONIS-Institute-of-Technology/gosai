@@ -46,7 +46,7 @@ def run(ctx: ModelContext, args: Any = None) -> None:
     )
 
     ctx.custom_labels.mkdir(parents=True, exist_ok=True)
-    previews_dir = ctx.data_dir / "custom" / "previews"
+    previews_dir = ctx.custom_previews
     if make_previews:
         previews_dir.mkdir(parents=True, exist_ok=True)
 

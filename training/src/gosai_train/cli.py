@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 
-from .context import default_model, discover_models, load_context
+from .context import REPO_ROOT, default_model, discover_models, load_context
 from .registry import get_pipeline
 from .util import console
 
@@ -16,11 +16,11 @@ def _add(subparsers, name: str, help_text: str):
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gosai-train",
-        description="Train GOSAI driver models. Select a model with --model (default: auto).",
+        description="Train GOSAI driver models.",
     )
     parser.add_argument(
         "--model", "-m", default=None,
-        help="Model to operate on (a folder under training/models/). Default: auto.",
+        help="Model to operate on (a folder under training/models/). Required when there is more than one.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -78,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
         for name in models:
             ctx = load_context(name)
             marker = " [dim](default)[/]" if name == current else ""
-            console.print(f"[cyan]{name}[/] ({ctx.type}) -> {ctx.manifest.get('install_path', '?')}{marker}")
+            console.print(f"[cyan]{name}[/] ({ctx.type}) -> {ctx.install_path.relative_to(REPO_ROOT)}{marker}")
         return 0
 
     name = args.model or default_model()

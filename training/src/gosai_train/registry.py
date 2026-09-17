@@ -1,23 +1,23 @@
 """Map a model `type` (from model.yaml) to its training pipeline.
 
-To add a new kind of model (e.g. a pose or classification trainer), implement a
-pipeline package under ``pipelines/`` exposing a ``COMMANDS`` dict and register
+To add a new kind of model (for example a pose or classification trainer), add a
+pipeline package under ``pipelines/`` that exposes a ``COMMANDS`` dict and register
 its type here.
 """
 
 from __future__ import annotations
 
+import importlib
 from types import ModuleType
 
-_YOLO_DETECT_ALIASES = {"yolo-detect", "yolo_detect", "detect", "yolo"}
+PIPELINES = {"yolo-detect": "gosai_train.pipelines.yolo_detect"}
 
 
 def get_pipeline(model_type: str) -> ModuleType:
-    if model_type in _YOLO_DETECT_ALIASES:
-        from .pipelines import yolo_detect
-
-        return yolo_detect
-    raise SystemExit(
-        f"no training pipeline registered for model type {model_type!r}. "
-        f"Known types: {', '.join(sorted(_YOLO_DETECT_ALIASES))}"
-    )
+    module = PIPELINES.get(model_type)
+    if module is None:
+        raise SystemExit(
+            f"no training pipeline registered for model type {model_type!r}. "
+            f"Known types: {', '.join(sorted(PIPELINES))}"
+        )
+    return importlib.import_module(module)

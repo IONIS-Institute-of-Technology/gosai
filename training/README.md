@@ -170,9 +170,6 @@ training/
    name: <name>
    type: yolo-detect # reuses the YOLO detector pipeline
    class_name: <thing> # single class written into the dataset
-   map_all_classes:
-     true # true: every labelled class IS the target;
-     # false: use configs/classes.yaml + heuristic
    install_path: python/src/gosai_py/drivers/<driver>_models/<name>.onnx
    ```
 

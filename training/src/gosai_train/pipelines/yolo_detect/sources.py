@@ -225,7 +225,6 @@ def collect_datasets(
         return positives, negatives
 
     settings = _dataset_settings(ctx)
-    map_all = ctx.map_all_classes
 
     for dataset_dir in sorted(p for p in ctx.raw_dir.iterdir() if p.is_dir()):
         entry = settings.get(dataset_dir.name, {})
@@ -236,10 +235,7 @@ def collect_datasets(
         names = dataset_class_names(dataset_dir)
         decisions: dict[int, str] = {}
         for idx, name in enumerate(names):
-            if map_all:
-                decision = "keep"
-            else:
-                decision = overrides.get(name.strip().lower()) or classify_name(name)
+            decision = overrides.get(name.strip().lower()) or classify_name(name)
             decisions[idx] = decision
             if discovered is not None:
                 discovered[name] = decision
