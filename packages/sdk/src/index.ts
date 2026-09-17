@@ -6,6 +6,7 @@
  */
 
 export { defineExperience } from './experience.js';
+export { SDK_VERSION } from './version.js';
 export type {
   AppConfigClient,
   AppContext,
@@ -47,6 +48,27 @@ export type {
 } from './types.js';
 
 export { createStorageClient } from './storage.js';
+
+// Errors `rt.drivers`, `rt.storage` and `rt.app.server` requests reject with.
+export {
+  ConnectionClosedError,
+  isNotConnectedError,
+  NotConnectedError,
+  RequestTimeoutError,
+  ServerRequestError,
+} from '@gosai/shared/client';
+export { ErrorCodes, PROTOCOL_VERSION } from '@gosai/shared/protocol';
+export type {
+  CommandName,
+  CommandRequest,
+  CommandResponse,
+  ErrorCode,
+  ErrorPayload,
+  EventPayload,
+  WelcomePayload,
+} from '@gosai/shared/protocol';
+export type { Capability } from '@gosai/shared/capabilities';
+export type { ServerEventName } from '@gosai/shared/events';
 
 export {
   computeFit,
