@@ -5,7 +5,6 @@
     { "path": "./packages/server" },
     { "path": "./packages/sdk" },
     { "path": "./packages/desktop" },
-    { "path": "./packages/cli" },
     { "path": "./apps/calibration" },
     { "path": "./apps/interactive-pool" },
     { "path": "./apps/second-self" },

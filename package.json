@@ -22,7 +22,7 @@
     "package:mac": "bun run build && bun run build:apps && bun run build:server-bin && bun --filter @gosai/desktop run dist:mac",
     "package:linux": "bun run build && bun run build:apps && bun run build:server-bin && bun --filter @gosai/desktop run dist:linux",
     "package:kiosk": "bun scripts/package-kiosk.ts",
-    "kiosk": "bun packages/cli/src/index.ts kiosk",
+    "kiosk": "electron packages/desktop --kiosk",
     "typecheck": "bun run --filter './packages/*' --filter './apps/*' --filter './templates/*' typecheck && tsc -p scripts",
     "test": "bun run --filter '@gosai/*' test",
     "lint": "oxlint --deny-warnings",
