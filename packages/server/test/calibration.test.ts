@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
@@ -41,8 +41,13 @@ function manifest(slug: string, calibration?: AppManifest['calibration']): AppMa
   };
 }
 
-function setup(): { store: CalibrationStore; storage: AppStorage; logs: string[] } {
-  const storage = new AppStorage({ data: mkdtempSync(join(tmpdir(), 'gosai-calibration-')) });
+function setup(): {
+  store: CalibrationStore;
+  storage: AppStorage & { dataDir: string };
+  logs: string[];
+} {
+  const dataDir = mkdtempSync(join(tmpdir(), 'gosai-calibration-'));
+  const storage = Object.assign(new AppStorage({ data: dataDir }), { dataDir });
   const manifests: Record<string, AppManifest> = {
     pool: manifest('pool', { kind: 'camera-projector-surface', required: true }),
     depth: manifest('depth', { kind: 'acme-depth', required: false, experience: 'main' }),
@@ -137,6 +142,19 @@ describe('CalibrationStore', () => {
     storage.set('pool', CALIBRATION_PROFILE_KEY, { version: 2, kind: 'x', savedAt: 1, data: {} });
     expect(store.get('pool')).toEqual({ profile: null, calibrated: false });
     expect(logs).toContain('ignoring an unreadable calibration profile');
+  });
+
+  test('a corrupt profile file counts as no profile, and saving replaces it', () => {
+    const { store, storage, logs } = setup();
+    writeLegacy(storage, 'pool', LEGACY);
+    const dir = join(storage.dataDir, 'pool', 'storage');
+    writeFileSync(join(dir, `${CALIBRATION_PROFILE_KEY}.json`), '{not json');
+    expect(store.get('pool')).toEqual({ profile: null, calibrated: false });
+    expect(logs).toContain('ignoring an unreadable calibration profile');
+    // The legacy keys aren't converted over an existing, if unreadable, profile.
+    expect(storage.list('pool')).toContain(LEGACY_CALIBRATION_KEYS.Homography);
+    store.save('pool', { kind: 'camera-projector-surface', data: DATA });
+    expect(store.get('pool').calibrated).toBe(true);
   });
 
   test('converts the nine legacy keys into a profile once', () => {

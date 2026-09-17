@@ -23,7 +23,7 @@ import {
 } from '@gosai/shared/schemas';
 import type { AppManifest } from '@gosai/shared';
 import type { ChildLogger } from '../logger/logger.js';
-import type { AppStorage } from './storage.js';
+import type { AppStorage, StoredValue } from './storage.js';
 
 /** Keys the camera-projector-surface flow wrote before profiles existed. */
 export const LEGACY_CALIBRATION_KEYS = {
@@ -90,7 +90,17 @@ export class CalibrationStore {
 
   /** The stored profile, a converted legacy one, or `null`. An unreadable profile counts as none. */
   private readProfile(appSlug: string): CalibrationProfile | null {
-    const stored = this.options.storage.get(appSlug, CALIBRATION_PROFILE_KEY);
+    let stored: StoredValue;
+    try {
+      stored = this.options.storage.get(appSlug, CALIBRATION_PROFILE_KEY);
+    } catch (err) {
+      // Corrupt JSON. Saving a new profile replaces the file.
+      this.options.logger.warn('ignoring an unreadable calibration profile', {
+        app: appSlug,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
     if (!stored.found) return this.migrateLegacy(appSlug);
     const parsed = calibrationProfileSchema.safeParse(stored.value);
     if (!parsed.success) {
