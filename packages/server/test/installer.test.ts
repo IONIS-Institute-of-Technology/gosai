@@ -10,6 +10,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { installApp, uninstallApp, validateGitSource } from '../src/apps/installer.js';
+import { AppManager } from '../src/apps/manager.js';
+import type { DriverManager } from '../src/drivers/manager.js';
+import { EventBus } from '../src/ipc/bus.js';
 import { Logger } from '../src/logger/logger.js';
 import type { GosaiPaths } from '../src/paths.js';
 
@@ -192,6 +195,20 @@ describe('installer', () => {
     );
     expect(existsSync(join(paths.apps, 'twice-app', 'built.txt'))).toBe(true);
     expect(stagingEntries(paths)).toEqual([]);
+  });
+
+  test('the app manager removes staging left by an interrupted install', () => {
+    const paths = makePaths();
+    const leftover = join(paths.apps, '.staging', 'install-1-abcdef');
+    mkdirSync(leftover, { recursive: true });
+    writeFileSync(join(leftover, 'gosai.app.json'), '{}');
+    new AppManager({
+      paths,
+      logger,
+      bus: new EventBus(),
+      drivers: {} as DriverManager,
+    });
+    expect(existsSync(join(paths.apps, '.staging'))).toBe(false);
   });
 
   test('uninstall validates the slug', async () => {
