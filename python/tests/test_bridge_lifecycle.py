@@ -21,7 +21,7 @@ from gosai_py.bridge import (
     write_all,
 )
 from gosai_py.driver import BaseDriver, DriverContext
-from gosai_py.workers import BoundedQueueWorker
+from gosai_py.workers import BoundedQueueWorker, SerialQueue
 
 
 class Source(BaseDriver):
@@ -568,3 +568,42 @@ def test_audio_and_sequence_consumers_queue_their_inputs() -> None:
         assert cls.subscription_queue_size, cls.name
     for cls in (BallDriver, HandPoseDriver):
         assert cls.subscription_queue_size is None, cls.name
+
+
+def test_close_cancels_requests_queued_behind_a_running_one(make_bridge: BridgeFactory) -> None:
+    bridge, collector = make_bridge([Source])
+    assert _start(bridge, collector, "1", "source")["ok"]
+    _send(bridge, "2", type="execute", instance="app", driver="source", action="wait")
+    # Same instance queue, so this waits behind the running action.
+    _send(bridge, "3", type="stop-driver", instance="app", driver="source")
+    try:
+        bridge.close(timeout=4.0)
+        reply = collector.result("3")
+        assert not reply["ok"]
+        assert reply["error"] == "bridge is shutting down"
+        # Only close() stopped the driver; the queued stop never ran.
+        assert collector.states("app", "source") == ["starting", "running", "stopping", "available"]
+    finally:
+        Source.gate.set()
+
+
+def test_serial_queue_close_cancels_pending_tasks() -> None:
+    queue = SerialQueue("bridge:test-serial")
+    release = threading.Event()
+    started = threading.Event()
+    ran: list[str] = []
+    cancelled: list[str] = []
+
+    def slow() -> None:
+        started.set()
+        release.wait(5.0)
+        ran.append("slow")
+
+    queue.submit(slow, lambda: cancelled.append("slow"))
+    queue.submit(lambda: ran.append("queued"), lambda: cancelled.append("queued"))
+    assert started.wait(5.0)
+    assert not queue.close(0.0)
+    release.set()
+    assert queue.join(5.0)
+    assert ran == ["slow"]
+    assert cancelled == ["queued"]

@@ -805,7 +805,7 @@ class Bridge:
                 queue = SerialQueue(f"bridge:{queue_name}")
                 self._queues[queue_name] = queue
         try:
-            queue.submit(task)
+            queue.submit(task, lambda: self._respond_error(req_id, "bridge is shutting down"))
         except RuntimeError as exc:
             self._respond_error(req_id, describe_error(exc))
 
@@ -817,7 +817,7 @@ class Bridge:
         """Stop every driver and flush output within `timeout` seconds.
 
         Requests already running get a short grace period; queued requests
-        that have not started are refused.
+        that have not started get an error reply and never run.
         """
         start = time.monotonic()
         deadline = start + timeout

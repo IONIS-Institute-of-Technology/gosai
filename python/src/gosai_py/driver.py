@@ -294,7 +294,9 @@ class BaseDriver:
         for worker in workers:
             if worker.join(max(deadline - time.monotonic(), 0.0)):
                 with self._subscriptions_lock:
-                    self._retired_workers.remove(worker)
+                    # A concurrent stop may have removed it already.
+                    if worker in self._retired_workers:
+                        self._retired_workers.remove(worker)
         self._stop.set()
         thread = self._thread
         if thread is not None:
