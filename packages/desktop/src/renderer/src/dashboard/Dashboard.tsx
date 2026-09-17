@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { SystemStats } from '@gosai/shared';
 import { ServerProvider, useServer } from '../lib/server-context.js';
 import { AppsPanel } from './panels/apps/AppsPanel.js';
-import { DriversPanel } from './panels/DriversPanel.js';
+import { DriversPanel } from './panels/drivers/DriversPanel.js';
 import { ExperiencesPanel } from './panels/ExperiencesPanel.js';
 import { LogsPanel } from './panels/LogsPanel.js';
 import { SettingsPanel } from './panels/SettingsPanel.js';
