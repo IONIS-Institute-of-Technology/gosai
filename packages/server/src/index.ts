@@ -56,14 +56,27 @@ try {
   // Non-fatal: the stdout line above is the primary channel.
 }
 
-const shutdown = async (signal: string): Promise<void> => {
+let stopping = false;
+const shutdown = async (reason: string): Promise<void> => {
+  if (stopping) return;
+  stopping = true;
+  console.log(`[gosai-server] shutting down (${reason})`);
   await server.stop();
   process.exit(0);
-  void signal;
 };
 
 process.on('SIGINT', () => void shutdown('SIGINT'));
 process.on('SIGTERM', () => void shutdown('SIGTERM'));
+
+// The desktop app keeps a pipe to our stdin and sets this variable. The pipe
+// closes when Electron exits for any reason, including a crash or SIGKILL, so
+// the server stops the Python bridge and exits instead of holding its port.
+// Unlike process groups, this also works on Windows.
+if (process.env.GOSAI_EXIT_ON_STDIN_CLOSE === '1') {
+  process.stdin.on('end', () => void shutdown('stdin closed'));
+  process.stdin.on('close', () => void shutdown('stdin closed'));
+  process.stdin.resume();
+}
 
 function resolvePythonDir(): string {
   if (process.env.GOSAI_PYTHON_DIR) return resolve(process.env.GOSAI_PYTHON_DIR);
