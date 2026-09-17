@@ -1,9 +1,10 @@
 /**
  * Checks `@gosai/sdk` the way an app outside this repository gets it:
  *
- * 1. builds the SDK and packs it with `bun pm pack`,
- * 2. checks the tarball: no dependencies, and a version inside the
- *    template's `@gosai/sdk` range,
+ * 1. builds the SDK and packs it with `bun run pack:npm` (`bun pm pack` on a
+ *    staged copy with a cleaned package.json),
+ * 2. checks the tarball: no dependencies, scripts or source conditions, and a
+ *    version inside the template's `@gosai/sdk` range,
  * 3. copies `templates/basic` to a temporary directory and builds it with
  *    nothing installed, as the GOSAI installer does, then points its
  *    `@gosai/sdk` dev dependency at the tarball and installs everything,
@@ -57,8 +58,7 @@ interface PackageJson {
 const work = mkdtempSync(join(tmpdir(), 'gosai-sdk-package-'));
 let failed = false;
 try {
-  await run([process.execPath, 'run', 'build'], sdkDir);
-  await run([process.execPath, 'pm', 'pack', '--destination', work], sdkDir);
+  await run([process.execPath, 'run', 'pack:npm', '--destination', work], sdkDir);
   const sdkPackage = readJson<PackageJson>(join(sdkDir, 'package.json'));
   const tarball = join(work, `gosai-sdk-${sdkPackage.version}.tgz`);
 
@@ -69,6 +69,11 @@ try {
   check(
     Object.keys({ ...packed.dependencies, ...packed.peerDependencies }).length === 0,
     'the packed SDK has no runtime or peer dependencies',
+  );
+  const packedText = readFileSync(join(unpacked, 'package', 'package.json'), 'utf8');
+  check(
+    !/"(scripts|devDependencies|@gosai\/source)"/.test(packedText),
+    'the packed package.json has no scripts, devDependencies or @gosai/source conditions',
   );
   for (const file of ['index.js', 'index.d.ts', 'host.js', 'host.d.ts', 'gosai.app.schema.json']) {
     check(

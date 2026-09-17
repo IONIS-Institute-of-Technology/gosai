@@ -41,6 +41,9 @@
   "sideEffects": [
     "./dist/app-host.js"
   ],
+  "engines": {
+    "node": ">=22"
+  },
   "publishConfig": {
     "access": "public"
   },
@@ -50,7 +53,7 @@
     "typecheck": "tsc && tsc -p test",
     "clean": "rm -rf dist",
     "test": "bun test",
-    "prepack": "bun run build"
+    "pack:npm": "bun scripts/pack.ts"
   },
   "devDependencies": {
     "@gosai/shared": "workspace:*",

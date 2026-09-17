@@ -4,7 +4,10 @@ name: Release SDK
 # pushed, and creates a GitHub release with the version's changelog entry.
 # Desktop releases use v* tags (release.yml), which sdk-v* tags don't match.
 #
-# Needs an NPM_TOKEN secret with publish rights to the @gosai scope.
+# Needs an NPM_TOKEN repository secret: an npm automation or granular access
+# token with publish rights to the @gosai scope. npm trusted publishing (OIDC,
+# no stored token) could replace it once the package exists on npm and this
+# workflow is registered as its trusted publisher.
 on:
   push:
     tags: ['sdk-v*']
@@ -46,7 +49,7 @@ jobs:
         run: bun run sdk:check-package
       - name: Pack
         working-directory: packages/sdk
-        run: bun pm pack --destination "$RUNNER_TEMP"
+        run: bun run pack:npm --destination "$RUNNER_TEMP"
       - name: Publish to npm
         run: >-
           npm publish "$RUNNER_TEMP/gosai-sdk-${{ steps.release.outputs.version }}.tgz"

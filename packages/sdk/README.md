@@ -29,7 +29,7 @@ The package has two entries:
 | `@gosai/sdk`      | App code: `defineExperience`, the runtime context types, layers, canvas, warp, homography and calibration helpers.    |
 | `@gosai/sdk/host` | Code that hosts experiences: `runExperience`, `ServerClient`, protocol constants and server types such as `LogEntry`. |
 
-A starter app lives in [`templates/basic`](../../templates/basic).
+A starter app lives in [`templates/basic`](https://github.com/IONIS-Institute-of-Technology/gosai/tree/master/templates/basic).
 
 ## Manifest
 
