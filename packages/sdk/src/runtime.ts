@@ -6,6 +6,7 @@
 
 import type { AppManifest } from '@gosai/shared';
 import { createAssetsClient } from './assets.js';
+import { forwardCspViolations } from './csp-violations.js';
 import { ServerClient } from './connection.js';
 import { DriverClientImpl } from './driver-client.js';
 import { AppEventsClientImpl } from './events-client.js';
@@ -76,6 +77,8 @@ export interface RuntimeEnvironment {
   readonly createAudioContext?: () => AudioContext;
   /** Replaces the storage-backed settings, e.g. with a server command. */
   readonly settings?: SettingsBackend;
+  /** Where `securitypolicyviolation` events fire, normally `document`. They are logged. */
+  readonly violations?: EventTarget;
 }
 
 export const DEFAULT_MAX_DELTA_MS = 100;
@@ -112,6 +115,7 @@ export async function runExperience<TState>(
     server: client,
     frames: browserFrames(),
     createAudioContext: () => new AudioContext(),
+    violations: document,
   });
 }
 
@@ -138,6 +142,7 @@ export async function startRuntime<TState>(
   const router = new ExperienceRouterImpl(options.appSlug, server);
   router.setCurrent(options.experienceSlug);
   const audio = new RuntimeAudio(env.createAudioContext, controller.signal);
+  if (env.violations) forwardCspViolations(env.violations, log, controller.signal);
 
   const app: AppContext = {
     appSlug: options.appSlug,
@@ -179,14 +184,16 @@ export async function startRuntime<TState>(
     stopping ??= (async () => {
       if (frameHandle !== null) frames.cancel(frameHandle);
       frameHandle = null;
+      // Release what the runtime tracks first, so no listener fires into a
+      // stopping experience. The connection stays open for the stop hook.
+      controller.abort();
+      drivers.release();
+      events.release();
       try {
         if (initialized) await definition.stop?.(ctx, state as TState);
       } catch (err) {
         log.error('stop failed', describeError(err));
       } finally {
-        controller.abort();
-        drivers.release();
-        events.release();
         await audio.close();
         server.close();
       }
@@ -194,8 +201,11 @@ export async function startRuntime<TState>(
     return stopping;
   };
 
-  // A hook can't be interrupted, so a cancelled start is noticed between hooks.
+  // Hooks can't be interrupted, but rt.signal aborts right away so a running
+  // hook can bail out; the cancellation is noticed between hooks.
   const cancelled = (): boolean => options.signal?.aborted === true;
+  const onCancel = (): void => controller.abort();
+  options.signal?.addEventListener('abort', onCancel, { once: true });
   try {
     if (cancelled()) throw abortError();
     state = await definition.init?.(ctx);
@@ -207,6 +217,8 @@ export async function startRuntime<TState>(
     if (!cancelled()) log.error('start failed', describeError(err));
     await stop();
     throw err;
+  } finally {
+    options.signal?.removeEventListener('abort', onCancel);
   }
   options.signal?.addEventListener('abort', () => void stop(), { once: true });
 
@@ -321,6 +333,7 @@ class TrackedEventsClient implements AppEventsClient {
 class RuntimeAudio {
   private context: AudioContext | null = null;
   private started = false;
+  private closed = false;
 
   constructor(
     private readonly create: (() => AudioContext) | undefined,
@@ -328,7 +341,7 @@ class RuntimeAudio {
   ) {}
 
   get(): AudioContext {
-    if (this.signal.aborted) throw new Error('the experience has stopped');
+    if (this.closed) throw new Error('the experience has stopped');
     if (!this.context) {
       if (!this.create) throw new Error('audio is not available in this runtime');
       this.context = this.create();
@@ -352,6 +365,7 @@ class RuntimeAudio {
   }
 
   async close(): Promise<void> {
+    this.closed = true;
     const context = this.context;
     this.context = null;
     if (context && context.state !== 'closed') await context.close().catch(() => undefined);

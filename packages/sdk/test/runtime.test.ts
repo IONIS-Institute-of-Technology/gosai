@@ -134,16 +134,18 @@ describe('lifecycle', () => {
     const controller = new AbortController();
     const calls: string[] = [];
     const definition: ExperienceDefinition<void> = {
-      async init() {
+      async init(rt) {
         calls.push('init');
         controller.abort();
+        // The running hook sees the cancellation through rt.signal.
+        calls.push(`signal:${rt.signal.aborted}`);
       },
       start: () => void calls.push('start'),
       stop: () => void calls.push('stop'),
     };
     const run = startRuntime(definition, runtimeOptions({ signal: controller.signal }), env);
     await expect(run).rejects.toThrow();
-    expect(calls).toEqual(['init', 'stop']);
+    expect(calls).toEqual(['init', 'signal:true', 'stop']);
     expect(server.closed).toBe(true);
     expect(errorLogs(server)).toEqual([]);
   });
@@ -224,18 +226,36 @@ describe('listener cleanup on stop', () => {
     expect(server.requestsOf('driver:subscribe')).toHaveLength(0);
   });
 
-  test('rt.signal aborts on stop, after the stop hook ran', async () => {
-    const { env } = environment();
-    let abortedDuringStop = null as boolean | null;
+  test('stop releases signal and subscriptions before the hook, and the connection after', async () => {
+    const { server, env } = environment();
+    let seenInStop = null as {
+      aborted: boolean;
+      listeners: number;
+      closed: boolean;
+    } | null;
     const handle = await startRuntime(
-      { stop: (rt) => void (abortedDuringStop = rt.signal.aborted) },
+      {
+        start: (rt) => void rt.drivers.on('heartbeat', 'tick', () => undefined),
+        stop: async (rt) => {
+          seenInStop = {
+            aborted: rt.signal.aborted,
+            listeners: server.listenerCount(),
+            closed: server.closed,
+          };
+          await Promise.resolve();
+          rt.log.info('still connected');
+        },
+      },
       runtimeOptions(),
       env,
     );
     expect(handle.context.signal.aborted).toBe(false);
     await handle.stop();
-    expect(abortedDuringStop).toBe(false);
-    expect(handle.context.signal.aborted).toBe(true);
+    expect(seenInStop).toEqual({ aborted: true, listeners: 0, closed: false });
+    expect(
+      server.requestsOf('app:log').map((r) => (r.payload as { message: string }).message),
+    ).toContain('still connected');
+    expect(server.closed).toBe(true);
   });
 
   test('uses the driver binding for driver requests', async () => {
@@ -431,6 +451,58 @@ describe('context services', () => {
     const handle = await startRuntime({}, runtimeOptions(), env);
     void handle.context.audio;
     expect(context.resumes).toBe(1);
+    await handle.stop();
+  });
+});
+
+describe('Content Security Policy violations', () => {
+  function violation(directive: string, blockedURI: string): Event {
+    return Object.assign(new Event('securitypolicyviolation'), {
+      effectiveDirective: directive,
+      violatedDirective: directive,
+      blockedURI,
+      sourceFile: 'http://demo.localhost:7777/v1/apps/demo/static/dist/main.js',
+      lineNumber: 12,
+    });
+  }
+
+  function warnings(server: FakeServer): Array<{ message: string; data: Record<string, unknown> }> {
+    return server
+      .requestsOf('app:log')
+      .map((r) => r.payload as { level: string; message: string; data: Record<string, unknown> })
+      .filter((p) => p.level === 'warn');
+  }
+
+  test('are logged once per directive and URL, with a hint for connect-src', async () => {
+    const violations = new EventTarget();
+    const { server, env } = environment({ violations });
+    const handle = await startRuntime({}, runtimeOptions(), env);
+    violations.dispatchEvent(violation('connect-src', 'ws://relay.local:8080'));
+    violations.dispatchEvent(violation('connect-src', 'ws://relay.local:8080'));
+    violations.dispatchEvent(violation('img-src', 'http://example.com/a.png'));
+    const logged = warnings(server);
+    expect(logged.map((w) => w.message)).toEqual([
+      'blocked by the Content Security Policy: connect-src ws://relay.local:8080',
+      'blocked by the Content Security Policy: img-src http://example.com/a.png',
+    ]);
+    expect(logged[0]!.data.hint).toContain('network.connect');
+    expect(logged[1]!.data.hint).toBeUndefined();
+
+    await handle.stop();
+    violations.dispatchEvent(violation('connect-src', 'ws://late.local'));
+    expect(warnings(server)).toHaveLength(2);
+  });
+
+  test('stop being logged after the limit', async () => {
+    const violations = new EventTarget();
+    const { server, env } = environment({ violations });
+    const handle = await startRuntime({}, runtimeOptions(), env);
+    for (let i = 0; i < 50; i++) {
+      violations.dispatchEvent(violation('connect-src', `ws://host-${i}.local`));
+    }
+    const messages = warnings(server).map((w) => w.message);
+    expect(messages).toHaveLength(21);
+    expect(messages[20]).toContain('only the first 20 are logged');
     await handle.stop();
   });
 });
