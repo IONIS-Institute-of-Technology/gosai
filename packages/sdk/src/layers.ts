@@ -8,7 +8,11 @@
 export interface Layer<TFrame = unknown> {
   /** Loads assets. Runs once, before the first `start`. */
   preload?(): Promise<void>;
-  /** Called when the layer starts. The layer renders once this resolves. */
+  /**
+   * Called when the layer starts. The layer renders once this resolves. If it
+   * throws, `stop` is still called so the layer can release what it acquired,
+   * the same rule the experience runtime applies to `start`.
+   */
   start?(): void | Promise<void>;
   /** Called every frame while the layer runs and the manager isn't suspended. */
   render?(frame: TFrame): void;
@@ -39,7 +43,7 @@ export interface LayerDefinition<TFrame = unknown> {
   create(): Layer<TFrame>;
 }
 
-export type LayerPhase = 'preload' | 'start' | 'render' | 'stop' | 'suspend' | 'resume';
+export type LayerPhase = 'create' | 'preload' | 'start' | 'render' | 'stop' | 'suspend' | 'resume';
 
 export interface LayerManagerOptions {
   /** Receives lifecycle errors. Render errors are reported once per activation. */
@@ -167,12 +171,15 @@ export class LayerManager<
     return this.isRunning(slug) ? this.stop(slug) : this.start(slug);
   }
 
-  /** Stops every running layer, persistent ones included, from the top down. */
+  /**
+   * Stops every running layer, persistent ones included, from the top down,
+   * and waits for stops already in progress.
+   */
   async stopAll(): Promise<void> {
-    const running = [...this.entries.values()]
-      .filter((entry) => entry.running)
-      .sort((a, b) => compareZ(b, a));
-    await Promise.all(running.map((entry) => this.stopEntry(entry)));
+    const entries = [...this.entries.values()].sort((a, b) => compareZ(b, a));
+    await Promise.all(
+      entries.map((entry) => (entry.running ? this.stopEntry(entry) : entry.settled)),
+    );
   }
 
   /** Stops rendering every layer and calls `suspend` on the running ones. */
@@ -237,16 +244,16 @@ export class LayerManager<
     const current = (): boolean => entry.activation === activation;
     if (!current()) return;
 
-    let phase: LayerPhase = 'start';
+    let phase: LayerPhase = 'create';
     try {
       entry.instance ??= entry.def.create();
       if (!entry.preloaded && entry.instance.preload) {
         phase = 'preload';
         await entry.instance.preload();
         entry.preloaded = true;
-        phase = 'start';
         if (!current()) return;
       }
+      phase = 'start';
       await entry.instance.start?.();
     } catch (err) {
       this.onError(entry.def.slug, err, phase);
@@ -254,6 +261,8 @@ export class LayerManager<
         entry.running = false;
         entry.activation += 1;
       }
+      // A start that threw may have acquired resources; create and preload failures have none.
+      if (phase === 'start') await this.runStop(entry);
       return;
     }
 

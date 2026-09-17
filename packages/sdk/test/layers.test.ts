@@ -96,8 +96,9 @@ describe('LayerManager lifecycle', () => {
     expect(log).toEqual(['render:a:2']);
   });
 
-  test('a failed start is reported and leaves the layer stopped', async () => {
+  test('a failed start is reported, stops the layer and calls its stop hook', async () => {
     const errors: Array<[string, LayerPhase]> = [];
+    let stops = 0;
     const manager = new LayerManager<number>(
       [
         {
@@ -106,6 +107,7 @@ describe('LayerManager lifecycle', () => {
             start: () => {
               throw new Error('nope');
             },
+            stop: () => void (stops += 1),
           }),
         },
       ],
@@ -113,7 +115,40 @@ describe('LayerManager lifecycle', () => {
     );
     await manager.start('broken');
     expect(errors).toEqual([['broken', 'start']]);
+    expect(stops).toBe(1);
     expect(manager.isRunning('broken')).toBe(false);
+    await manager.stopAll();
+    expect(stops).toBe(1);
+  });
+
+  test('a failed create or preload is reported without calling stop', async () => {
+    const errors: Array<[string, LayerPhase]> = [];
+    let stops = 0;
+    const manager = new LayerManager<number>(
+      [
+        {
+          slug: 'no-create',
+          create: () => {
+            throw new Error('create');
+          },
+        },
+        {
+          slug: 'no-preload',
+          create: () => ({
+            preload: () => Promise.reject(new Error('preload')),
+            stop: () => void (stops += 1),
+          }),
+        },
+      ],
+      { onError: (slug, _err, phase) => errors.push([slug, phase]) },
+    );
+    await manager.start('no-create');
+    await manager.start('no-preload');
+    expect(errors).toEqual([
+      ['no-create', 'create'],
+      ['no-preload', 'preload'],
+    ]);
+    expect(stops).toBe(0);
   });
 });
 
@@ -231,6 +266,23 @@ describe('LayerManager relationships', () => {
     await manager.stopAll();
     expect(log).toEqual(['stop:menu', 'stop:b', 'stop:a']);
     expect(manager.running()).toEqual([]);
+  });
+
+  test('stopAll waits for a stop already in flight', async () => {
+    const log: string[] = [];
+    const gate = deferred();
+    const manager = new LayerManager<number>([
+      def(log, 'slow', {}, { stop: () => gate.promise.then(() => void log.push('stopped:slow')) }),
+    ]);
+    await manager.start('slow');
+    void manager.stop('slow');
+    let done = false;
+    const all = manager.stopAll().then(() => (done = true));
+    await flush();
+    expect(done).toBe(false);
+    gate.resolve();
+    await all;
+    expect(log).toEqual(['start:slow', 'stopped:slow']);
   });
 
   test('toggle starts and stops', async () => {
