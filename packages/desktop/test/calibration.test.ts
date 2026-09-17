@@ -177,6 +177,24 @@ describe('CalibrationOrchestrator', () => {
     expect(windows.fake.statusListeners.size).toBe(0);
   });
 
+  test('claims the flow experience from the start request until the windows close', async () => {
+    const windows = new FakeWindows();
+    const log: string[] = [];
+    const claims = {
+      claim: (appSlug: string, experienceSlug: string) => {
+        log.push(`claim ${appSlug}/${experienceSlug}`);
+        return () => log.push(`release ${windows.ended.length}`);
+      },
+    };
+    const run = new CalibrationOrchestrator(windows, claims).run({ appSlug: 'pool' });
+    await windowsOpen(windows);
+    expect(log).toEqual(['claim calibration/calibrate']);
+    windows.fake.emit('app:calibration:wizard:finished', { ok: true });
+    await run;
+    // Released after endExperience closed the windows.
+    expect(log).toEqual(['claim calibration/calibrate', 'release 1']);
+  });
+
   test('a load failure reported by the flow closes both windows and returns the error', async () => {
     const windows = new FakeWindows();
     const run = new CalibrationOrchestrator(windows).run({ appSlug: 'pool' });
