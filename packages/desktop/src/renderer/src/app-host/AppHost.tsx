@@ -1,5 +1,5 @@
 import { type JSX, useEffect, useState } from 'react';
-import { SERVER_BASE_URL } from '../lib/server-url.js';
+import { SERVER_BASE_URL, SERVER_TOKEN, serverHeaders } from '../lib/server-url.js';
 
 interface LoadResult {
   status: 'loading' | 'ready' | 'error';
@@ -36,7 +36,9 @@ export function AppHost(): JSX.Element {
         )) as typeof import('@gosai/sdk');
         if (cancelled) return;
 
-        const manifestRes = await fetch(`${SERVER_BASE_URL}/v1/apps`);
+        const manifestRes = await fetch(`${SERVER_BASE_URL}/v1/apps`, {
+          headers: serverHeaders(),
+        });
         if (cancelled) return;
         if (!manifestRes.ok) throw new Error(`Cannot fetch apps list (${manifestRes.status})`);
         const apps = (await manifestRes.json()) as {
@@ -69,6 +71,7 @@ export function AppHost(): JSX.Element {
           experienceSlug,
           ...(driverBinding ? { driverBinding } : {}),
           serverBaseUrl: SERVER_BASE_URL,
+          ...(SERVER_TOKEN ? { authToken: SERVER_TOKEN } : {}),
         });
         if (cancelled) {
           // Cleanup already ran while we were starting; tear down right away.

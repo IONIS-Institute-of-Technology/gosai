@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { AppSettingsField, AppSettingsSchema, InstalledApp } from '@gosai/shared';
-import { SERVER_BASE_URL } from '../../lib/server-url.js';
+import { SERVER_BASE_URL, serverHeaders } from '../../lib/server-url.js';
 
 type SettingValue = string | number | boolean;
 type ConfigObject = Record<string, unknown>;
@@ -36,6 +36,7 @@ export function AppSettingsModal({
     try {
       const res = await fetch(
         `${SERVER_BASE_URL}/v1/apps/${slug}/storage/${encodeURIComponent(storageKey)}`,
+        { headers: serverHeaders() },
       );
       const stored = res.status === 200 ? ((await res.json()) as ConfigObject) : {};
       setConfig(stored && typeof stored === 'object' ? stored : {});
@@ -72,7 +73,7 @@ export function AppSettingsModal({
         `${SERVER_BASE_URL}/v1/apps/${slug}/storage/${encodeURIComponent(storageKey)}`,
         {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: serverHeaders({ 'content-type': 'application/json' }),
           body: JSON.stringify(config),
         },
       );

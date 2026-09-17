@@ -5,7 +5,8 @@ import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    // @gosai/shared ships TypeScript sources, so main bundles the parts it uses.
+    plugins: [externalizeDepsPlugin({ exclude: ['@gosai/shared'] })],
     build: {
       outDir: 'out/main',
       lib: {

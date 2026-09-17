@@ -11,7 +11,7 @@
     "templates/*"
   ],
   "scripts": {
-    "dev": "bun run --elide-lines=0 --filter @gosai/server --filter @gosai/sdk --filter @gosai/desktop dev",
+    "dev": "bun scripts/dev.ts",
     "dev:server": "bun run --elide-lines=0 --filter @gosai/server dev",
     "dev:desktop": "bun run --elide-lines=0 --filter @gosai/desktop dev",
     "build": "bun run --filter '@gosai/*' build",

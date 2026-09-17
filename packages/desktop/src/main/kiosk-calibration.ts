@@ -20,6 +20,19 @@ export const CALIBRATION_SLUG = 'calibration';
 const CALIBRATE_EXPERIENCE = 'calibrate';
 export const DEFAULT_CALIBRATION_STATUS_KEY = 'calibration_status';
 
+/** Where Electron main reaches the embedded server, with the dashboard token. */
+export interface ServerAccess {
+  readonly baseUrl: string;
+  readonly token: string;
+}
+
+export function serverHeaders(
+  server: ServerAccess,
+  extra: Record<string, string> = {},
+): Record<string, string> {
+  return { ...extra, authorization: `Bearer ${server.token}` };
+}
+
 export interface CalibrationSchema {
   required?: boolean;
   entry?: string;
@@ -28,13 +41,14 @@ export interface CalibrationSchema {
 
 /** True when the target app's calibration status key exists in storage. */
 export async function isCalibrated(
-  baseUrl: string,
+  server: ServerAccess,
   appSlug: string,
   statusKey: string,
 ): Promise<boolean> {
   try {
     const res = await fetch(
-      `${baseUrl}/v1/apps/${appSlug}/storage/${encodeURIComponent(statusKey)}`,
+      `${server.baseUrl}/v1/apps/${appSlug}/storage/${encodeURIComponent(statusKey)}`,
+      { headers: serverHeaders(server) },
     );
     return res.status === 200;
   } catch {
@@ -43,9 +57,9 @@ export async function isCalibrated(
 }
 
 /** True when the calibration runner app is installed on the server. */
-export async function hasCalibrationRunner(baseUrl: string): Promise<boolean> {
+export async function hasCalibrationRunner(server: ServerAccess): Promise<boolean> {
   try {
-    const res = await fetch(`${baseUrl}/v1/apps`);
+    const res = await fetch(`${server.baseUrl}/v1/apps`, { headers: serverHeaders(server) });
     if (!res.ok) return false;
     const data = (await res.json()) as { apps: Array<{ manifest: { slug: string } }> };
     return data.apps.some((a) => a.manifest.slug === CALIBRATION_SLUG);
@@ -55,7 +69,7 @@ export async function hasCalibrationRunner(baseUrl: string): Promise<boolean> {
 }
 
 export interface RunKioskCalibrationOptions {
-  readonly baseUrl: string;
+  readonly server: ServerAccess;
   readonly windows: WindowRegistry;
   readonly targetAppSlug: string;
   readonly displayId: number;
@@ -63,12 +77,12 @@ export interface RunKioskCalibrationOptions {
 
 /** Runs the wizard and resolves when it finishes or the operator closes it. */
 export async function runKioskCalibration(options: RunKioskCalibrationOptions): Promise<void> {
-  const { baseUrl, windows, targetAppSlug, displayId } = options;
+  const { server, windows, targetAppSlug, displayId } = options;
   const driverBinding = targetAppSlug;
 
-  const startRes = await fetch(`${baseUrl}/v1/experiences/start`, {
+  const startRes = await fetch(`${server.baseUrl}/v1/experiences/start`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: serverHeaders(server, { 'content-type': 'application/json' }),
     body: JSON.stringify({
       appSlug: CALIBRATION_SLUG,
       experienceSlug: CALIBRATE_EXPERIENCE,
@@ -79,7 +93,9 @@ export async function runKioskCalibration(options: RunKioskCalibrationOptions): 
     throw new Error(`could not start calibration experience: ${await startRes.text()}`);
   }
 
-  const events = new EventSocket(`${baseUrl.replace(/^http/, 'ws')}/ws`);
+  const wsUrl = new URL('/ws', server.baseUrl.replace(/^http/, 'ws'));
+  wsUrl.searchParams.set('token', server.token);
+  const events = new EventSocket(wsUrl.toString());
   await events.connect();
   events.subscribe([
     `app:${CALIBRATION_SLUG}:wizard:step`,
@@ -148,7 +164,10 @@ class EventSocket {
       const ws = new WebSocket(this.url);
       this.ws = ws;
       ws.addEventListener('open', () => resolve());
-      ws.addEventListener('error', () => reject(new Error(`WebSocket failed: ${this.url}`)));
+      ws.addEventListener('error', () => {
+        // The URL carries the token, so leave the query out of the message.
+        reject(new Error(`WebSocket failed: ${this.url.split('?')[0]}`));
+      });
       ws.addEventListener('message', (ev) => {
         let parsed: { type?: string; payload?: unknown };
         try {

@@ -21,6 +21,8 @@ export interface ServerRunnerOptions {
   readonly pythonDir?: string;
   readonly builtinAppsDir?: string;
   readonly homeDir?: string;
+  /** Dashboard token for this launch, passed to the server. */
+  readonly dashboardToken: string;
 }
 
 export interface ServerAddress {
@@ -29,6 +31,9 @@ export interface ServerAddress {
 }
 
 const READY_PREFIX = 'GOSAI_READY ';
+
+/** Origins of the renderer windows loaded from `file://`. */
+const RENDERER_ORIGINS = ['file://', 'null'];
 
 export function shouldAutostartServer(): boolean {
   if (process.env.GOSAI_AUTOSTART_SERVER === '0') return false;
@@ -40,7 +45,7 @@ export class ServerRunner {
   private child: ChildProcess | null = null;
   private readyPromise: Promise<ServerAddress> | null = null;
 
-  constructor(private readonly options: ServerRunnerOptions = {}) {}
+  constructor(private readonly options: ServerRunnerOptions) {}
 
   shouldAutostart(): boolean {
     return shouldAutostartServer();
@@ -62,6 +67,10 @@ export class ServerRunner {
       ...process.env,
       GOSAI_HOST: host,
       GOSAI_PORT: String(this.options.port ?? 7777),
+      GOSAI_DASHBOARD_TOKEN: this.options.dashboardToken,
+      GOSAI_ALLOWED_ORIGINS: [process.env.GOSAI_ALLOWED_ORIGINS, ...RENDERER_ORIGINS]
+        .filter(Boolean)
+        .join(','),
     };
     if (this.options.pythonDir) env.GOSAI_PYTHON_DIR = this.options.pythonDir;
     if (this.options.builtinAppsDir) env.GOSAI_BUILTIN_APPS = this.options.builtinAppsDir;

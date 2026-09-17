@@ -25,7 +25,9 @@ import {
   hasCalibrationRunner,
   isCalibrated,
   runKioskCalibration,
+  serverHeaders,
   type CalibrationSchema,
+  type ServerAccess,
 } from './kiosk-calibration.js';
 import type { WindowRegistry } from './windows.js';
 
@@ -188,16 +190,22 @@ export function applyKioskPaths(config: KioskConfig): void {
 export interface RunKioskOptions {
   readonly config: KioskConfig;
   readonly windows: WindowRegistry;
+  readonly dashboardToken: string;
 }
 
 /**
  * Creates the kiosk's server runner. The server gets its own home directory
  * and an ephemeral port (port 0), and only sees this kiosk's app.
  */
-function createKioskServerRunner(config: KioskConfig, pythonDir: string | null): ServerRunner {
+function createKioskServerRunner(
+  config: KioskConfig,
+  pythonDir: string | null,
+  dashboardToken: string,
+): ServerRunner {
   const fallbackPythonDir = app.isPackaged ? join(process.resourcesPath, 'python') : undefined;
   const resolvedPythonDir = pythonDir ?? fallbackPythonDir;
   return new ServerRunner({
+    dashboardToken,
     port: 0,
     homeDir: config.homeDir,
     builtinAppsDir: prepareAppsDir(config),
@@ -245,7 +253,7 @@ function linkApp(appsDir: string, slug: string, target: string): void {
  * server runner so the caller can stop it on quit.
  */
 export async function runKiosk(options: RunKioskOptions): Promise<ServerRunner> {
-  const { config, windows } = options;
+  const { config, windows, dashboardToken } = options;
 
   // First-run Python installation with a visible status window - a kiosk
   // machine should never sit on a black screen for minutes.
@@ -265,7 +273,7 @@ export async function runKiosk(options: RunKioskOptions): Promise<ServerRunner> 
     console.error(`[gosai-kiosk] python runtime setup failed: ${String(err)}`);
   }
 
-  const serverRunner = createKioskServerRunner(config, pythonDir);
+  const serverRunner = createKioskServerRunner(config, pythonDir, dashboardToken);
   serverRunner.start();
   if (!serverRunner.isRunning()) {
     splash.close();
@@ -274,7 +282,10 @@ export async function runKiosk(options: RunKioskOptions): Promise<ServerRunner> 
   const address = await serverRunner.waitForReady();
   splash.close();
   windows.setServerAddress(address);
-  const baseUrl = `http://${address.host}:${address.port}`;
+  const server: ServerAccess = {
+    baseUrl: `http://${address.host}:${address.port}`,
+    token: dashboardToken,
+  };
 
   const appSlug = config.manifest.slug;
   const displays = screen.getAllDisplays();
@@ -283,9 +294,9 @@ export async function runKiosk(options: RunKioskOptions): Promise<ServerRunner> 
       ? (displays[config.displayIndex] ?? screen.getPrimaryDisplay())
       : screen.getPrimaryDisplay();
 
-  await maybeCalibrate(config, windows, baseUrl, display.id);
+  await maybeCalibrate(config, windows, server, display.id);
 
-  const started = await startExperienceWithRetry(baseUrl, appSlug, config.experienceSlug);
+  const started = await startExperienceWithRetry(server, appSlug, config.experienceSlug);
   if (!started) {
     console.error(
       `[gosai-kiosk] could not start ${appSlug}/${config.experienceSlug} on the server; ` +
@@ -306,7 +317,7 @@ export async function runKiosk(options: RunKioskOptions): Promise<ServerRunner> 
 
   console.log(
     `[gosai-kiosk] ${config.manifest.name ?? appSlug} (${basename(config.appDir)}) ` +
-      `running on ${baseUrl}, home=${config.homeDir}`,
+      `running on ${server.baseUrl}, home=${config.homeDir}`,
   );
   return serverRunner;
 }
@@ -319,7 +330,7 @@ export async function runKiosk(options: RunKioskOptions): Promise<ServerRunner> 
 async function maybeCalibrate(
   config: KioskConfig,
   windows: WindowRegistry,
-  baseUrl: string,
+  server: ServerAccess,
   displayId: number,
 ): Promise<void> {
   const schema = config.manifest.calibration;
@@ -328,9 +339,9 @@ async function maybeCalibrate(
 
   const appSlug = config.manifest.slug;
   const statusKey = schema?.statusKey ?? DEFAULT_CALIBRATION_STATUS_KEY;
-  if (!config.forceCalibrate && (await isCalibrated(baseUrl, appSlug, statusKey))) return;
+  if (!config.forceCalibrate && (await isCalibrated(server, appSlug, statusKey))) return;
 
-  if (!(await hasCalibrationRunner(baseUrl))) {
+  if (!(await hasCalibrationRunner(server))) {
     console.error(
       `[gosai-kiosk] ${appSlug} needs calibration but the calibration runner app is not ` +
         'bundled; repackage with a manifest that declares "calibration"',
@@ -340,7 +351,7 @@ async function maybeCalibrate(
 
   console.log(`[gosai-kiosk] running calibration wizard for ${appSlug}`);
   try {
-    await runKioskCalibration({ baseUrl, windows, targetAppSlug: appSlug, displayId });
+    await runKioskCalibration({ server, windows, targetAppSlug: appSlug, displayId });
     console.log('[gosai-kiosk] calibration wizard closed');
   } catch (err) {
     console.error(`[gosai-kiosk] calibration failed: ${String(err)}`);
@@ -348,16 +359,16 @@ async function maybeCalibrate(
 }
 
 async function startExperienceWithRetry(
-  baseUrl: string,
+  server: ServerAccess,
   appSlug: string,
   experienceSlug: string,
   attempts = 3,
 ): Promise<boolean> {
   for (let i = 0; i < attempts; i++) {
     try {
-      const res = await fetch(`${baseUrl}/v1/experiences/start`, {
+      const res = await fetch(`${server.baseUrl}/v1/experiences/start`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: serverHeaders(server, { 'content-type': 'application/json' }),
         body: JSON.stringify({ appSlug, experienceSlug }),
       });
       if (res.ok) return true;

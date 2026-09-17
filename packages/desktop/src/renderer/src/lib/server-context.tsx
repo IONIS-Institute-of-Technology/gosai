@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { ServerClient, type ConnectionStatus } from './server-client.js';
-import { SERVER_WS_URL } from './server-url.js';
+import { SERVER_TOKEN, SERVER_WS_URL } from './server-url.js';
 
 const DEFAULT_URL = SERVER_WS_URL;
 
@@ -18,7 +18,7 @@ export function ServerProvider({
   url?: string;
   children: ReactNode;
 }): React.ReactElement {
-  const client = useMemo(() => new ServerClient({ url }), [url]);
+  const client = useMemo(() => new ServerClient({ url, token: SERVER_TOKEN }), [url]);
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
 
   useEffect(() => {

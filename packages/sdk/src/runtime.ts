@@ -29,6 +29,8 @@ export interface RuntimeOptions {
   /** HTTP base URL (e.g. http://127.0.0.1:7777) and WS URL are derived from this. */
   readonly serverBaseUrl: string;
   readonly wsUrl?: string;
+  /** App token desktop main gave the window. */
+  readonly authToken?: string;
 }
 
 export interface RuntimeHandle {
@@ -44,7 +46,10 @@ export async function runExperience<TState>(
   definition: ExperienceDefinition<TState>,
   options: RuntimeOptions,
 ): Promise<RuntimeHandle> {
-  const client = new ServerClient({ url: options.wsUrl ?? defaultWsUrl(options.serverBaseUrl) });
+  const client = new ServerClient({
+    url: options.wsUrl ?? defaultWsUrl(options.serverBaseUrl),
+    ...(options.authToken ? { authToken: options.authToken } : {}),
+  });
   client.connect();
 
   await waitForConnection(client);
