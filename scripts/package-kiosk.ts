@@ -41,7 +41,7 @@ interface Manifest {
   name?: string;
   version?: string;
   default?: string;
-  calibration?: { required?: boolean; entry?: string };
+  calibration?: { kind?: string; required?: boolean; experience?: string };
   experiences: Array<{ slug: string; entry: string }>;
 }
 
@@ -146,15 +146,12 @@ for (const exp of manifest.experiences) {
     fail(`experience entry missing: ${entryPath} - build the app first`);
   }
 }
-if (manifest.calibration?.entry && !existsSync(join(appDir, manifest.calibration.entry))) {
-  fail(`calibration entry missing: ${join(appDir, manifest.calibration.entry)}`);
-}
-
-// Apps that declare calibration also need the built-in calibration runner in
-// the bundle; the kiosk shell launches it on first boot (and on demand via
-// GOSAI_KIOSK_CALIBRATE=1) to write the profile into the app's storage.
+// Built-in calibration kinds run in the built-in calibration app, so it goes
+// in the bundle; the kiosk shell runs it on first boot (and on demand via
+// GOSAI_KIOSK_CALIBRATE=1) to save the app's calibration profile. A custom
+// flow (`calibration.experience`) is one of the app's own experiences.
 let calibrationAppDir: string | null = null;
-if (manifest.calibration) {
+if (manifest.calibration && manifest.calibration.experience === undefined) {
   calibrationAppDir = join(repoRoot, 'apps', 'calibration');
   if (!existsSync(join(calibrationAppDir, 'gosai.app.json'))) {
     fail(`app declares calibration but the runner app is missing at ${calibrationAppDir}`);
