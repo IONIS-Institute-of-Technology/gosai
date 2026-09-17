@@ -169,28 +169,28 @@ Release other resources (WebGL renderers, media elements) in `stop`.
 
 ## Runtime context
 
-| Member                                         | Description                                                                            |
-| ---------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `rt.app.appSlug`, `rt.app.experienceSlug`      | Identity.                                                                              |
-| `rt.app.manifest`, `rt.app.experience`         | The parsed manifest and this experience's entry in it.                                 |
-| `rt.app.params`                                | Launch parameters of the window, such as `role` and `target` for calibration.          |
-| `rt.drivers.on(driver, event, listener)`       | Subscribe to a driver event. Returns `{ unsubscribe() }`.                              |
-| `rt.drivers.get<T>(driver, event)`             | Latest value of a driver event.                                                        |
-| `rt.drivers.execute<T>(driver, action, data?)` | Run a driver action and get its result.                                                |
-| `rt.storage.get<T>(key, fallback?)`            | Read a JSON value. Returns `T` when you pass a fallback, `T \| undefined` otherwise.   |
-| `rt.storage.set(key, value)`, `remove`, `list` | Per-app key/value storage.                                                             |
-| `rt.settings.get<T>()`                         | Settings from the manifest schema: stored values merged over the defaults.             |
-| `rt.settings.set({ 'display.zoom': 2 })`       | Store settings by dotted key. Keys you don't set keep following their default.         |
-| `rt.assets.url(path, appSlug?)`                | URL of a file in the app (or in `appSlug`), relative to its root, e.g. `assets/a.png`. |
-| `rt.events.emit(topic, data)`, `rt.events.on`  | Messages to the app's other windows, e.g. from a projector to a control window.        |
-| `rt.log.debug/info/warn/error(message, data?)` | Logs shown in the dashboard's Logs panel.                                              |
-| `rt.audio`                                     | An `AudioContext` created on first use and resumed when the experience starts.         |
-| `rt.ping()`                                    | Round-trip time to the server, in milliseconds.                                        |
-| `rt.signal`                                    | Aborts when the experience stops.                                                      |
-| `rt.router.switchTo(slug)`, `rt.router.stop()` | Start or stop experiences of this app on the server. It doesn't open windows yet.      |
-| `rt.router.onStateChange(listener)`            | Follow the state of this app's experiences.                                            |
-| `rt.appConfig.get()`, `rt.appConfig.onChange`  | The app's device assignments (display, camera, microphone, speaker) and their changes. |
-| `rt.app.server`                                | The raw server connection, for commands the SDK doesn't wrap.                          |
+| Member                                         | Description                                                                                                                              |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `rt.app.appSlug`, `rt.app.experienceSlug`      | Identity.                                                                                                                                |
+| `rt.app.manifest`, `rt.app.experience`         | The parsed manifest and this experience's entry in it.                                                                                   |
+| `rt.app.params`                                | Launch parameters of the window, such as `role` and `target` for calibration.                                                            |
+| `rt.drivers.on(driver, event, listener)`       | Subscribe to a driver event. Returns `{ unsubscribe() }`.                                                                                |
+| `rt.drivers.get<T>(driver, event)`             | Latest value of a driver event.                                                                                                          |
+| `rt.drivers.execute<T>(driver, action, data?)` | Run a driver action and get its result.                                                                                                  |
+| `rt.storage.get<T>(key, fallback?)`            | Read a JSON value. Returns `T` when you pass a fallback, `T \| undefined` otherwise.                                                     |
+| `rt.storage.set(key, value)`, `remove`, `list` | Per-app key/value storage.                                                                                                               |
+| `rt.settings.get<T>()`                         | Settings from the manifest schema: stored values merged over the defaults.                                                               |
+| `rt.settings.set({ 'display.zoom': 2 })`       | Store settings by dotted key; `null` restores a default. Throws for undeclared keys and values that aren't strings, numbers or booleans. |
+| `rt.assets.url(path, appSlug?)`                | URL of a file in the app (or in `appSlug`), relative to its root, e.g. `assets/a.png`.                                                   |
+| `rt.events.emit(topic, data)`, `rt.events.on`  | Messages to the app's other windows, e.g. from a projector to a control window.                                                          |
+| `rt.log.debug/info/warn/error(message, data?)` | Logs shown in the dashboard's Logs panel.                                                                                                |
+| `rt.audio`                                     | An `AudioContext` created on first use and resumed when the experience starts.                                                           |
+| `rt.ping()`                                    | Round-trip time to the server, in milliseconds.                                                                                          |
+| `rt.signal`                                    | Aborts when the experience stops.                                                                                                        |
+| `rt.router.switchTo(slug)`, `rt.router.stop()` | Start or stop experiences of this app on the server. It doesn't open windows yet.                                                        |
+| `rt.router.onStateChange(listener)`            | Follow the state of this app's experiences.                                                                                              |
+| `rt.appConfig.get()`, `rt.appConfig.onChange`  | The app's device assignments (display, camera, microphone, speaker) and their changes.                                                   |
+| `rt.app.server`                                | The raw server connection, for commands the SDK doesn't wrap.                                                                            |
 
 ## Layers
 
