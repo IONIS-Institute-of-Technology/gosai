@@ -67,7 +67,7 @@ export function createSignGameLayer(deps: LayerDeps): Layer {
   const spriteUrl = (name: string, sprite: string): string =>
     deps.assetUrl(`sign-game/characters/${name}/sprites/${sprite}.png`);
   const animUrl = (name: string, anim: string): string =>
-    deps.assetUrl(`sign-game/characters/${name}/animations/${anim}.webm`);
+    deps.assetUrl(`signs/${name}/${anim}.webm`);
 
   function ensureChar(name: string): CharState {
     let c = chars.get(name);
