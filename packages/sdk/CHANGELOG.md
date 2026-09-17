@@ -11,6 +11,9 @@ Release SDK workflow needs an `NPM_TOKEN` secret; see
 - `rt.settings.onChange(listener)` follows changes to the app's settings, for
   example from the dashboard. The runtime removes the listener when the
   experience stops.
+- `fitCanvas`, and so `createFullscreenCanvas().fit()`, sizes the backing store
+  from the canvas box before CSS transforms. A canvas warped with
+  `applyQuadWarp` used to get the size of the warped quad's bounding box.
 
 ## 0.1.0
 
