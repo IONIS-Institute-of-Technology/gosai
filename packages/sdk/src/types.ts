@@ -51,8 +51,9 @@ export interface AppContext {
   /** This experience's entry in the manifest: name, description, drivers. */
   readonly experience: ExperienceDescriptor;
   /**
-   * Launch parameters the window was opened with, such as `role` or `target`
-   * for the calibration runner. The access token is never included.
+   * Launch parameters the window was opened with, such as `role` and
+   * `target` for calibration windows (see `readCalibrationLaunch`). The
+   * access token is never included.
    */
   readonly params: Readonly<Record<string, string>>;
   /** Underlying server connection, for commands the SDK doesn't wrap. */
@@ -202,10 +203,10 @@ export interface SettingsClient {
 export interface AssetsClient {
   /**
    * Absolute URL of a file in the app, relative to the app root (e.g.
-   * `assets/logo.png`). Pass `appSlug` for a file of another installed app,
-   * such as a companion app's module; it resolves against that app's origin.
+   * `assets/logo.png`). The app's security policy only loads files from its
+   * own origin, so there is no way to address another app's files.
    */
-  url(path: string, appSlug?: string): string;
+  url(path: string): string;
 }
 
 export interface AppLogger {

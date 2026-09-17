@@ -136,8 +136,8 @@ app builds).
 The bundle contains the same runtime as the regular desktop package
 (Electron shell, compiled `gosai-server`, `uv`, Python tree) plus:
 
-- `resources/apps/<slug>/`: only the packaged app, plus the calibration
-  runner when the app declares `calibration`.
+- `resources/apps/<slug>/`: only the packaged app, plus the built-in
+  calibration app when the app declares a built-in calibration kind.
 - `resources/kiosk.json`: tells the shell to boot into this app.
 
 At launch the shell:
@@ -149,7 +149,7 @@ At launch the shell:
 2. Prepares the Python runtime and starts the server on an ephemeral port as
    described above, so any number of kiosks can run side by side with no
    port configuration.
-3. Runs the calibration wizard when needed (see below).
+3. Runs the app's calibration when needed (see below).
 4. Starts the app's experience and opens it fullscreen on the primary
    display (or the display index baked in at packaging time).
 
@@ -176,7 +176,7 @@ re-pointed without rebuilding:
 | `--kiosk-experience <slug>`   | `GOSAI_KIOSK_EXPERIENCE`    | Experience slug to boot                           |
 | `--kiosk-windowed`            | `GOSAI_KIOSK_WINDOWED=1`    | Window instead of fullscreen                      |
 | `--kiosk-python-extras <a,b>` | `GOSAI_KIOSK_PYTHON_EXTRAS` | Comma-separated Python extras                     |
-| `--kiosk-calibrate`           | `GOSAI_KIOSK_CALIBRATE=1`   | Force the calibration wizard on this launch       |
+| `--kiosk-calibrate`           | `GOSAI_KIOSK_CALIBRATE=1`   | Force the calibration on this launch              |
 
 Device assignments (which camera / microphone / resolution the app uses)
 live in `<home>/data/<slug>/device-settings.json` and persist across
@@ -187,25 +187,29 @@ start, and uninstalling an app keeps its data.
 
 ### Calibration
 
-Apps that declare `calibration` in their manifest (e.g. `interactive-pool`)
-are packaged together with the built-in calibration runner. On the kiosk:
+Apps that declare a built-in `calibration` kind in their manifest (e.g.
+`interactive-pool`) are packaged together with the built-in calibration app.
+Apps with their own flow (`calibration.experience`) run it themselves. On the
+kiosk:
 
-- **First boot:** if the app has `calibration.required: true` and no profile
-  exists yet, the kiosk automatically opens the calibration wizard
-  (fullscreen projector window + control window) before starting the app.
-  When the wizard finishes, the profile is stored in the kiosk's data
-  directory and the app launches.
+- **First boot:** if the app has `calibration.required: true` and isn't
+  calibrated yet, the kiosk opens the calibration flow (fullscreen projector
+  window + control window) before starting the app. When the flow ends, the
+  windows close and the app launches; if it was cancelled or failed, the app
+  launches uncalibrated and the kiosk logs why.
 - **Re-calibration** (camera or projector moved): relaunch with
 
   ```bash
   GOSAI_KIOSK_CALIBRATE=1 ./interactive-pool.AppImage
   ```
 
-  The wizard runs first, then the app starts as usual. Subsequent normal
-  launches reuse the new profile.
+  The calibration runs first, then the app starts as usual. Later launches
+  reuse the new profile.
 
-The profile lives in `<home>/data/<slug>/storage/`, so wiping the data
-directory also clears calibration.
+The profile is one `calibration_profile` key in `<home>/data/<slug>/storage/`,
+so wiping the data directory also clears calibration. Kiosks calibrated with an
+older GOSAI keep their calibration: the server converts the old keys on first
+read.
 
 For unattended operation, a systemd user unit keeps the kiosk alive. With
 `Restart=on-failure` it restarts after a crash but stays closed when someone

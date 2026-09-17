@@ -10,6 +10,7 @@ import { grantFor } from './access/capabilities.js';
 import { readBearerToken, RequestGuard } from './access/request-guard.js';
 import { migrateLegacyAppData } from './apps/data-migration.js';
 import { appOriginDenial } from './apps/app-host.js';
+import { CalibrationStore } from './apps/calibration.js';
 import { AppManager } from './apps/manager.js';
 import { AppSettingsValuesStore } from './apps/settings.js';
 import { AppStorage } from './apps/storage.js';
@@ -111,6 +112,13 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
   });
   const storage = new AppStorage(paths);
   const settings = new AppSettingsValuesStore(apps, storage, bus);
+  const calibration = new CalibrationStore({
+    getManifest: (slug) => apps.getManifest(slug),
+    storage,
+    logger: logger.child('calibration'),
+    onChanged: (appSlug, { calibrated }) =>
+      bus.emit(ServerEvents.CalibrationChanged, { appSlug, calibrated }, 'calibration'),
+  });
 
   const monitor = new SystemMonitor({ bus, logger: logger.child('monitor') });
   monitor.start();
@@ -124,6 +132,7 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
       deviceSettings,
       settings,
       storage,
+      calibration,
       logger,
       bus,
     }),

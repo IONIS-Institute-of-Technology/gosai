@@ -7,8 +7,10 @@
  * the dashboard token with an HMAC, so main can mint one per window without a
  * round trip and the server can verify it without storing anything.
  *
- * An app token names the app it belongs to plus any extra apps it may touch
- * (the calibration runner writes into its target app's storage, for example).
+ * An app token names the app it belongs to. A window opened for another app
+ * also carries the driver binding it uses and the app it works for: the
+ * calibration runner uses its target app's camera and saves that app's
+ * calibration profile, but gets no other access to the target.
  *
  * Uses `node:crypto`, so only Node, Bun and Electron main import this module.
  */
@@ -20,29 +22,45 @@ export type TokenScope =
   | { readonly kind: 'dashboard' }
   | {
       readonly kind: 'app';
-      /** The app the window runs. */
+      /** The app the window runs. Its storage, settings, events and drivers are the token's. */
       readonly appSlug: string;
-      /** Every app whose storage, settings, events and drivers the token may use. */
-      readonly slugs: readonly string[];
+      /** Another app's driver binding the window may use, such as a calibration target's camera. */
+      readonly driverBinding: string | null;
+      /**
+       * The app the window was launched for. Commands with a `target`
+       * capability reach it when the token's app holds that capability.
+       */
+      readonly target: string | null;
     };
 
+/** What an app token grants besides its own app. */
+export interface AppTokenClaims {
+  readonly driverBinding?: string | undefined;
+  readonly target?: string | undefined;
+}
+
 const APP_PREFIX = 'app';
-const MAC_CONTEXT = 'gosai-app-token-v1:';
+const MAC_CONTEXT = 'gosai-app-token-v2:';
 
 export function generateDashboardToken(): string {
   return randomBytes(32).toString('base64url');
 }
 
+/** `app.<appSlug>.<driverBinding>.<target>.<mac>`, with empty fields for missing claims. */
 export function mintAppToken(
   dashboardToken: string,
   appSlug: string,
-  extraSlugs: readonly string[] = [],
+  claims: AppTokenClaims = {},
 ): string {
-  const slugs = [...new Set([appSlug, ...extraSlugs])].map((slug) => {
+  const fields = [appSlug, claims.driverBinding, claims.target].map((slug, index) => {
+    if (slug === undefined) {
+      if (index === 0) throw new Error('app slug is missing');
+      return '';
+    }
     if (isReservedSlug(slug)) throw new Error(`${slug} is reserved and can't be an app slug`);
     return assertSlug(slug, 'app slug');
   });
-  const body = slugs.join('+');
+  const body = fields.join('.');
   return `${APP_PREFIX}.${body}.${sign(dashboardToken, body)}`;
 }
 
@@ -55,16 +73,21 @@ export function verifyToken(
   if (safeEqual(token, dashboardToken)) return { kind: 'dashboard' };
 
   const parts = token.split('.');
-  if (parts.length !== 3 || parts[0] !== APP_PREFIX) return null;
-  const [, body = '', mac = ''] = parts;
-  if (!safeEqual(mac, sign(dashboardToken, body))) return null;
-
-  const slugs = body.split('+');
-  const [appSlug] = slugs;
-  if (appSlug === undefined || !slugs.every((s) => isValidSlug(s) && !isReservedSlug(s))) {
+  if (parts.length !== 5 || parts[0] !== APP_PREFIX) return null;
+  const [, appSlug = '', driverBinding = '', target = '', mac = ''] = parts;
+  if (!safeEqual(mac, sign(dashboardToken, [appSlug, driverBinding, target].join('.')))) {
     return null;
   }
-  return { kind: 'app', appSlug, slugs };
+  const optional = (slug: string): string | null | undefined =>
+    slug === '' ? null : isAppSlug(slug) ? slug : undefined;
+  const binding = optional(driverBinding);
+  const launchedFor = optional(target);
+  if (!isAppSlug(appSlug) || binding === undefined || launchedFor === undefined) return null;
+  return { kind: 'app', appSlug, driverBinding: binding, target: launchedFor };
+}
+
+function isAppSlug(slug: string): boolean {
+  return isValidSlug(slug) && !isReservedSlug(slug);
 }
 
 function sign(key: string, body: string): string {

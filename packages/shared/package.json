@@ -58,6 +58,10 @@
       "types": "./src/auth.ts",
       "import": "./src/auth.ts"
     },
+    "./calibration": {
+      "types": "./src/calibration.ts",
+      "import": "./src/calibration.ts"
+    },
     "./app-origin": {
       "types": "./src/app-origin.ts",
       "import": "./src/app-origin.ts"

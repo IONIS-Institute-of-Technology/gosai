@@ -1,209 +1,154 @@
-import type { Point2D } from './homography.js';
-import type {
-  AppEventsClient,
-  AppLogger,
-  DriverClient,
-  ExperienceRuntimeContext,
-  StorageClient,
-} from './types.js';
+/**
+ * Calibration for apps.
+ *
+ * An app declares how it is calibrated in its manifest:
+ *
+ * ```jsonc
+ * "calibration": {
+ *   "kind": "camera-projector-surface",
+ *   "required": true,
+ *   "options": { "surfaceSize": { "width": 1920, "height": 1080 } }
+ * }
+ * ```
+ *
+ * GOSAI runs built-in kinds itself and saves one profile per app. The app
+ * reads it with {@link loadCameraProjectorSurfaceCalibration}, or
+ * {@link loadCalibrationProfile} for any kind.
+ *
+ * An app with its own flow names one of its experiences in
+ * `calibration.experience`. GOSAI opens it in a control window and a
+ * projector window ({@link readCalibrationLaunch}); the flow saves with
+ * {@link saveCalibrationProfile} and ends with {@link finishCalibration}.
+ */
 
-export const CALIBRATION_STATUS_KEY = 'calibration_status';
-export const CAMERA_PROJECTOR_SURFACE_CALIBRATION_KIND = 'camera-projector-surface';
+import {
+  CalibrationKinds,
+  CalibrationParams,
+  CalibrationWizardTopics,
+  type CalibrationProfile,
+  type CalibrationResult,
+  type CalibrationRole,
+  type CameraProjectorSurfaceCalibration,
+} from '@gosai/shared/calibration';
+import type { ExperienceRuntimeContext } from './types.js';
 
-export const CAMERA_PROJECTOR_SURFACE_STORAGE_KEYS = {
-  Homography: 'calibration_homography',
-  HomographyInverse: 'calibration_homography_inverse',
-  HomographySurface: 'calibration_homography_surface',
-  HomographySurfaceInverse: 'calibration_homography_surface_inverse',
-  FocusQuad: 'calibration_focus_quad',
-  SurfaceQuadDisplay: 'calibration_surface_quad_display',
-  SurfaceSize: 'calibration_surface_size',
-  FrameSize: 'calibration_frame_size',
-  MarkersLayout: 'calibration_markers_layout',
-} as const;
+export {
+  BUILTIN_CALIBRATION_KINDS,
+  CALIBRATION_PROFILE_KEY,
+  CALIBRATION_PROFILE_VERSION,
+  CALIBRATION_RUNNER,
+  CalibrationKinds,
+  CalibrationParams,
+  CalibrationWizardTopics,
+  DEFAULT_SURFACE_SIZE,
+  calibrationFlow,
+  isBuiltinCalibrationKind,
+  isCalibrated,
+} from '@gosai/shared/calibration';
+export type {
+  BuiltinCalibrationKind,
+  CalibrationPoint,
+  CalibrationProfile,
+  CalibrationProfileInput,
+  CalibrationQuad,
+  CalibrationResult,
+  CalibrationRole,
+  CalibrationSize,
+  CameraProjectorSurfaceCalibration,
+  CameraProjectorSurfaceOptions,
+  CameraProjectorSurfaceStep,
+  CameraProjectorSurfaceStepCopy,
+} from '@gosai/shared/calibration';
 
-export type CalibrationRole = 'control' | 'projector';
+/** The parts of the runtime context the calibration helpers use. */
+export type CalibrationRuntime = Pick<ExperienceRuntimeContext, 'app' | 'events'>;
 
-export interface SizeXY {
-  readonly width: number;
-  readonly height: number;
+export interface CalibrationProfileOptions {
+  /**
+   * The app whose profile to use. Defaults to the running app. A flow may
+   * pass the app it was launched for, when its app holds `calibration:write`.
+   */
+  readonly appSlug?: string;
 }
 
-export interface CalibrationStatus {
-  readonly ok: boolean;
-  readonly completedAt: number;
-  readonly kind: string;
-  readonly version: number;
-}
-
-export interface CalibrationStep {
-  readonly slug: string;
-  readonly title: string;
-  readonly help?: string;
-}
-
-export interface CalibrationStepContext {
-  readonly rt: ExperienceRuntimeContext;
-  readonly role: CalibrationRole;
-  readonly targetAppSlug: string;
-  readonly targetStorage: StorageClient;
-  readonly serverBaseUrl: string;
-  readonly statusKey: string;
-  readonly events: AppEventsClient;
-  readonly drivers: DriverClient;
-  readonly log: AppLogger;
-  markComplete(status?: Partial<CalibrationStatus>): Promise<void>;
-  finish(ok?: boolean): Promise<void>;
-}
-
-export interface CalibrationDefinition<TState = unknown> {
-  readonly slug: string;
-  readonly name: string;
-  readonly description?: string;
+export interface LoadCalibrationProfileOptions extends CalibrationProfileOptions {
+  /** Only return a profile of this kind. */
   readonly kind?: string;
-  readonly steps?: readonly CalibrationStep[];
-  init?: (ctx: CalibrationStepContext) => TState | Promise<TState>;
-  start?: (ctx: CalibrationStepContext, state: TState) => void | Promise<void>;
-  stop?: (ctx: CalibrationStepContext, state: TState) => void | Promise<void>;
 }
 
-export function defineCalibration<TState = unknown>(
-  definition: CalibrationDefinition<TState>,
-): CalibrationDefinition<TState> {
-  return definition;
+/** The app's calibration profile, or `null` when none is saved (or it has another kind). */
+export async function loadCalibrationProfile<D = unknown>(
+  rt: CalibrationRuntime,
+  options: LoadCalibrationProfileOptions = {},
+): Promise<CalibrationProfile<string, D> | null> {
+  const { profile } = await rt.app.server.request('calibration:get', {
+    appSlug: options.appSlug ?? rt.app.appSlug,
+  });
+  if (!profile || (options.kind !== undefined && profile.kind !== options.kind)) return null;
+  return profile as CalibrationProfile<string, D>;
 }
 
-export type CameraProjectorSurfaceStep = 'markers' | 'pool-corners' | 'compute' | 'preview';
-
-export interface CameraProjectorSurfaceStepCopy {
-  readonly title?: string;
-  readonly help?: string;
+/**
+ * Replaces the app's calibration profile. `kind` must be the kind the app's
+ * manifest declares; the server checks the data of built-in kinds.
+ */
+export async function saveCalibrationProfile<D>(
+  rt: CalibrationRuntime,
+  profile: { readonly kind: string; readonly data: D },
+  options: CalibrationProfileOptions = {},
+): Promise<CalibrationProfile<string, D>> {
+  const saved = await rt.app.server.request('calibration:save', {
+    appSlug: options.appSlug ?? rt.app.appSlug,
+    profile,
+  });
+  return saved.profile as CalibrationProfile<string, D>;
 }
 
-export interface CameraProjectorSurfaceProjectorMessages {
-  readonly poolCorners?: string;
-  readonly compute?: string;
-  readonly done?: string;
-  readonly abort?: string;
-}
-
-export interface CameraProjectorSurfaceCalibrationOptions {
-  readonly slug?: string;
-  readonly name?: string;
-  readonly description?: string;
-  readonly surfaceSize?: SizeXY;
-  readonly cornerLabels?: readonly [string, string, string, string];
-  readonly stepCopy?: Partial<Record<CameraProjectorSurfaceStep, CameraProjectorSurfaceStepCopy>>;
-  readonly projectorMessages?: CameraProjectorSurfaceProjectorMessages;
-}
-
-export interface CameraProjectorSurfaceCalibrationDefinition extends CalibrationDefinition<unknown> {
-  readonly kind: typeof CAMERA_PROJECTOR_SURFACE_CALIBRATION_KIND;
-  readonly options: CameraProjectorSurfaceCalibrationOptions;
-}
-
-export function createCameraProjectorSurfaceCalibration(
-  options: CameraProjectorSurfaceCalibrationOptions = {},
-): CameraProjectorSurfaceCalibrationDefinition {
-  const slug = options.slug ?? CAMERA_PROJECTOR_SURFACE_CALIBRATION_KIND;
-  const steps: CalibrationStep[] = (['markers', 'pool-corners', 'compute', 'preview'] as const).map(
-    (step) => ({
-      slug: step,
-      title: options.stepCopy?.[step]?.title ?? defaultStepTitle(step),
-      ...(options.stepCopy?.[step]?.help ? { help: options.stepCopy[step]!.help } : {}),
-    }),
-  );
-  return {
-    slug,
-    name: options.name ?? 'Camera/Projector Surface Calibration',
-    ...(options.description ? { description: options.description } : {}),
-    kind: CAMERA_PROJECTOR_SURFACE_CALIBRATION_KIND,
-    options,
-    steps,
-  };
-}
-
-export function isCameraProjectorSurfaceCalibrationDefinition(
-  value: CalibrationDefinition,
-): value is CameraProjectorSurfaceCalibrationDefinition {
-  return value.kind === CAMERA_PROJECTOR_SURFACE_CALIBRATION_KIND;
-}
-
-export interface SurfaceQuadDisplay {
-  readonly points: readonly [Point2D, Point2D, Point2D, Point2D];
-}
-
-export interface CameraProjectorSurfaceCalibrationProfile {
-  readonly homography: readonly number[] | null;
-  readonly homographySurface: readonly number[] | null;
-  readonly surfaceQuadDisplay: readonly Point2D[] | null;
-  readonly surfaceSize: SizeXY | null;
-  readonly frameSize: SizeXY | null;
-}
-
-export interface CameraProjectorSurfaceStorageKeys {
-  readonly Homography: string;
-  readonly HomographyInverse: string;
-  readonly HomographySurface: string;
-  readonly HomographySurfaceInverse: string;
-  readonly FocusQuad: string;
-  readonly SurfaceQuadDisplay: string;
-  readonly SurfaceSize: string;
-  readonly FrameSize: string;
-  readonly MarkersLayout: string;
-}
-
-export interface LoadCameraProjectorSurfaceCalibrationOptions {
-  readonly storageKeys?: Partial<CameraProjectorSurfaceStorageKeys>;
-}
-
+/** The app's camera-projector-surface calibration, or `null` when it isn't calibrated. */
 export async function loadCameraProjectorSurfaceCalibration(
-  rt: ExperienceRuntimeContext,
-  options: LoadCameraProjectorSurfaceCalibrationOptions = {},
-): Promise<CameraProjectorSurfaceCalibrationProfile> {
-  const keys = { ...CAMERA_PROJECTOR_SURFACE_STORAGE_KEYS, ...options.storageKeys };
-  const safe = async <T>(key: string): Promise<T | null> => {
-    try {
-      return (await rt.storage.get<T>(key)) ?? null;
-    } catch (err) {
-      rt.log.warn(`calibration[${key}] fetch failed`, { err: String(err) });
-      return null;
-    }
-  };
+  rt: CalibrationRuntime,
+  options: CalibrationProfileOptions = {},
+): Promise<CameraProjectorSurfaceCalibration | null> {
+  const profile = await loadCalibrationProfile<CameraProjectorSurfaceCalibration>(rt, {
+    ...options,
+    kind: CalibrationKinds.CameraProjectorSurface,
+  });
+  return profile?.data ?? null;
+}
 
-  const [homography, homographySurface, surfaceQuadRaw, surfaceSize, frameSize] = await Promise.all(
-    [
-      safe<number[]>(keys.Homography),
-      safe<number[]>(keys.HomographySurface),
-      safe<SurfaceQuadDisplay>(keys.SurfaceQuadDisplay),
-      safe<SizeXY>(keys.SurfaceSize),
-      safe<SizeXY>(keys.FrameSize),
-    ],
+export function saveCameraProjectorSurfaceCalibration(
+  rt: CalibrationRuntime,
+  data: CameraProjectorSurfaceCalibration,
+  options: CalibrationProfileOptions = {},
+): Promise<CalibrationProfile<string, CameraProjectorSurfaceCalibration>> {
+  return saveCalibrationProfile(
+    rt,
+    { kind: CalibrationKinds.CameraProjectorSurface, data },
+    options,
   );
+}
 
-  const surfaceQuadDisplay =
-    surfaceQuadRaw?.points && surfaceQuadRaw.points.length === 4
-      ? [...surfaceQuadRaw.points]
-      : null;
+export interface CalibrationLaunch {
+  readonly role: CalibrationRole;
+  /** The app being calibrated. The running app when the window names none. */
+  readonly target: string;
+}
 
+/** Which window of a calibration flow this is, and for which app. */
+export function readCalibrationLaunch(
+  rt: Pick<ExperienceRuntimeContext, 'app'>,
+): CalibrationLaunch {
+  const params = rt.app.params;
   return {
-    homography,
-    homographySurface,
-    surfaceQuadDisplay,
-    surfaceSize,
-    frameSize,
+    role: params[CalibrationParams.Role] === 'control' ? 'control' : 'projector',
+    target: params[CalibrationParams.Target] ?? rt.app.appSlug,
   };
 }
 
-function defaultStepTitle(step: CameraProjectorSurfaceStep): string {
-  switch (step) {
-    case 'markers':
-      return 'ArUco Markers';
-    case 'pool-corners':
-      return 'Surface Corners';
-    case 'compute':
-      return 'Compute Homography';
-    case 'preview':
-      return 'Preview';
-  }
+/** Ends the flow. GOSAI closes its windows and reports the result to whoever started it. */
+export function finishCalibration(
+  rt: CalibrationRuntime,
+  result: CalibrationResult,
+): Promise<void> {
+  return rt.events.emit(CalibrationWizardTopics.Finished, result);
 }

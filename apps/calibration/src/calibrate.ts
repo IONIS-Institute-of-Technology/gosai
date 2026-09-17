@@ -1,150 +1,74 @@
 /**
- * Calibration runner entry. Loaded in both the projector (fullscreen) and
- * control windows; we branch on the `role` URL param, load the target app's
- * calibration module from `?target=<app>`, and delegate to that definition.
+ * The calibration runner. GOSAI opens it in two windows for an app whose
+ * manifest declares a built-in calibration kind, with `role=control` or
+ * `role=projector` and `target=<app slug>`:
  *
- *   ?role=control  -> orchestrates the step machine and UI
- *   anything else  -> passive projector renderer
+ * - the control window runs the wizard and saves the target's profile,
+ * - the projector window draws the markers and the preview.
  *
- * Both roles use `rt.events` to coordinate. The dashboard listens for the
- * finish event to close both windows when calibration ends.
+ * Whatever stops a window from starting is reported as the flow's result,
+ * so the windows close instead of waiting for an operator.
  */
 
 import {
-  CALIBRATION_STATUS_KEY,
-  createStorageClient,
+  CALIBRATION_RUNNER,
+  CalibrationKinds,
   defineExperience,
-  isCameraProjectorSurfaceCalibrationDefinition,
-  type CalibrationDefinition,
-  type CalibrationRole,
-  type CalibrationStepContext,
+  finishCalibration,
+  readCalibrationLaunch,
+  type CameraProjectorSurfaceOptions,
   type ExperienceRuntimeContext,
 } from '@gosai/sdk';
-import { detectRole } from './shared.js';
-import {
-  initProjectorState,
-  startProjector,
-  stopProjector,
-  type ProjectorState,
-} from './projector.js';
-import { initControlState, startControl, stopControl, type ControlState } from './control.js';
+import { startControl } from './control.js';
+import { startProjector } from './projector.js';
 
-type State = {
-  role: CalibrationRole;
-  context: CalibrationStepContext | null;
-  definition: CalibrationDefinition | null;
-  customState: unknown;
-  projector: ProjectorState | null;
-  control: ControlState | null;
-};
+export interface CalibrationTarget {
+  readonly appSlug: string;
+  readonly options: CameraProjectorSurfaceOptions;
+}
+
+interface State {
+  stop: (() => void) | null;
+}
 
 export default defineExperience<State>({
-  init(): State {
-    const role = detectRole();
-    return {
-      role,
-      context: null,
-      definition: null,
-      customState: undefined,
-      projector: null,
-      control: null,
-    };
-  },
+  init: () => ({ stop: null }),
 
   async start(rt, state) {
-    const targetAppSlug = detectTargetAppSlug();
-    const { definition, statusKey } = await loadTargetCalibration(rt, targetAppSlug);
-    const targetStorage = createStorageClient(targetAppSlug, rt.app.server);
-    const context: CalibrationStepContext = {
-      rt,
-      role: state.role,
-      targetAppSlug,
-      targetStorage,
-      serverBaseUrl: rt.app.serverBaseUrl,
-      statusKey,
-      events: rt.events,
-      drivers: rt.drivers,
-      log: rt.log,
-      markComplete: async (status = {}) => {
-        await targetStorage.set(statusKey, {
-          ok: true,
-          completedAt: Date.now(),
-          kind: definition.kind ?? definition.slug,
-          version: 1,
-          ...status,
-        });
-      },
-      finish: async (ok = true) => {
-        if (ok) await context.markComplete();
-        await rt.events.emit('wizard:finished', { ok });
-      },
-    };
-    state.context = context;
-    state.definition = definition;
-
-    if (isCameraProjectorSurfaceCalibrationDefinition(definition)) {
-      if (state.role === 'control') {
-        const control = initControlState();
-        state.control = control;
-        await startControl(context, control, definition.options);
-      } else {
-        const projector = initProjectorState();
-        state.projector = projector;
-        await startProjector(context, projector, definition.options);
-      }
-      return;
+    const { role } = readCalibrationLaunch(rt);
+    try {
+      const target = await loadTarget(rt);
+      state.stop =
+        role === 'control' ? await startControl(rt, target) : await startProjector(rt, target);
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      await finishCalibration(rt, { ok: false, error }).catch(() => undefined);
+      throw err;
     }
-
-    if (!definition.start) {
-      throw new Error(`Calibration definition ${definition.slug} has no start lifecycle`);
-    }
-    state.customState = definition.init
-      ? await Promise.resolve(definition.init(context))
-      : undefined;
-    await Promise.resolve(definition.start(context, state.customState));
   },
 
-  async stop(_rt, state) {
-    if (state.control) {
-      await stopControl(state.control);
-    } else if (state.projector) {
-      await stopProjector(state.projector);
-    } else if (state.definition?.stop && state.context) {
-      await Promise.resolve(state.definition.stop(state.context, state.customState));
-    }
+  stop(_rt, state) {
+    state.stop?.();
   },
 });
 
-function detectTargetAppSlug(): string {
-  const params = new URLSearchParams(window.location.search);
-  const target = params.get('target');
-  if (!target) throw new Error('Missing calibration target app');
-  return target;
-}
-
-async function loadTargetCalibration(
-  rt: ExperienceRuntimeContext,
-  targetAppSlug: string,
-): Promise<{ definition: CalibrationDefinition; statusKey: string }> {
-  const apps = await rt.app.server.request('apps:list');
-  const target = apps.apps.find((app) => app.manifest.slug === targetAppSlug);
-  if (!target) throw new Error(`Calibration target app ${targetAppSlug} is not installed`);
-
-  const calibration = target.manifest.calibration;
-  if (!calibration?.required || !calibration.entry) {
-    throw new Error(`App ${targetAppSlug} does not declare a calibration entry`);
+/** The app the windows were opened for, and its camera-projector-surface options. */
+export async function loadTarget(
+  rt: Pick<ExperienceRuntimeContext, 'app'>,
+): Promise<CalibrationTarget> {
+  const { target } = readCalibrationLaunch(rt);
+  if (target === CALIBRATION_RUNNER.appSlug) {
+    throw new Error('The calibration window was opened without a target app');
   }
-
-  // Each app's files are served from its own origin.
-  const entryUrl = rt.assets.url(calibration.entry, targetAppSlug);
-  const mod = (await import(/* @vite-ignore */ entryUrl)) as {
-    default?: CalibrationDefinition;
-  };
-  if (!mod.default) {
-    throw new Error(`Calibration module ${calibration.entry} has no default export`);
+  const { apps } = await rt.app.server.request('apps:list');
+  const calibration = apps.find((app) => app.manifest.slug === target)?.manifest.calibration;
+  if (!calibration) throw new Error(`${target} is not installed or declares no calibration`);
+  if (calibration.kind !== CalibrationKinds.CameraProjectorSurface) {
+    throw new Error(`The calibration app can't run the ${calibration.kind} kind of ${target}`);
   }
+  // The server checked the options of built-in kinds when it parsed the manifest.
   return {
-    definition: mod.default,
-    statusKey: calibration.statusKey ?? CALIBRATION_STATUS_KEY,
+    appSlug: target,
+    options: (calibration.options ?? {}) as CameraProjectorSurfaceOptions,
   };
 }

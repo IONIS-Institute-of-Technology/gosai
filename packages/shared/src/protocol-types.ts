@@ -140,6 +140,16 @@ export interface CommandRequests {
   'storage:list': {
     appSlug: string;
   };
+  'calibration:get': {
+    appSlug: string;
+  };
+  'calibration:save': {
+    appSlug: string;
+    profile: {
+      kind: string;
+      data: unknown;
+    };
+  };
 }
 
 /** What the server hands each command handler, after validation. */
@@ -260,6 +270,16 @@ export interface ParsedCommandRequests {
   'storage:list': {
     appSlug: string;
   };
+  'calibration:get': {
+    appSlug: string;
+  };
+  'calibration:save': {
+    appSlug: string;
+    profile: {
+      kind: string;
+      data: unknown;
+    };
+  };
 }
 
 /** Each command's reply. */
@@ -339,6 +359,23 @@ export interface CommandResponses {
   'storage:list': {
     keys: string[];
   };
+  'calibration:get': {
+    profile: {
+      version: 1;
+      kind: string;
+      savedAt: number;
+      data: unknown;
+    } | null;
+    calibrated: boolean;
+  };
+  'calibration:save': {
+    profile: {
+      version: 1;
+      kind: string;
+      savedAt: number;
+      data: unknown;
+    };
+  };
 }
 
 /** Payload of each event with a fixed name. */
@@ -361,6 +398,7 @@ export interface FixedEventPayloadMap {
       | 'app-config:write'
       | 'storage:read'
       | 'storage:write'
+      | 'calibration:write'
       | 'app-events:use'
       | 'logs:read'
       | 'logs:write'
@@ -394,6 +432,10 @@ export interface FixedEventPayloadMap {
   'experience:state-changed': RunningExperience;
   'experiences:list-changed': {
     experiences: RunningExperience[];
+  };
+  'calibration:changed': {
+    appSlug: string;
+    calibrated: boolean;
   };
   'system:stats': SystemStats;
 }

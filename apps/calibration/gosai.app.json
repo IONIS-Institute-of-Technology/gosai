@@ -4,16 +4,16 @@
   "name": "Calibration",
   "version": "0.1.0",
   "sdk": "^0.1.0",
-  "description": "Generic per-app calibration runner. Loads the target app's calibration module and runs it in control/projector windows.",
+  "description": "Runs the built-in calibration kinds, such as camera-projector-surface, for the app declaring them, in a control and a projector window.",
   "author": "GOSAI",
   "default": "calibrate",
   "requirements": { "display": true, "camera": true },
-  "calibration": { "required": false },
+  "capabilities": ["calibration:write"],
   "experiences": [
     {
       "slug": "calibrate",
       "name": "Calibration Runner",
-      "description": "Runs a target app's calibration flow in both projector and control windows.",
+      "description": "Calibrates the target app. The windows open with role=control or role=projector and target=<app slug>; the drivers run under the target app's binding.",
       "entry": "dist/calibrate.js",
       "drivers": ["camera", "calibration"],
       "exclusive": true

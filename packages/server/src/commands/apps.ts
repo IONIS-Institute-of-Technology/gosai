@@ -19,9 +19,18 @@ type AppCommands = Pick<
   | 'storage:set'
   | 'storage:remove'
   | 'storage:list'
+  | 'calibration:get'
+  | 'calibration:save'
 >;
 
-export function appCommands({ apps, settings, storage, logger, bus }: ServerServices): AppCommands {
+export function appCommands({
+  apps,
+  settings,
+  storage,
+  calibration,
+  logger,
+  bus,
+}: ServerServices): AppCommands {
   const requireApp = (slug: string): void => {
     if (!apps.getManifest(slug)) throw new Error(`App not installed: ${slug}`);
   };
@@ -86,5 +95,8 @@ export function appCommands({ apps, settings, storage, logger, bus }: ServerServ
       requireApp(appSlug);
       return { keys: storage.list(appSlug) };
     },
+
+    'calibration:get': ({ appSlug }) => calibration.get(appSlug),
+    'calibration:save': ({ appSlug, profile }) => ({ profile: calibration.save(appSlug, profile) }),
   };
 }

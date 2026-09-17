@@ -1,5 +1,6 @@
 import { ipcMain, type IpcMainInvokeEvent } from 'electron';
 import { isValidSlug } from '@gosai/shared/slug';
+import type { CalibrationOrchestrator } from './calibration.js';
 import type { WindowRegistry } from './windows.js';
 import { IPC_CHANNELS } from './channels.js';
 
@@ -7,6 +8,7 @@ export { IPC_CHANNELS };
 
 export interface IpcContext {
   readonly windows: WindowRegistry;
+  readonly calibration: CalibrationOrchestrator;
 }
 
 /**
@@ -35,8 +37,6 @@ export function registerIpc(ctx: IpcContext): void {
       appSlug: args.slug('appSlug'),
       experienceSlug: args.string('experienceSlug'),
       ...args.optional('fullscreen', (key) => args.boolean(key)),
-      ...args.optional('targetAppSlug', (key) => args.slug(key)),
-      ...args.optional('driverBinding', (key) => args.slug(key)),
     });
     return {
       windowId: handle.id,
@@ -55,34 +55,12 @@ export function registerIpc(ctx: IpcContext): void {
     return { ok: true };
   });
 
-  handle(IPC_CHANNELS.ControlWindowOpen, (args) => {
-    const handle = ctx.windows.openControlWindow({
+  // Resolves when the flow ends, with its result. Main opens and closes the windows.
+  handle(IPC_CHANNELS.CalibrationRun, (args) =>
+    ctx.calibration.run({
       appSlug: args.slug('appSlug'),
-      experienceSlug: args.string('experienceSlug'),
-      ...args.optional('projectorDisplayId', (key) => args.integer(key)),
-      ...args.optional('targetAppSlug', (key) => args.slug(key)),
-      ...args.optional('driverBinding', (key) => args.slug(key)),
-      ...args.optional('width', (key) => args.integer(key)),
-      ...args.optional('height', (key) => args.integer(key)),
-      ...args.optional('title', (key) => args.string(key)),
-    });
-    return {
-      windowId: handle.id,
-      appSlug: handle.appSlug,
-      experienceSlug: handle.experienceSlug,
-    };
-  });
-
-  handle(IPC_CHANNELS.ControlWindowClose, (args) =>
-    ctx.windows.closeControlWindow(args.integer('windowId')),
-  );
-
-  handle(IPC_CHANNELS.ControlWindowHide, (args) =>
-    ctx.windows.setControlWindowVisible(args.integer('windowId'), false),
-  );
-
-  handle(IPC_CHANNELS.ControlWindowShow, (args) =>
-    ctx.windows.setControlWindowVisible(args.integer('windowId'), true),
+      ...args.optional('displayId', (key) => args.integer(key)),
+    }),
   );
 }
 

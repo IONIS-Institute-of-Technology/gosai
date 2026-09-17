@@ -8,10 +8,7 @@ export const IPC_CHANNELS = {
   AppHostClose: 'gosai:app-host:close',
   AppHostList: 'gosai:app-host:list',
 
-  ControlWindowOpen: 'gosai:control-window:open',
-  ControlWindowClose: 'gosai:control-window:close',
-  ControlWindowHide: 'gosai:control-window:hide',
-  ControlWindowShow: 'gosai:control-window:show',
+  CalibrationRun: 'gosai:calibration:run',
 
   ExperienceEnd: 'gosai:experience:end',
   ExperienceEnded: 'gosai:experience:ended',

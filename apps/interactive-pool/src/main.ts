@@ -26,10 +26,12 @@
 
 import {
   defineExperience,
+  loadCameraProjectorSurfaceCalibration,
+  type CameraProjectorSurfaceCalibration,
   type ExperienceRuntimeContext,
   type FrameInfo,
   type DriverSubscription,
-  type Point2D,
+  type Quad,
 } from '@gosai/sdk';
 import {
   applyKeystoneTransform,
@@ -40,12 +42,7 @@ import {
   fitCanvas,
 } from './shared/canvas-utils.js';
 import { REF_HEIGHT, REF_WIDTH, type FrameContext, type Layer } from './shared/types.js';
-import {
-  loadCalibration,
-  configureBallDriver,
-  configureHandPoseDriver,
-  type CalibrationData,
-} from './shared/calibration.js';
+import { configureTrackingDrivers } from './shared/calibration.js';
 import { createPoolFeed, type PoolFeed } from './shared/feed.js';
 import type { MenuController, MenuItem } from './shared/controller.js';
 
@@ -64,8 +61,8 @@ interface State {
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
 
-  /** Calibration snapshot loaded from this app's storage. */
-  calibration: CalibrationData | null;
+  /** This app's calibration, or `null` when it isn't calibrated. */
+  calibration: CameraProjectorSurfaceCalibration | null;
 
   feed: PoolFeed;
   subs: DriverSubscription[];
@@ -138,40 +135,30 @@ export default defineExperience<State>({
   async start(rt: ExperienceRuntimeContext, state: State): Promise<void> {
     rt.log.info('interactive-pool: starting compositor');
 
-    // Fetch the calibration snapshot up front so we can both (a) push the
-    // homography into the tracking drivers and (b) compute the CSS keystone
-    // transform that warps the canvas to the physical surface. We do this in
-    // parallel with the rest of start() to avoid blocking driver wiring.
-    state.calibration = await loadCalibration(rt).catch((err) => {
-      rt.log.warn('interactive-pool: failed to load calibration data', {
-        err: String(err),
-      });
+    // Load the calibration before wiring anything: the tracking drivers and the
+    // keystone warp depend on it. Without one the app runs uncorrected.
+    state.calibration = await loadCameraProjectorSurfaceCalibration(rt).catch((err: unknown) => {
+      rt.log.warn('interactive-pool: could not load the calibration', { err: String(err) });
       return null;
     });
 
     if (state.calibration) {
       rt.log.info('interactive-pool: calibration loaded', {
-        hasSurfaceHomography: !!state.calibration.homographySurface,
-        hasSurfaceQuadDisplay: !!state.calibration.surfaceQuadDisplay,
+        hasSurfaceHomography: state.calibration.homographySurface !== null,
+        hasSurfaceQuadDisplay: state.calibration.surfaceQuadDisplay !== null,
         frameSize: state.calibration.frameSize,
         surfaceSize: state.calibration.surfaceSize,
       });
-      // Push the surface homography into ball + hand_pose so their outputs
-      // arrive already in our 1920x1080 reference space. Wrap in best-effort
-      // try/catch so a missing/old driver does not crash the experience.
-      void configureBallDriver(rt, state.calibration, {
+      // Doesn't block the start; failures are logged per driver action.
+      void configureTrackingDrivers(rt, state.calibration, {
         width: REF_WIDTH,
         height: REF_HEIGHT,
-      }).catch((err) => rt.log.warn('configureBallDriver failed', { err: String(err) }));
-      void configureHandPoseDriver(rt, state.calibration, {
-        width: REF_WIDTH,
-        height: REF_HEIGHT,
-      }).catch((err) => rt.log.warn('configureHandPoseDriver failed', { err: String(err) }));
-      // Apply CSS matrix3d keystone correction so the rendered canvas lands on
-      // the physical surface exactly, regardless of projector or camera angle.
+      });
+      // CSS matrix3d keystone correction, so the canvas lands on the physical
+      // surface whatever the projector or camera angle.
       applyKeystone(state, state.calibration.surfaceQuadDisplay);
     } else {
-      rt.log.info('interactive-pool: no calibration data found, running uncorrected');
+      rt.log.info('interactive-pool: not calibrated, running uncorrected');
     }
 
     // Build the menu controller now that `state` exists.
@@ -280,13 +267,13 @@ export default defineExperience<State>({
   },
 });
 
-function applyKeystone(state: State, quad: readonly Point2D[] | null): void {
-  if (!quad || quad.length !== 4) {
+function applyKeystone(state: State, quad: Quad | null): void {
+  if (!quad) {
     clearKeystoneTransform(state.canvas);
     return;
   }
   try {
-    applyKeystoneTransform(state.canvas, [quad[0]!, quad[1]!, quad[2]!, quad[3]!]);
+    applyKeystoneTransform(state.canvas, quad);
   } catch {
     // Degenerate quad (e.g. coincident corners) -- skip keystone correction.
     clearKeystoneTransform(state.canvas);

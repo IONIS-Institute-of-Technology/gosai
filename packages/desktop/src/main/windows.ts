@@ -56,7 +56,6 @@ export interface OpenAppHostOptions {
 export interface OpenControlWindowOptions {
   readonly appSlug: string;
   readonly experienceSlug: string;
-  readonly projectorDisplayId?: number;
   readonly targetAppSlug?: string;
   readonly driverBinding?: string;
   readonly width?: number;
@@ -182,19 +181,20 @@ export class WindowRegistry {
   }
 
   /**
-   * Token for an app window: scoped to the app, plus the target app and
-   * driver binding the dashboard asked for (the calibration runner writes
-   * into its target app's storage and uses its camera).
+   * Token for an app window: scoped to the app, plus the driver binding and
+   * target app it was opened with. The calibration runner uses its target's
+   * camera, and saves the target's calibration profile when its manifest
+   * requests `calibration:write`.
    */
   private appToken(opts: {
     appSlug: string;
     targetAppSlug?: string | undefined;
     driverBinding?: string | undefined;
   }): string {
-    const extra = [opts.targetAppSlug, opts.driverBinding].filter(
-      (slug): slug is string => slug !== undefined,
-    );
-    return mintAppToken(this.options.dashboardToken, opts.appSlug, extra);
+    return mintAppToken(this.options.dashboardToken, opts.appSlug, {
+      driverBinding: opts.driverBinding,
+      target: opts.targetAppSlug,
+    });
   }
 
   /** True when `frame` is the dashboard's top-level frame showing the dashboard page. */
@@ -468,21 +468,6 @@ export class WindowRegistry {
     });
 
     return handle;
-  }
-
-  closeControlWindow(windowId: number): boolean {
-    const handle = this.controlWindows.get(windowId);
-    if (!handle) return false;
-    if (!handle.window.isDestroyed()) handle.window.close();
-    return true;
-  }
-
-  setControlWindowVisible(windowId: number, visible: boolean): boolean {
-    const handle = this.controlWindows.get(windowId);
-    if (!handle) return false;
-    if (visible) handle.window.show();
-    else handle.window.hide();
-    return true;
   }
 
   /** Stops and closes every control window. */

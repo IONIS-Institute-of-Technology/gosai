@@ -27,7 +27,7 @@
     "package:kiosk": "bun scripts/package-kiosk.ts",
     "kiosk": "electron packages/desktop --kiosk",
     "typecheck": "bun run --filter './packages/*' --filter './apps/*' typecheck && tsc -p scripts",
-    "test": "bun run --filter '@gosai/*' test",
+    "test": "bun run --filter '@gosai/*' --filter './apps/*' test",
     "lint": "oxlint --deny-warnings",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
