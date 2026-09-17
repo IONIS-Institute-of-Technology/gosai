@@ -94,7 +94,8 @@ export class BridgeSupervisor {
   handleExit(code: number | null, signal: number | string | null): void {
     if (this.state !== 'up') return;
     this.options.log.warn('python bridge exited unexpectedly', { code, signal });
-    this.goDown();
+    this.markDown();
+    this.scheduleRestart(undefined);
   }
 
   private async attemptStart(): Promise<void> {
@@ -120,11 +121,10 @@ export class BridgeSupervisor {
     this.startPinging();
   }
 
-  private goDown(): void {
+  private markDown(): void {
     this.stopPinging();
     if (Date.now() - this.upSince >= this.timing.stableAfterMs) this.attempt = 0;
     this.options.onDown();
-    this.scheduleRestart(undefined);
   }
 
   private scheduleRestart(reason: unknown): void {
@@ -177,9 +177,11 @@ export class BridgeSupervisor {
       });
       if (this.missedPings >= this.timing.maxMissedPings && this.state === 'up') {
         this.state = 'waiting';
-        this.stopPinging();
+        // Mark the bridge down before stopping it: stopping rejects pending
+        // requests, and their handlers must see the bridge as gone.
+        this.markDown();
         await this.options.bridge.stop();
-        if (this.state === 'waiting') this.goDown();
+        if (this.state === 'waiting') this.scheduleRestart(err);
       }
     } finally {
       this.pinging = false;
