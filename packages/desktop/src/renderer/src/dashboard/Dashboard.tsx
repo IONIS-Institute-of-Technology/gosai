@@ -9,7 +9,10 @@ import { SettingsPanel } from './panels/SettingsPanel.js';
 
 type TabId = 'apps' | 'experiences' | 'drivers' | 'logs' | 'settings';
 
-const TABS: readonly { id: TabId; label: string; Panel: () => React.ReactElement }[] = [
+/** `active` is false while the panel's tab is hidden. */
+type PanelComponent = (props: { active: boolean }) => React.ReactElement;
+
+const TABS: readonly { id: TabId; label: string; Panel: PanelComponent }[] = [
   { id: 'apps', label: 'Apps', Panel: AppsPanel },
   { id: 'experiences', label: 'Experiences', Panel: ExperiencesPanel },
   { id: 'drivers', label: 'Drivers', Panel: DriversPanel },
@@ -27,6 +30,14 @@ export function Dashboard(): React.ReactElement {
 
 function DashboardShell(): React.ReactElement {
   const [active, setActive] = useState<TabId>('apps');
+  // A panel mounts the first time its tab opens, so the Settings camera probe
+  // doesn't run at boot, and stays mounted afterwards.
+  const [opened, setOpened] = useState<ReadonlySet<TabId>>(() => new Set(['apps']));
+
+  const open = (tab: TabId): void => {
+    setActive(tab);
+    setOpened((current) => (current.has(tab) ? current : new Set([...current, tab])));
+  };
 
   return (
     <div className="flex h-full flex-col bg-neutral-950 text-neutral-100">
@@ -44,7 +55,7 @@ function DashboardShell(): React.ReactElement {
               role="tab"
               aria-selected={active === tab.id}
               aria-controls={`panel-${tab.id}`}
-              onClick={() => setActive(tab.id)}
+              onClick={() => open(tab.id)}
               className={`px-4 py-2 text-left text-sm transition-colors ${
                 active === tab.id
                   ? 'bg-neutral-800 text-neutral-50'
@@ -56,19 +67,21 @@ function DashboardShell(): React.ReactElement {
           ))}
         </nav>
 
-        {/* Every panel stays mounted, so logs, filters and camera probes survive tab switches. */}
-        {TABS.map(({ id, Panel }) => (
-          <main
-            key={id}
-            id={`panel-${id}`}
-            role="tabpanel"
-            aria-labelledby={`tab-${id}`}
-            hidden={active !== id}
-            className="flex-1 overflow-auto"
-          >
-            <Panel />
-          </main>
-        ))}
+        {/* Opened panels stay mounted, so logs, filters and camera probes survive tab switches. */}
+        {TABS.map(({ id, Panel }) =>
+          opened.has(id) ? (
+            <main
+              key={id}
+              id={`panel-${id}`}
+              role="tabpanel"
+              aria-labelledby={`tab-${id}`}
+              hidden={active !== id}
+              className="flex-1 overflow-auto"
+            >
+              <Panel active={active === id} />
+            </main>
+          ) : null,
+        )}
       </div>
 
       <StatusBar />

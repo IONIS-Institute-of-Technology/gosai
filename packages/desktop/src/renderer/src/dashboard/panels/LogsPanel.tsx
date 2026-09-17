@@ -16,7 +16,7 @@ const LEVEL_COLORS: Record<LogLevel, string> = {
 
 const NO_LOGS: readonly LogEntry[] = [];
 
-export function LogsPanel(): React.ReactElement {
+export function LogsPanel({ active }: { active: boolean }): React.ReactElement {
   const logs = useServerResource(
     { command: 'logs:history', select: (r) => r.logs },
     { 'server:log': (entry, current) => [...(current ?? []), entry].slice(-MAX_ENTRIES) },
@@ -28,10 +28,14 @@ export function LogsPanel(): React.ReactElement {
   const entries = logs.data ?? NO_LOGS;
 
   useEffect(() => {
-    if (autoScroll) tailRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' });
-  }, [entries, autoScroll]);
+    if (active && autoScroll) {
+      tailRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' });
+    }
+  }, [entries, autoScroll, active]);
 
+  // A hidden panel keeps collecting lines but renders none of them.
   const filtered = useMemo(() => {
+    if (!active) return NO_LOGS;
     const text = filter.toLowerCase();
     return entries.filter((entry) => {
       if (level !== 'all' && entry.level !== level) return false;
@@ -43,7 +47,7 @@ export function LogsPanel(): React.ReactElement {
         (formatted.details ?? '').toLowerCase().includes(text)
       );
     });
-  }, [entries, level, filter]);
+  }, [entries, level, filter, active]);
 
   return (
     <div className="flex h-full flex-col gap-4 p-6">
