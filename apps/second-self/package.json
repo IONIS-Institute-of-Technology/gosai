@@ -12,9 +12,9 @@
     "@gosai/sdk": "workspace:*",
     "@pixiv/three-vrm": "3.5.5",
     "kalidokit": "1.1.5",
-    "three": "0.185.1"
+    "three": "0.186.0"
   },
   "devDependencies": {
-    "@types/three": "0.185.1"
+    "@types/three": "0.186.0"
   }
 }
