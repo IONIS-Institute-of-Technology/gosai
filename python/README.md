@@ -106,6 +106,9 @@ size it delivers.
 Drivers declare their startup config, events and actions with msgspec types
 (see `gosai_py/driver.py`). The bridge's `list-drivers` reply includes each
 driver's JSON Schema under `schema`; `gosai_py/schemas.py` documents its shape.
+Resolve each driver's `$ref`s against its own `$defs`, since type names repeat
+across drivers. The server serves the schemas through the `drivers:schema`
+WebSocket command, and `DriverInfo.schemaVersion` changes when one does.
 To print every built-in driver's description:
 
 ```bash

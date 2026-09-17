@@ -29,6 +29,7 @@
  * lease on that event, so each app only receives its own stream.
  */
 
+import { createHash } from 'node:crypto';
 import type {
   DeviceCatalog,
   DeviceOption,
@@ -36,6 +37,7 @@ import type {
   DriverInstanceInfo,
   DriverRuntimeInfo,
   DriverSchema,
+  DriverSchemasResult,
   DriverState,
 } from '@gosai/shared';
 import { ServerEvents } from '@gosai/shared/events';
@@ -153,6 +155,8 @@ export class DriverManager {
   private readonly supervisor: BridgeSupervisor;
   /** Driver *types* keyed by name. */
   private readonly catalogue = new Map<string, DriverManifestEntry>();
+  /** Short hash of each driver's schema, so clients know when to fetch it again. */
+  private readonly schemaVersions = new Map<string, string>();
   /** Memoised effective sharing policy per driver name. */
   private readonly sharedCache = new Map<string, boolean>();
   private readonly leases = new Map<number, Lease>();
@@ -243,9 +247,14 @@ export class DriverManager {
       { timeoutMs: CATALOGUE_TIMEOUT_MS },
     );
     this.catalogue.clear();
+    this.schemaVersions.clear();
     this.sharedCache.clear();
     for (const entry of result.drivers) {
       this.catalogue.set(entry.name, entry);
+      if (entry.schema) {
+        const hash = createHash('sha256').update(JSON.stringify(entry.schema));
+        this.schemaVersions.set(entry.name, hash.digest('hex').slice(0, 16));
+      }
     }
     this.broadcastList();
   }
@@ -253,6 +262,23 @@ export class DriverManager {
   listDrivers(): DriverInfo[] {
     const desired = this.desiredInstances();
     return Array.from(this.catalogue.values()).map((entry) => this.toDriverInfo(entry, desired));
+  }
+
+  /** Schemas of every driver, or only `driver`'s. Drivers without a schema get null. */
+  getSchemas(driver?: string): DriverSchemasResult {
+    const names =
+      driver === undefined ? [...this.catalogue.keys()] : [this.requireDriver(driver).name];
+    return {
+      schemas: Object.fromEntries(
+        names.map((name) => [
+          name,
+          {
+            schemaVersion: this.schemaVersions.get(name) ?? null,
+            schema: this.catalogue.get(name)?.schema ?? null,
+          },
+        ]),
+      ),
+    };
   }
 
   getDriver(name: string): DriverInfo | undefined {
@@ -886,7 +912,9 @@ export class DriverManager {
       shared: this.isEffectivelyShared(entry.name),
       ...(primaryRuntime ? { runtime: primaryRuntime } : {}),
       ...(instanceInfos.length > 0 ? { instances: instanceInfos } : {}),
-      ...(entry.schema ? { schema: entry.schema } : {}),
+      ...(this.schemaVersions.has(entry.name)
+        ? { schemaVersion: this.schemaVersions.get(entry.name) }
+        : {}),
     };
   }
 

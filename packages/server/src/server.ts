@@ -449,6 +449,13 @@ function registerHandlers(
   });
 
   gateway.registerHandler('drivers:list', () => ({ drivers: drivers.listDrivers() }));
+  gateway.registerHandler('drivers:schema', (msg: ClientMessage) => {
+    const driver = (msg as { payload?: { driver?: unknown } }).payload?.driver;
+    if (driver !== undefined && typeof driver !== 'string') {
+      throw new Error('driver must be a string');
+    }
+    return drivers.getSchemas(driver);
+  });
   gateway.registerHandler('devices:list', async () => await drivers.listDevices());
   gateway.registerHandler('driver:get-data', async (msg: ClientMessage) => {
     const payload = (msg as { payload: { driver?: string; event?: string; binding?: string } })

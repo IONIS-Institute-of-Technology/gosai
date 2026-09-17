@@ -22,7 +22,9 @@ its `list-drivers` reply:
 `queue_size` values and drops the oldest (`buffered_events`), and `ordered`
 sends every value.
 
-`$ref`s point at `#/$defs/<name>` inside the same `schema` object. `params` is
+`$ref`s point at `#/$defs/<name>` inside the same `schema` object. Resolve
+each driver's schema on its own: `$defs` names repeat across drivers with
+different contents (`DeviceResult`, `SignPayload`), so never merge them. `params` is
 null when the action takes no data. Events and actions declared without types
 get the empty schema `{}`. `schema` is null when a driver's types can't be
 turned into JSON Schema; the bridge logs why.

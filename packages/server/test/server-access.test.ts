@@ -322,6 +322,7 @@ describe('WebSocket access', () => {
         true,
       );
       expect((await client.request('apps:list')).ok).toBe(true);
+      expect((await client.request('drivers:schema', {})).ok).toBe(true);
       expect((await client.request('system:ping')).ok).toBe(true);
     } finally {
       client.close();

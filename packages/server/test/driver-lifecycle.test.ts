@@ -232,11 +232,25 @@ async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<vo
 }
 
 describe('driver catalogue', () => {
-  test('driver schemas from the bridge pass through unchanged', async () => {
+  test('driver info carries a schema version and schemas are served on request', async () => {
     const { manager } = await startManager();
 
-    expect(manager.getDriver('unrelated')?.schema).toEqual(TICK_SCHEMA);
-    expect(manager.getDriver('camera')).not.toHaveProperty('schema');
+    const version = manager.getDriver('unrelated')?.schemaVersion;
+    expect(version).toMatch(/^[0-9a-f]{16}$/);
+    expect(manager.getDriver('unrelated')).not.toHaveProperty('schema');
+    expect(manager.getDriver('camera')).not.toHaveProperty('schemaVersion');
+    expect(manager.getSchemas('unrelated')).toEqual({
+      schemas: { unrelated: { schemaVersion: version ?? null, schema: TICK_SCHEMA } },
+    });
+    const all = manager.getSchemas();
+    expect(Object.keys(all.schemas).sort()).toEqual([
+      'calibration',
+      'camera',
+      'speaker',
+      'unrelated',
+    ]);
+    expect(all.schemas['camera']).toEqual({ schemaVersion: null, schema: null });
+    expect(() => manager.getSchemas('nope')).toThrow();
   });
 });
 
