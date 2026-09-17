@@ -10,6 +10,7 @@ const POOL_TOKEN = mintAppToken(SECRET, 'pool');
 
 let server: GosaiServer;
 let base: string;
+let sdkDir: string;
 
 function writeApp(dir: string, slug: string): void {
   mkdirSync(join(dir, 'dist'), { recursive: true });
@@ -42,7 +43,14 @@ beforeAll(async () => {
   writeFileSync(join(tmp, 'outside.txt'), 'outside');
   symlinkSync(join(tmp, 'outside.txt'), join(builtin, 'pool', 'dist', 'leak.txt'));
 
+  sdkDir = join(tmp, 'sdk');
+  mkdirSync(sdkDir);
+  writeFileSync(join(sdkDir, 'index.js'), 'export const sdk = 1;');
+  writeFileSync(join(sdkDir, 'host.js'), 'export const host = 1;');
+  writeFileSync(join(sdkDir, 'secret.txt'), 'not javascript');
+
   server = await createServer({
+    sdkDir,
     host: '127.0.0.1',
     port: 0,
     paths,
@@ -334,5 +342,93 @@ describe('WebSocket access', () => {
     } finally {
       client.close();
     }
+  });
+});
+
+describe('app origins', () => {
+  const appHost = (slug: string): string => `${slug}.localhost:${server.port}`;
+
+  test('serves the host page with a CSP that allows the import map by hash', async () => {
+    const res = await fetch(`${base}/?experience=main`, { headers: { host: appHost('pool') } });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const csp = res.headers.get('content-security-policy')!;
+    expect(csp).not.toContain('unsafe-inline');
+    const importMap = /<script type="importmap">(.*?)<\/script>/.exec(html)![1]!;
+    const hash = new Bun.CryptoHasher('sha256').update(importMap).digest('base64');
+    expect(csp).toContain(`'sha256-${hash}'`);
+    expect(JSON.parse(importMap).imports).toEqual({
+      '@gosai/sdk': '/sdk/index.js',
+      '@gosai/sdk/': '/sdk/',
+    });
+    expect(res.headers.get('referrer-policy')).toBe('no-referrer');
+  });
+
+  test('only app hostnames get a host page and a manifest', async () => {
+    expect((await fetch(`${base}/`)).status).toBe(404);
+    expect((await fetch(`${base}/gosai.app.json`)).status).toBe(404);
+    const manifest = await fetch(`${base}/gosai.app.json`, { headers: { host: appHost('pool') } });
+    expect(manifest.status).toBe(200);
+    expect(((await manifest.json()) as { slug: string }).slug).toBe('pool');
+    const missing = await fetch(`${base}/gosai.app.json`, { headers: { host: appHost('ghost') } });
+    expect(missing.status).toBe(404);
+  });
+
+  test('rejects hostnames that are not app slugs', async () => {
+    for (const host of [`bad_slug.localhost:${server.port}`, `a.b.localhost:${server.port}`]) {
+      expect((await fetch(`${base}/`, { headers: { host } })).status).toBe(403);
+    }
+  });
+
+  test('serves SDK bundle files, with or without the .js extension', async () => {
+    const index = await fetch(`${base}/sdk/index.js`);
+    expect(index.status).toBe(200);
+    expect(index.headers.get('content-type')).toContain('javascript');
+    expect(await (await fetch(`${base}/sdk/host`)).text()).toContain('host');
+    for (const path of ['secret.txt', '..%2Fserver.ts', 'missing.js']) {
+      expect((await fetch(`${base}/sdk/${path}`)).status).toBe(404);
+    }
+    const legacy = await fetch(`${base}/sdk-runtime.js`, { redirect: 'manual' });
+    expect(legacy.status).toBe(308);
+    expect(legacy.headers.get('location')).toBe('/sdk/index.js');
+  });
+
+  test("app origins may call the server with their own app's token only", async () => {
+    const own = await fetch(`${base}/v1/apps/pool/storage`, {
+      headers: { ...bearer(POOL_TOKEN), host: appHost('pool') },
+    });
+    expect(own.status).toBe(200);
+    const crossOrigin = await fetch(`${base}/v1/apps/pool/storage`, {
+      headers: { ...bearer(POOL_TOKEN), origin: `http://${appHost('pool')}` },
+    });
+    expect(crossOrigin.status).toBe(200);
+    expect(crossOrigin.headers.get('access-control-allow-origin')).toBe(
+      `http://${appHost('pool')}`,
+    );
+
+    const otherOrigin = await fetch(`${base}/v1/apps/pool/storage`, {
+      headers: { ...bearer(POOL_TOKEN), host: appHost('other') },
+    });
+    expect(otherOrigin.status).toBe(403);
+    const dashboardFromApp = await fetch(`${base}/v1/info`, {
+      headers: { ...bearer(SECRET), origin: `http://${appHost('pool')}` },
+    });
+    expect(dashboardFromApp.status).toBe(403);
+  });
+
+  test('the WebSocket upgrade checks the token against the app origin', async () => {
+    const open = (token: string, origin: string): Promise<boolean> =>
+      new Promise((resolve) => {
+        const url = `${base.replace('http', 'ws')}/ws?token=${encodeURIComponent(token)}`;
+        const ws = new WebSocket(url, { headers: { origin } } as unknown as string[]);
+        ws.addEventListener('open', () => {
+          ws.close();
+          resolve(true);
+        });
+        ws.addEventListener('error', () => resolve(false));
+      });
+    expect(await open(POOL_TOKEN, `http://${appHost('pool')}`)).toBe(true);
+    expect(await open(POOL_TOKEN, `http://${appHost('other')}`)).toBe(false);
+    expect(await open(SECRET, `http://${appHost('pool')}`)).toBe(false);
   });
 });

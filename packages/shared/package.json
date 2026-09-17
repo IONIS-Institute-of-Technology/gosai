@@ -29,6 +29,10 @@
     "./auth": {
       "types": "./src/auth.ts",
       "import": "./src/auth.ts"
+    },
+    "./app-origin": {
+      "types": "./src/app-origin.ts",
+      "import": "./src/app-origin.ts"
     }
   },
   "scripts": {

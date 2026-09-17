@@ -17,6 +17,12 @@ import { SystemMonitor } from './monitor/index.js';
 import { canAccessApp, commandDenial } from './access/policy.js';
 import { readBearerToken, RequestGuard } from './access/request-guard.js';
 import { resolveStaticFile } from './apps/static-files.js';
+import {
+  appOriginDenial,
+  appSlugFromHost,
+  hostPageResponse,
+  resolveSdkFile,
+} from './apps/app-host.js';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -40,6 +46,11 @@ export interface ServerOptions {
   readonly allowedHosts?: readonly string[];
   /** Let `app:install` clone `file:` URLs. Only for tests. */
   readonly allowFileInstalls?: boolean;
+  /**
+   * Directory holding the built SDK (`index.js`, `host.js`, `app-host.js`).
+   * Defaults to GOSAI_SDK_DIR, then the SDK package's `dist` in the repo.
+   */
+  readonly sdkDir?: string;
 }
 
 export interface GosaiServer {
@@ -125,6 +136,7 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
   });
   const authenticate = (req: Request, token: string | null): TokenScope | null =>
     verifyToken(options.dashboardToken, token ?? readBearerToken(req));
+  const sdkDir = resolveSdkDir(options.sdkDir);
 
   const app = new Hono<{ Variables: { scope: TokenScope } }>();
 
@@ -136,12 +148,37 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
   });
   app.options('*', (c) => c.body(null, 204));
 
-  // Static app files and the SDK bundle load through `import()` and `<img>`,
-  // which can't send a token. Every other /v1 route needs one.
+  // App hosting (apps/app-host.ts). The host page, the manifest and the SDK
+  // bundle hold no secrets and load before the page has read its token.
+  app.get('/', (c) => (appSlugFromHost(c.req.header('host')) ? hostPageResponse() : c.notFound()));
+  app.get('/gosai.app.json', (c) => {
+    const slug = appSlugFromHost(c.req.header('host'));
+    if (!slug) return c.notFound();
+    const installed = apps.getApp(slug);
+    if (!installed) return c.json({ error: `app ${slug} is not installed` }, 404);
+    return c.json(installed.manifest, 200, { 'cache-control': 'no-store' });
+  });
+  app.get('/sdk/:file', (c) => {
+    const file = resolveSdkFile(sdkDir, c.req.param('file'));
+    if (!file) return c.json({ error: 'SDK file not found; run `bun run build:sdk`' }, 404);
+    return new Response(Bun.file(file), {
+      headers: {
+        'content-type': 'text/javascript; charset=utf-8',
+        'cache-control': 'no-cache',
+        'x-content-type-options': 'nosniff',
+      },
+    });
+  });
+  app.get('/sdk-runtime.js', (c) => c.redirect('/sdk/index.js', 308));
+
+  // Static app files load through `import()` and `<img>`, which can't send a
+  // token. Every other /v1 route needs one.
   app.use('/v1/*', async (c, next) => {
     if (/^\/v1\/apps\/[^/]+\/static\//.test(c.req.path)) return next();
     const scope = authenticate(c.req.raw, null);
     if (!scope) return c.json({ error: 'unauthorized' }, 401);
+    const denial = appOriginDenial(c.req.raw, scope);
+    if (denial) return c.json({ error: denial }, 403);
     c.set('scope', scope);
     return next();
   });
@@ -272,23 +309,6 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
     });
   });
 
-  // Bundled SDK runtime served to apps via static script tag.
-  app.get('/sdk-runtime.js', async (c) => {
-    const sdkPath = process.env.GOSAI_SDK_RUNTIME
-      ? resolve(process.env.GOSAI_SDK_RUNTIME)
-      : resolve(import.meta.dir, '..', '..', 'sdk', 'dist', 'browser.js');
-    if (existsSync(sdkPath)) {
-      const data = await Bun.file(sdkPath).arrayBuffer();
-      return new Response(data, {
-        headers: {
-          'content-type': 'application/javascript; charset=utf-8',
-          'cache-control': 'no-cache',
-        },
-      });
-    }
-    return c.json({ error: 'SDK runtime bundle not built' }, 404);
-  });
-
   let server: ReturnType<typeof Bun.serve<ClientData>>;
   try {
     server = Bun.serve<ClientData>({
@@ -303,6 +323,8 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
           // in the query string.
           const scope = authenticate(req, url.searchParams.get('token'));
           if (!scope) return new Response('Unauthorized', { status: 401 });
+          const denial = appOriginDenial(req, scope);
+          if (denial) return new Response(denial, { status: 403 });
           const data: ClientData = { clientId: crypto.randomUUID(), scope };
           if (srv.upgrade(req, { data })) {
             return undefined;
@@ -523,6 +545,13 @@ function guessMime(filePath: string): string {
   if (lower.endsWith('.txt') || lower.endsWith('.md')) return 'text/plain; charset=utf-8';
   if (lower.endsWith('.wasm')) return 'application/wasm';
   return 'application/octet-stream';
+}
+
+function resolveSdkDir(override?: string): string {
+  if (override) return resolve(override);
+  const env = process.env.GOSAI_SDK_DIR;
+  if (env) return resolve(env);
+  return resolve(import.meta.dir, '..', '..', 'sdk', 'dist');
 }
 
 function resolvePythonDir(override?: string): string {

@@ -50,7 +50,9 @@ describe('slug validation', () => {
     for (const slug of ['', '../../x', 'a/b', 'a\\b', '.hidden', 'Pool', '1abc', 'a b', 'a:b']) {
       expect(isValidSlug(slug)).toBe(false);
     }
-    expect(isValidSlug('a'.repeat(65))).toBe(false);
+    // Slugs name `<slug>.localhost` origins, so they fit in one 63-character DNS label.
+    expect(isValidSlug('a'.repeat(63))).toBe(true);
+    expect(isValidSlug('a'.repeat(64))).toBe(false);
     expect(isValidSlug(42)).toBe(false);
     expect(() => assertSlug('../x', 'appSlug')).toThrow(/appSlug/);
   });
@@ -145,6 +147,13 @@ describe('request guard', () => {
     expect(guard.hostAllowed(null)).toBe(false);
   });
 
+  test('allows app hostnames on the bound port', () => {
+    expect(guard.hostAllowed('my-app.localhost:7777')).toBe(true);
+    expect(guard.hostAllowed('my-app.localhost:8080')).toBe(false);
+    expect(guard.hostAllowed('my_app.localhost:7777')).toBe(false);
+    expect(guard.hostAllowed('localhost.evil.example:7777')).toBe(false);
+  });
+
   test('allows configured extra hosts', () => {
     const lan = new RequestGuard({
       bindHost: '0.0.0.0',
@@ -162,6 +171,9 @@ describe('request guard', () => {
     expect(guard.originAllowed('null')).toBe(true);
     expect(guard.originAllowed('https://evil.example')).toBe(false);
     expect(guard.originAllowed('http://127.0.0.1.evil.example')).toBe(false);
+    expect(guard.originAllowed('http://my-app.localhost:7777')).toBe(true);
+    expect(guard.originAllowed('https://my-app.localhost:7777')).toBe(false);
+    expect(guard.originAllowed('http://a.b.localhost:7777')).toBe(false);
     const strict = new RequestGuard({ bindHost: '127.0.0.1', port: () => 7777 });
     expect(strict.originAllowed('null')).toBe(false);
   });

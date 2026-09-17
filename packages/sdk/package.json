@@ -18,7 +18,7 @@
     }
   },
   "scripts": {
-    "build": "bun build src/index.ts src/host.ts --splitting --target=browser --format=esm --outdir dist",
+    "build": "bun build src/index.ts src/host.ts src/app-host.ts --splitting --target=browser --format=esm --outdir dist",
     "dev": "bun run build --watch",
     "typecheck": "tsc && tsc -p test",
     "clean": "rm -rf dist",
