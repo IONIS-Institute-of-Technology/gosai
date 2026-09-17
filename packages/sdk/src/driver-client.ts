@@ -6,6 +6,7 @@ import type {
   DriverEvent,
   DriverEventData,
   DriverName,
+  KnownDriverName,
 } from './driver-types.js';
 import type { DriverClient, DriverSubscription, ServerConnection } from './types.js';
 
@@ -57,28 +58,41 @@ export class DriverClientImpl implements DriverClient {
     };
   }
 
-  async get<D extends DriverName, E extends DriverEvent<D>>(
+  get<D extends DriverName, E extends DriverEvent<D>>(
     driver: D,
     event: E,
-  ): Promise<DriverEventData<D, E> | null> {
+  ): Promise<DriverEventData<D, E> | null>;
+  /** @deprecated See {@link DriverClient.get}. */
+  get<T, D extends string = string>(
+    driver: D extends KnownDriverName ? never : D,
+    event: string,
+  ): Promise<T>;
+  async get(driver: string, event: string): Promise<unknown> {
     const data = await this.server.request('driver:get-data', {
       driver,
       event,
       binding: this.binding,
     });
-    return (data ?? null) as DriverEventData<D, E> | null;
+    return data ?? null;
   }
 
-  async execute<D extends DriverName, A extends DriverAction<D>>(
+  execute<D extends DriverName, A extends DriverAction<D>>(
     driver: D,
     action: A,
     ...params: DriverActionArgs<D, A>
-  ): Promise<DriverActionResult<D, A>> {
-    return (await this.server.request('driver:execute', {
+  ): Promise<DriverActionResult<D, A>>;
+  /** @deprecated See {@link DriverClient.execute}. */
+  execute<T, D extends string = string>(
+    driver: D extends KnownDriverName ? never : D,
+    action: string,
+    data?: unknown,
+  ): Promise<T>;
+  async execute(driver: string, action: string, data?: unknown): Promise<unknown> {
+    return await this.server.request('driver:execute', {
       driver,
       action,
-      data: params[0],
+      data,
       binding: this.binding,
-    })) as DriverActionResult<D, A>;
+    });
   }
 }

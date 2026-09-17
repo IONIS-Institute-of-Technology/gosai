@@ -15,6 +15,11 @@ First public release.
 - `rt.drivers` types the events, params and results of the built-in drivers,
   and `gosai-sdk gen-driver-types` generates the same types for an app's own
   drivers.
+- `rt.drivers.get<T>(driver, event)` and `rt.drivers.execute<T>(driver, action, data)`
+  still compile but are deprecated: with a type argument they only cast. For a
+  built-in driver, drop the type argument and the result is typed. For your own
+  drivers, run `gosai-sdk gen-driver-types` on their schemas and do the same.
+  `get` now returns `null` before the first event.
 - Manifests declare the SDK versions they work with in `sdk`, and the runtime
   refuses a server that speaks another protocol version.
 - Bundled type declarations with no runtime dependencies.

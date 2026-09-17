@@ -17,6 +17,7 @@ import type {
   DriverEvent,
   DriverEventData,
   DriverName,
+  KnownDriverName,
 } from './driver-types.js';
 
 export type {
@@ -148,12 +149,29 @@ export interface DriverClient {
     driver: D,
     event: E,
   ): Promise<DriverEventData<D, E> | null>;
+  /**
+   * @deprecated Casts the value of a driver the SDK doesn't know. Generate
+   * its types with `gosai-sdk gen-driver-types` instead.
+   */
+  get<T, D extends string = string>(
+    driver: D extends KnownDriverName ? never : D,
+    event: string,
+  ): Promise<T>;
   /** Run a driver action and return its result. */
   execute<D extends DriverName, A extends DriverAction<D>>(
     driver: D,
     action: A,
     ...params: DriverActionArgs<D, A>
   ): Promise<DriverActionResult<D, A>>;
+  /**
+   * @deprecated Casts the result of a driver the SDK doesn't know. Generate
+   * its types with `gosai-sdk gen-driver-types` instead.
+   */
+  execute<T, D extends string = string>(
+    driver: D extends KnownDriverName ? never : D,
+    action: string,
+    data?: unknown,
+  ): Promise<T>;
 }
 
 export interface StorageClient {

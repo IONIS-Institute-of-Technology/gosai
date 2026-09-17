@@ -18,6 +18,7 @@ import type {
   DriverEvent,
   DriverEventData,
   DriverName,
+  KnownDriverName,
 } from './driver-types.js';
 import { AppEventsClientImpl } from './events-client.js';
 import { ExperienceRouterImpl } from './experience-router.js';
@@ -331,7 +332,13 @@ class TrackedDriverClient implements DriverClient {
   get<D extends DriverName, E extends DriverEvent<D>>(
     driver: D,
     event: E,
-  ): Promise<DriverEventData<D, E> | null> {
+  ): Promise<DriverEventData<D, E> | null>;
+  /** @deprecated See {@link DriverClient.get}. */
+  get<T, D extends string = string>(
+    driver: D extends KnownDriverName ? never : D,
+    event: string,
+  ): Promise<T>;
+  get(driver: string, event: string): Promise<unknown> {
     return this.inner.get(driver, event);
   }
 
@@ -339,8 +346,15 @@ class TrackedDriverClient implements DriverClient {
     driver: D,
     action: A,
     ...params: DriverActionArgs<D, A>
-  ): Promise<DriverActionResult<D, A>> {
-    return this.inner.execute(driver, action, ...params);
+  ): Promise<DriverActionResult<D, A>>;
+  /** @deprecated See {@link DriverClient.execute}. */
+  execute<T, D extends string = string>(
+    driver: D extends KnownDriverName ? never : D,
+    action: string,
+    data?: unknown,
+  ): Promise<T>;
+  execute(driver: string, action: string, data?: unknown): Promise<unknown> {
+    return this.inner.execute(driver, action, data);
   }
 
   release(): void {

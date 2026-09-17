@@ -202,6 +202,18 @@ describe('typed driver client', () => {
       // @ts-expect-error: snapshot takes no params
       void drivers.execute('camera', 'snapshot', {});
       void drivers.execute('my_driver', 'go', { any: 'thing' });
+
+      // The deprecated casts still compile. An explicit type argument can't
+      // infer the driver name, so they accept any driver, marked deprecated.
+      const cast: Promise<{ ok: boolean }> = drivers.execute<{ ok: boolean }>('my_driver', 'go', 1);
+      const castValue: Promise<number> = drivers.get<number>('my_driver', 'level');
+      void cast;
+      void castValue;
+      // Without a type argument a known driver never falls back to the cast.
+      // @ts-expect-error: pose has no set_flipp action
+      void drivers.execute('pose', 'set_flipp', true);
+      // @ts-expect-error: heartbeat has no such event
+      void drivers.get('heartbeat', 'tock');
       void drivers.get('pose', 'raw_data').then((data) => data?.body_pose.length);
     };
     expect(typeof check).toBe('function');
