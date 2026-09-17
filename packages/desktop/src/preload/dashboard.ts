@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import type { CalibrationResult } from '@gosai/shared/calibration';
 import { IPC_CHANNELS } from '../main/channels.js';
 
 interface DisplaySummary {
@@ -29,8 +30,6 @@ const api = {
       appSlug: string;
       experienceSlug: string;
       fullscreen?: boolean;
-      targetAppSlug?: string;
-      driverBinding?: string;
     }) =>
       ipcRenderer.invoke(IPC_CHANNELS.AppHostOpen, args) as Promise<{
         windowId: number;
@@ -51,28 +50,10 @@ const api = {
       ipcRenderer.invoke(IPC_CHANNELS.ExperienceEnd, args) as Promise<{ ok: true }>,
   },
 
-  controlWindow: {
-    open: (args: {
-      appSlug: string;
-      experienceSlug: string;
-      projectorDisplayId?: number;
-      targetAppSlug?: string;
-      driverBinding?: string;
-      width?: number;
-      height?: number;
-      title?: string;
-    }) =>
-      ipcRenderer.invoke(IPC_CHANNELS.ControlWindowOpen, args) as Promise<{
-        windowId: number;
-        appSlug: string;
-        experienceSlug: string;
-      }>,
-    close: (windowId: number) =>
-      ipcRenderer.invoke(IPC_CHANNELS.ControlWindowClose, { windowId }) as Promise<boolean>,
-    hide: (windowId: number) =>
-      ipcRenderer.invoke(IPC_CHANNELS.ControlWindowHide, { windowId }) as Promise<boolean>,
-    show: (windowId: number) =>
-      ipcRenderer.invoke(IPC_CHANNELS.ControlWindowShow, { windowId }) as Promise<boolean>,
+  calibration: {
+    /** Runs the app's calibration flow; resolves when it ends. */
+    run: (args: { appSlug: string; displayId?: number }) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CalibrationRun, args) as Promise<CalibrationResult>,
   },
 
   onExperienceEnded: (listener: (payload: { appSlug: string; experienceSlug: string }) => void) => {

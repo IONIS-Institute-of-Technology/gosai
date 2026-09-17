@@ -1,3 +1,5 @@
+import type { CalibrationResult } from '@gosai/shared/calibration';
+
 // Window type augmentation. The dashboard preload exposes its API here. Declared inline (not imported from preload) so the renderer tsconfig
 // does not need to compile main/preload sources.
 
@@ -30,8 +32,6 @@ interface DashboardApi {
       appSlug: string;
       experienceSlug: string;
       fullscreen?: boolean;
-      targetAppSlug?: string;
-      driverBinding?: string;
     }): Promise<{
       windowId: number;
       displayId: number;
@@ -46,20 +46,9 @@ interface DashboardApi {
   experience: {
     end(args: { appSlug: string; experienceSlug: string }): Promise<{ ok: true }>;
   };
-  controlWindow: {
-    open(args: {
-      appSlug: string;
-      experienceSlug: string;
-      projectorDisplayId?: number;
-      targetAppSlug?: string;
-      driverBinding?: string;
-      width?: number;
-      height?: number;
-      title?: string;
-    }): Promise<{ windowId: number; appSlug: string; experienceSlug: string }>;
-    close(windowId: number): Promise<boolean>;
-    hide(windowId: number): Promise<boolean>;
-    show(windowId: number): Promise<boolean>;
+  calibration: {
+    /** Runs the app's calibration flow; resolves when it ends. */
+    run(args: { appSlug: string; displayId?: number }): Promise<CalibrationResult>;
   };
   onExperienceEnded(
     listener: (payload: { appSlug: string; experienceSlug: string }) => void,

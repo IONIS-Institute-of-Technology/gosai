@@ -11,11 +11,8 @@ import type {
   InvalidApp,
   RunningExperience,
 } from '@gosai/shared';
-import {
-  CALIBRATION_SLUG,
-  pickDisplayForApp,
-  runCalibrationWizard,
-} from '../../lib/calibration-wizard.js';
+import { CALIBRATION_RUNNER } from '@gosai/shared/calibration';
+import { pickDisplayForApp } from '../../lib/displays.js';
 import { stopAllAppExperiences, stopExperienceFully } from '../../lib/stop-experience.js';
 import { useServer } from '../../lib/server-context.js';
 import { isNotConnectedError, ServerRequestError } from '@gosai/shared/client';
@@ -23,8 +20,6 @@ import { Panel } from '../components/Panel.js';
 import { EmptyState } from '../components/EmptyState.jsx';
 import { AppSettingsModal } from '../components/AppSettingsModal.js';
 import { SERVER_BASE_URL } from '../../lib/server-url.js';
-
-const DEFAULT_CALIBRATION_STATUS_KEY = 'calibration_status';
 
 function formatKey(width: number, height: number): string {
   return `${width}x${height}`;
@@ -48,7 +43,7 @@ interface DisplayChoice {
   primary: boolean;
 }
 
-type CalStatus = 'unknown' | 'calibrated' | 'required';
+type CalStatus = 'unknown' | 'calibrated' | 'uncalibrated';
 
 export function AppsPanel(): React.ReactElement {
   const { client, status } = useServer();
@@ -172,7 +167,7 @@ export function AppsPanel(): React.ReactElement {
     }
   };
 
-  const userApps = apps.filter((app) => app.manifest.slug !== CALIBRATION_SLUG);
+  const userApps = apps.filter((app) => app.manifest.slug !== CALIBRATION_RUNNER.appSlug);
 
   return (
     <div className="space-y-6 p-6">
@@ -291,8 +286,8 @@ function AppRow({
     !!requirements.camera ||
     !!requirements.microphone ||
     !!requirements.speaker;
-  const needsCalibration = calibrationSchema?.required === true;
-  const calibrationStatusKey = calibrationSchema?.statusKey ?? DEFAULT_CALIBRATION_STATUS_KEY;
+  const hasCalibration = calibrationSchema !== undefined;
+  const requiresCalibration = calibrationSchema?.required === true;
   const experiences = app.manifest.experiences;
   const defaultExp =
     experiences.find((e) => e.slug === app.manifest.default) ?? experiences[0] ?? null;
@@ -301,29 +296,22 @@ function AppRow({
   const [calStatus, setCalStatus] = useState<CalStatus>('unknown');
   const [calibrating, setCalibrating] = useState(false);
 
-  const probeCalibration = useCallback(async (): Promise<void> => {
-    if (!needsCalibration) return;
+  const probeCalibration = useCallback(async (): Promise<boolean> => {
     try {
-      const status = await client.request('storage:get', {
+      const { calibrated } = await client.request('calibration:get', {
         appSlug: app.manifest.slug,
-        key: calibrationStatusKey,
       });
-      setCalStatus(status.found ? 'calibrated' : 'required');
+      setCalStatus(calibrated ? 'calibrated' : 'uncalibrated');
+      return calibrated;
     } catch (err) {
-      if (!isNotConnectedError(err)) setCalStatus('required');
+      if (!isNotConnectedError(err)) setCalStatus('uncalibrated');
+      return false;
     }
-  }, [client, app.manifest.slug, calibrationStatusKey, needsCalibration]);
+  }, [client, app.manifest.slug]);
 
   useEffect(() => {
-    if (needsCalibration) void probeCalibration();
-  }, [needsCalibration, probeCalibration]);
-
-  useEffect(() => {
-    if (!needsCalibration) return;
-    return client.on(`app:${CALIBRATION_SLUG}:wizard:finished`, () => {
-      void probeCalibration();
-    });
-  }, [client, needsCalibration, probeCalibration]);
+    if (hasCalibration) void probeCalibration();
+  }, [hasCalibration, probeCalibration]);
 
   // Lazily load the shared device catalog the first time this row opens.
   useEffect(() => {
@@ -332,6 +320,8 @@ function AppRow({
 
   const startExperience = async (experienceSlug: string): Promise<void> => {
     try {
+      // An app that requires calibration is calibrated first, and doesn't start without it.
+      if (requiresCalibration && !(await probeCalibration()) && !(await calibrate())) return;
       await client.request('experience:start', { appSlug: app.manifest.slug, experienceSlug });
       const { display, mode } = await pickDisplayForApp(client, app.manifest.slug);
       if (display) {
@@ -369,15 +359,22 @@ function AppRow({
     }
   };
 
-  const calibrate = async (): Promise<void> => {
-    if (calibrating) return;
+  /** Runs the calibration flow. Returns whether it saved a profile. */
+  const calibrate = async (): Promise<boolean> => {
+    if (calibrating) return false;
     setCalibrating(true);
     try {
-      await runCalibrationWizard(client, app.manifest.slug);
+      const api = window.gosai;
+      if (!api) throw new Error('Electron API unavailable');
+      const result = await api.calibration.run({ appSlug: app.manifest.slug });
+      if (!result.ok && !result.cancelled) onError(`Calibration failed: ${result.error}`);
+      return result.ok;
     } catch (err) {
       if (!isNotConnectedError(err)) onError(err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setCalibrating(false);
+      void probeCalibration();
     }
   };
 
@@ -438,9 +435,10 @@ function AppRow({
           </button>
         ) : null}
 
-        {needsCalibration ? (
+        {hasCalibration ? (
           <CalibrationControl
             status={calStatus}
+            required={requiresCalibration}
             busy={calibrating}
             onClick={() => void calibrate()}
           />
@@ -550,10 +548,12 @@ function AppRow({
 
 function CalibrationControl({
   status,
+  required: requiredByApp,
   busy,
   onClick,
 }: {
   status: CalStatus;
+  required: boolean;
   busy: boolean;
   onClick(): void;
 }): React.ReactElement {
@@ -570,8 +570,8 @@ function CalibrationControl({
       </button>
     );
   }
-  // `required` (and the brief `unknown` probe window) gets a prominent button.
-  const required = status === 'required';
+  // An uncalibrated app that requires calibration gets a prominent button.
+  const required = requiredByApp && status === 'uncalibrated';
   return (
     <button
       type="button"
