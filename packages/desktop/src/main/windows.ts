@@ -18,6 +18,7 @@ import type {
   IpcEventChannel,
   IpcEventChannels,
 } from '../ipc-contract.js';
+import { dashboardContentSecurityPolicy } from './dashboard-csp.js';
 
 interface WindowRegistryOptions {
   readonly rootDir: string;
@@ -246,6 +247,7 @@ export class WindowRegistry {
     });
 
     win.once('ready-to-show', () => win.show());
+    this.installDashboardPolicy(win);
     this.installDisplayEvents();
 
     const query = this.appendServerParams(new URLSearchParams(), this.options.dashboardToken);
@@ -264,6 +266,30 @@ export class WindowRegistry {
 
     this.dashboard = win;
     return win;
+  }
+
+  /**
+   * Sets the dashboard's Content-Security-Policy as a response header, since
+   * the server's port is only known at runtime. Covers `file://` loads too.
+   */
+  private installDashboardPolicy(win: BrowserWindow): void {
+    const contents = win.webContents;
+    contents.session.webRequest.onHeadersReceived((details, callback) => {
+      if (details.webContentsId !== contents.id || details.resourceType !== 'mainFrame') {
+        callback({});
+        return;
+      }
+      const policy = dashboardContentSecurityPolicy({
+        server: { host: this.serverHost, port: this.serverPort },
+        ...(devRendererUrl ? { devServerUrl: devRendererUrl } : {}),
+      });
+      const headers = Object.fromEntries(
+        Object.entries(details.responseHeaders ?? {}).filter(
+          ([name]) => name.toLowerCase() !== 'content-security-policy',
+        ),
+      );
+      callback({ responseHeaders: { ...headers, 'Content-Security-Policy': [policy] } });
+    });
   }
 
   private installDisplayEvents(): void {
