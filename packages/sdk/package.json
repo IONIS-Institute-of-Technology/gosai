@@ -16,8 +16,9 @@
   "scripts": {
     "build": "bun build src/index.ts --target=browser --format=esm --outfile dist/browser.js",
     "dev": "bun run build --watch",
-    "typecheck": "tsc",
-    "clean": "rm -rf dist"
+    "typecheck": "tsc && tsc -p test",
+    "clean": "rm -rf dist",
+    "test": "bun test"
   },
   "dependencies": {
     "@gosai/shared": "workspace:*"

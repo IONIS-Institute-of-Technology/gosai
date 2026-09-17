@@ -328,12 +328,17 @@ async function applyPreviewWarp(
   const dispH = window.innerHeight;
 
   // Warp the four corners of the camera frame to display space.
-  const corners: Point2D[] = [
+  const warped = [
     perspectiveTransformPoint(homography, 0, 0),
     perspectiveTransformPoint(homography, cw, 0),
     perspectiveTransformPoint(homography, cw, ch),
     perspectiveTransformPoint(homography, 0, ch),
   ];
+  const corners = warped.filter((c): c is Point2D => c !== null);
+  if (corners.length !== 4) {
+    rt.log.warn('preview warp: a frame corner maps to infinity, skipping');
+    return;
+  }
 
   // If the warped image lands entirely outside the projector window we have
   // a stale or bogus homography; keep the unwarped letterbox preview rather
