@@ -18,8 +18,19 @@ wheels, which needs NVIDIA driver 580 or newer):
 uv sync --extra gpu --no-group cpu
 ```
 
-The packaged desktop app does this by itself on Linux x64 when the NVIDIA
-driver is loaded.
+`uv run` (and so `bun run python:check` and `uv run gosai-bridge`) syncs the
+default groups first, which reinstalls the CPU `onnxruntime` over
+onnxruntime-gpu. On a GPU checkout, keep the `cpu` group out of every command:
+
+```bash
+export UV_NO_GROUP=cpu   # or: uv run --extra gpu --no-group cpu ...
+```
+
+If it already happened, repair the environment with
+`uv sync --extra gpu --no-group cpu --reinstall-package onnxruntime-gpu`.
+
+The packaged desktop app installs `gpu` by itself on Linux x64 when the NVIDIA
+driver is 580 or newer.
 
 Optional extras:
 
