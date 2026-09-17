@@ -1,38 +1,33 @@
 /**
  * Dance: follow a reference choreography.
  *
- * Ports the legacy `dance` app (components/dance.js). A reference dancer (the
- * `dance02.webp` reference animation) is overlaid, scaled and positioned to
- * the user via a nose/hip anchor. The user advances through the choreography
- * (`dance02.json`) only by matching each target pose: the mean keypoint
- * distance over a set of studied joints must drop below a threshold. A
- * countdown limits each attempt.
+ * A reference dancer (the `dance02.webp` animation) is overlaid, scaled and
+ * positioned to the user via a nose/hip anchor. The user advances through the
+ * choreography (`dance02.json`) only by matching each target pose: the mean
+ * keypoint distance over a set of studied joints must drop below a threshold.
+ * A countdown limits each attempt.
  *
- * Unlike the legacy version, scoring is **translation-invariant**: each target
- * pose is compared relative to the current move's nose, anchored at the user's
- * nose, so only the pose *shape* must match (the legacy absolute comparison
- * required the user to also travel across the room exactly like the reference
- * dancer). The pass threshold is proportional to the user's on-screen body
- * size (nose-hip distance) instead of a fixed pixel count, so it works at any
- * distance / screen size / calibration; the drawing anchor re-fits
- * continuously (smoothed) instead of freezing on the first pose frame; and
- * low-visibility joints are excluded from the score rather than silently
- * contributing zero distance.
+ * Scoring is translation-invariant: each target pose is compared relative to
+ * the current move's nose, anchored at the user's nose, so only the pose
+ * shape must match. The pass threshold is proportional to the user's
+ * on-screen body size (nose-hip distance), so it works at any distance,
+ * screen size or calibration. The drawing anchor re-fits continuously
+ * (smoothed), and low-visibility joints are left out of the score.
  *
- * The reference animation is played frame-accurately via the `ImageDecoder`
- * API when available (Chromium app-host), falling back to an animated <img>
- * overlay.
+ * The reference animation plays frame-accurately through `ImageDecoder` when
+ * the browser has it, and falls back to an animated <img>.
  */
 
-import { drawText, fillRect, strokeLine } from '../shared/canvas.js';
+import { fitNoseHip } from '../shared/align.js';
 import type { LayerDeps } from '../shared/deps.js';
+import { drawText, fillRect, strokeLine } from '../shared/draw.js';
 import { isValid } from '../shared/mirror.js';
-import { REF_HEIGHT, type FrameContext, type Layer } from '../shared/types.js';
+import { REF_HEIGHT, type Landmark, type Layer } from '../shared/types.js';
+import { dist, drawProgressRing } from '../shared/ui.js';
 
 /**
  * Joints scored against the reference pose (shoulders, wrists, hips). The
- * nose is the alignment anchor, so it is not scored (its error is 0 by
- * construction).
+ * nose is the alignment anchor, so it isn't scored.
  */
 const SCORED = [11, 12, 15, 16, 23, 24];
 /** Pass threshold as a fraction of the user's nose-hip distance, clamped. */
@@ -45,29 +40,29 @@ const MIN_JOINT_VISIBILITY = 0.5;
 const MIN_SCORED_JOINTS = 4;
 /** Smoothing rate for the continuous nose/hip anchor re-fit. */
 const ANCHOR_LERP = 0.15;
-/**
- * Attempt time budget. The legacy countdown was 1000 loop frames at ~30fps
- * (~33s); ours is wall-clock so it doesn't shrink with the display refresh
- * rate. Matched moves refund time (legacy refunded 5 frames per match).
- */
+/** Attempt time budget. Matched moves refund a little time. */
 const TIME_LIMIT_MS = 33_000;
 const MATCH_REFUND_MS = 166;
+/** The choreography ends this many moves before its last frame. */
+const END_MARGIN = 5;
 
-type Moves = Record<string, Array<[number, number, number]>> & {
-  size: [number, number];
-  length: number;
-};
+/** A move: `[landmark index, x, y]` per landmark, in reference-video pixels. */
+type Move = ReadonlyArray<readonly [number, number, number]>;
 
-interface ReferenceFrames {
-  frameCount: number;
-  decode(index: number): Promise<ImageBitmap | null>;
+interface Choreography {
+  readonly moves: ReadonlyMap<number, Move>;
+  readonly length: number;
+  readonly size: readonly [number, number];
 }
 
 export function createDanceLayer(deps: LayerDeps): Layer {
-  let moves: Moves | null = null;
-  let reference: ReferenceFrames | null = null;
+  let choreography: Choreography | null = null;
+  let referenceData: ArrayBuffer | null = null;
   let fallbackImg: HTMLImageElement | null = null;
 
+  // Per activation.
+  let decoder: ImageDecoder | null = null;
+  let frameCount = 1;
   let frameBitmap: ImageBitmap | null = null;
   let decodedIndex = -1;
   let decoding = false;
@@ -86,7 +81,7 @@ export function createDanceLayer(deps: LayerDeps): Layer {
     init = false;
     offset = [0, 0];
     ratio = 1;
-    size = moves ? [...moves.size] : [1080, 1920];
+    size = choreography ? [...choreography.size] : [1080, 1920];
     threshold = THRESHOLD_MIN_PX;
     movesIndex = 0;
     videoIndex = 0;
@@ -94,35 +89,52 @@ export function createDanceLayer(deps: LayerDeps): Layer {
     elapsedMs = 0;
   }
 
+  function finish(): void {
+    void deps.layers.stop('dance');
+    reset();
+  }
+
   return {
     async preload(): Promise<void> {
-      const movesUrl = deps.assetUrl('dance/dance02.json');
-      const refUrl = deps.assetUrl('dance/dance02.webp');
+      const referenceUrl = deps.asset('dance/dance02.webp');
       try {
-        const resp = await fetch(movesUrl);
-        moves = (await resp.json()) as Moves;
+        choreography = parseChoreography(await fetchOk(deps.asset('dance/dance02.json'), 'json'));
       } catch (err) {
-        deps.rt.log.warn('dance: failed to load moves', { err: String(err) });
+        deps.rt.log.warn('dance: failed to load the choreography', { err: String(err) });
       }
-      reference = await loadReference(refUrl).catch(() => null);
-      if (!reference) {
+      if (typeof ImageDecoder !== 'undefined') {
+        referenceData = await fetchOk(referenceUrl, 'arrayBuffer').catch(() => null);
+      }
+      if (!referenceData) {
         fallbackImg = new Image();
-        fallbackImg.src = refUrl;
+        fallbackImg.src = referenceUrl;
       }
     },
 
-    start(): void {
+    async start(): Promise<void> {
       reset();
+      if (!referenceData) return;
+      try {
+        const next = new ImageDecoder({ data: referenceData, type: 'image/webp' });
+        decoder = next;
+        await next.tracks.ready;
+        frameCount = next.tracks.selectedTrack?.frameCount ?? 1;
+      } catch (err) {
+        deps.rt.log.warn('dance: the reference animation can not be decoded', {
+          err: String(err),
+        });
+      }
     },
 
-    render(frame: FrameContext): void {
-      const { ctx } = frame;
-      update(frame.deltaMs);
+    render({ ctx, deltaMs }): void {
+      update(deltaMs);
       drawReference(ctx);
       drawHud(ctx);
     },
 
     stop(): void {
+      decoder?.close();
+      decoder = null;
       frameBitmap?.close();
       frameBitmap = null;
       decodedIndex = -1;
@@ -130,34 +142,29 @@ export function createDanceLayer(deps: LayerDeps): Layer {
   };
 
   function update(deltaMs: number): void {
-    if (!moves) return;
+    if (!choreography) return;
     const body = deps.feed.mirror.data.body_pose;
 
-    if (movesIndex >= moves.length - 5) {
-      deps.controller.stop('dance');
-      reset();
+    if (movesIndex >= choreography.length - END_MARGIN) {
+      finish();
       return;
     }
-    if (!body || body.length <= 0) return;
+    if (body.length === 0) return;
 
-    updateAnchor(body);
+    updateAnchor(body, choreography);
     if (!init) return;
 
     elapsedMs += deltaMs;
     if (elapsedMs > TIME_LIMIT_MS) {
-      deps.controller.stop('dance');
-      reset();
+      finish();
       return;
     }
 
-    const move = moves[String(movesIndex)];
+    const move = choreography.moves.get(movesIndex);
     if (move) {
-      // Translation-invariant pose comparison: expected joint positions are
-      // the current move's joints *relative to the current move's nose*,
-      // scaled to the user and anchored at the user's nose. Where the user
-      // stands is irrelevant; only the pose shape must match. (Anchoring at
-      // the choreography's frame-0 nose instead makes the reference dancer's
-      // own travel an error the user can never cancel out.)
+      // Expected joint positions are the move's joints relative to the move's
+      // nose, scaled to the user and anchored at the user's nose. Where the
+      // user stands doesn't matter; only the pose shape must match.
       const userNose = body[0];
       const moveNose = move[0];
       if (moveNose && isValid(userNose) && (userNose[3] ?? 1) >= MIN_JOINT_VISIBILITY) {
@@ -166,8 +173,7 @@ export function createDanceLayer(deps: LayerDeps): Layer {
         for (const idx of SCORED) {
           const v = move[idx];
           const b = body[idx];
-          if (!v || !isValid(b)) continue;
-          if ((b[3] ?? 1) < MIN_JOINT_VISIBILITY) continue;
+          if (!v || !isValid(b) || (b[3] ?? 1) < MIN_JOINT_VISIBILITY) continue;
           const ex = userNose[0]! + (v[1] - moveNose[1]) * ratio;
           const ey = userNose[1]! + (v[2] - moveNose[2]) * ratio;
           sum += dist(ex, ey, b[0]!, b[1]!);
@@ -185,73 +191,75 @@ export function createDanceLayer(deps: LayerDeps): Layer {
       movesIndex++;
     }
 
-    // Advance the reference animation one frame per tick toward the current
-    // move (legacy behavior) so the dancer animates smoothly instead of
-    // jumping.
+    // Step the reference animation one frame per tick toward the current move
+    // so the dancer animates smoothly instead of jumping.
     if (movesIndex > videoIndex) videoIndex++;
   }
 
   /**
-   * Continuously (re)fit the video->mirror anchor from the user's nose/hip,
-   * smoothed so the reference dancer doesn't jitter. Also derives the
-   * body-scale-relative pass threshold.
+   * Re-fits the video-to-mirror anchor from the user's nose and hip, smoothed
+   * so the reference dancer doesn't jitter, and derives the body-size-relative
+   * pass threshold.
    */
-  function updateAnchor(body: number[][]): void {
-    const move0 = moves?.['0'];
-    if (!move0) return;
+  function updateAnchor(body: readonly Landmark[], dance: Choreography): void {
+    const move0 = dance.moves.get(0);
+    const videoNose = move0?.[0];
+    const videoHip = move0?.[23];
     const mirrorNose = body[0];
     const mirrorHip = body[24];
-    if (!isValid(mirrorNose) || !isValid(mirrorHip)) return;
+    if (!videoNose || !videoHip || !isValid(mirrorNose) || !isValid(mirrorHip)) return;
     if ((mirrorNose[3] ?? 1) < MIN_JOINT_VISIBILITY || (mirrorHip[3] ?? 1) < MIN_JOINT_VISIBILITY) {
       return;
     }
-    const videoNose = move0[0]!;
-    const videoHip = move0[23]!;
-    const mirrorDist = dist(mirrorNose[0]!, mirrorNose[1]!, mirrorHip[0]!, mirrorHip[1]!);
-    const videoDist = dist(videoNose[1], videoNose[2], videoHip[1], videoHip[2]);
-    if (mirrorDist <= 0 || videoDist <= 0) return;
+    const fit = fitNoseHip(
+      [mirrorNose[0]!, mirrorNose[1]!],
+      [mirrorHip[0]!, mirrorHip[1]!],
+      [videoNose[1], videoNose[2]],
+      [videoHip[1], videoHip[2]],
+    );
+    if (!fit) return;
 
-    const targetRatio = mirrorDist / videoDist;
-    const targetOffX = mirrorNose[0]! - videoNose[1] * targetRatio;
-    const targetOffY = mirrorNose[1]! - videoNose[2] * targetRatio;
     if (!init) {
       init = true;
-      ratio = targetRatio;
-      offset = [targetOffX, targetOffY];
+      ratio = fit.ratio;
+      offset = [fit.offsetX, fit.offsetY];
     } else {
-      ratio += (targetRatio - ratio) * ANCHOR_LERP;
-      offset[0] += (targetOffX - offset[0]) * ANCHOR_LERP;
-      offset[1] += (targetOffY - offset[1]) * ANCHOR_LERP;
+      ratio += (fit.ratio - ratio) * ANCHOR_LERP;
+      offset[0] += (fit.offsetX - offset[0]) * ANCHOR_LERP;
+      offset[1] += (fit.offsetY - offset[1]) * ANCHOR_LERP;
     }
-    size = [moves!.size[0] * ratio, moves!.size[1] * ratio];
+    size = [dance.size[0] * ratio, dance.size[1] * ratio];
+    const mirrorSpan = dist(mirrorNose[0]!, mirrorNose[1]!, mirrorHip[0]!, mirrorHip[1]!);
     threshold = Math.min(
       THRESHOLD_MAX_PX,
-      Math.max(THRESHOLD_MIN_PX, mirrorDist * THRESHOLD_RATIO),
+      Math.max(THRESHOLD_MIN_PX, mirrorSpan * THRESHOLD_RATIO),
     );
   }
 
   function drawReference(ctx: CanvasRenderingContext2D): void {
-    if (reference) {
-      ensureFrame(videoIndex);
+    if (decoder) {
+      requestFrame(decoder, videoIndex);
       if (frameBitmap) ctx.drawImage(frameBitmap, offset[0], offset[1], size[0], size[1]);
-    } else if (fallbackImg && fallbackImg.complete && fallbackImg.naturalWidth > 0) {
+    } else if (fallbackImg?.complete && fallbackImg.naturalWidth > 0) {
       ctx.drawImage(fallbackImg, offset[0], offset[1], size[0], size[1]);
     }
   }
 
-  function ensureFrame(index: number): void {
-    if (!reference || decoding) return;
-    const clamped = Math.max(0, Math.min(index, reference.frameCount - 1));
-    if (clamped === decodedIndex) return;
+  function requestFrame(active: ImageDecoder, index: number): void {
+    const clamped = Math.max(0, Math.min(index, frameCount - 1));
+    if (decoding || clamped === decodedIndex) return;
     decoding = true;
-    void reference
-      .decode(clamped)
-      .then((bmp) => {
-        if (bmp) {
-          frameBitmap?.close();
-          frameBitmap = bmp;
-          decodedIndex = clamped;
+    void decodeFrame(active, clamped)
+      .then((bitmap) => {
+        // The layer stopped while decoding: this bitmap belongs to nobody.
+        if (decoder !== active) {
+          bitmap?.close();
+          return;
         }
+        if (!bitmap) return;
+        frameBitmap?.close();
+        frameBitmap = bitmap;
+        decodedIndex = clamped;
       })
       .finally(() => {
         decoding = false;
@@ -270,67 +278,61 @@ export function createDanceLayer(deps: LayerDeps): Layer {
       barHeight,
       diff < threshold ? 'rgb(166,216,84)' : 'rgb(215,25,28)',
     );
-    strokeLine(
-      ctx,
-      60,
-      REF_HEIGHT - 50 - 3 * threshold,
-      100,
-      REF_HEIGHT - 50 - 3 * threshold,
-      2,
-      '#fff',
-    );
+    const thresholdY = REF_HEIGHT - 50 - 3 * threshold;
+    strokeLine(ctx, 60, thresholdY, 100, thresholdY, 2, '#fff');
 
-    // Countdown ring.
-    ctx.save();
-    ctx.translate(80, 180);
-    ctx.rotate(-Math.PI / 2);
-    const sweep = (1 - elapsedMs / TIME_LIMIT_MS) * Math.PI * 2;
-    ctx.strokeStyle = '#fff';
-    ctx.fillStyle = '#fff';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.arc(0, 0, 30, 0, sweep);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
+    drawProgressRing(ctx, 80, 180, 30, 1 - elapsedMs / TIME_LIMIT_MS, {
+      color: '#fff',
+      fill: true,
+    });
   }
 }
 
-async function loadReference(url: string): Promise<ReferenceFrames | null> {
-  const Decoder = (globalThis as unknown as { ImageDecoder?: unknown }).ImageDecoder as
-    | (new (init: { data: ArrayBuffer; type: string }) => {
-        tracks: { ready: Promise<void>; selectedTrack?: { frameCount: number } };
-        decode(opts: { frameIndex: number }): Promise<{ image: { close?: () => void } }>;
-      })
-    | undefined;
-  if (!Decoder) return null;
+async function decodeFrame(decoder: ImageDecoder, frameIndex: number): Promise<ImageBitmap | null> {
   try {
-    const resp = await fetch(url);
-    const buf = await resp.arrayBuffer();
-    const dec = new Decoder({ data: buf, type: 'image/webp' });
-    await dec.tracks.ready;
-    const frameCount = dec.tracks.selectedTrack?.frameCount ?? 1;
-    return {
-      frameCount,
-      async decode(index: number): Promise<ImageBitmap | null> {
-        try {
-          const { image } = await dec.decode({
-            frameIndex: Math.max(0, Math.min(index, frameCount - 1)),
-          });
-          const bmp = await createImageBitmap(image as unknown as ImageBitmapSource);
-          image.close?.();
-          return bmp;
-        } catch {
-          return null;
-        }
-      },
-    };
+    const { image } = await decoder.decode({ frameIndex });
+    try {
+      return await createImageBitmap(image);
+    } finally {
+      image.close();
+    }
   } catch {
     return null;
   }
 }
 
-function dist(x1: number, y1: number, x2: number, y2: number): number {
-  return Math.hypot(x1 - x2, y1 - y2);
+async function fetchOk(url: string, as: 'json'): Promise<unknown>;
+async function fetchOk(url: string, as: 'arrayBuffer'): Promise<ArrayBuffer>;
+async function fetchOk(url: string, as: 'json' | 'arrayBuffer'): Promise<unknown> {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`${url}: HTTP ${resp.status}`);
+  return as === 'json' ? resp.json() : resp.arrayBuffer();
+}
+
+/** Reads `dance02.json`: moves keyed by index, plus `size` and `length`. */
+function parseChoreography(value: unknown): Choreography {
+  if (typeof value !== 'object' || value === null) throw new Error('not an object');
+  const moves = new Map<number, Move>();
+  let size: readonly [number, number] = [1080, 1920];
+  let length = 0;
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === 'size' && isNumbers(entry, 2)) size = [entry[0]!, entry[1]!];
+    else if (key === 'length' && typeof entry === 'number') length = entry;
+    else if (/^\d+$/.test(key) && Array.isArray(entry)) {
+      const rows = entry.filter((row) => isNumbers(row, 3));
+      moves.set(
+        Number(key),
+        rows.map((row) => [row[0]!, row[1]!, row[2]!] as const),
+      );
+    }
+  }
+  return { moves, length, size };
+}
+
+function isNumbers(value: unknown, count: number): value is number[] {
+  return (
+    Array.isArray(value) &&
+    value.length >= count &&
+    value.slice(0, count).every((n) => typeof n === 'number')
+  );
 }

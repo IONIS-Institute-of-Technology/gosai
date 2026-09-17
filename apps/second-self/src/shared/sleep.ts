@@ -17,8 +17,8 @@
  * water ripples.
  *
  * The controller renders on top of every layer in reference space and tells
- * the compositor when it is fully dormant so layer rendering can be skipped
- * entirely while nobody is around.
+ * the compositor when it is fully dormant, so the layers can be suspended
+ * while nobody is around.
  */
 
 import type { SleepConfig } from './config.js';

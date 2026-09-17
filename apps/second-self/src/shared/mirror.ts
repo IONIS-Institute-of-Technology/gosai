@@ -7,11 +7,11 @@
  * 1080x1920 reference space as `[x, y, depth, visibility]`.
  */
 
-import { strokeLine } from './canvas.js';
+import { strokeLine } from './draw.js';
 import type { Landmark } from './types.js';
 
 /** Hand connections grouped by finger (21-point MediaPipe topology). */
-export const HAND_JUNCTIONS: ReadonlyArray<ReadonlyArray<readonly [number, number]>> = [
+const HAND_JUNCTIONS: ReadonlyArray<ReadonlyArray<readonly [number, number]>> = [
   [
     [0, 1],
     [0, 5],
@@ -50,7 +50,7 @@ export const HAND_JUNCTIONS: ReadonlyArray<ReadonlyArray<readonly [number, numbe
 ];
 
 /** Body connections grouped by head / mouth / torso+limbs (33-point topology). */
-export const BODY_JUNCTIONS: ReadonlyArray<ReadonlyArray<readonly [number, number]>> = [
+const BODY_JUNCTIONS: ReadonlyArray<ReadonlyArray<readonly [number, number]>> = [
   [
     [0, 1],
     [0, 4],
@@ -91,16 +91,16 @@ export const BODY_JUNCTIONS: ReadonlyArray<ReadonlyArray<readonly [number, numbe
 ];
 
 /** Body landmark indices belonging to the head (used to optionally hide it). */
-export const BODY_HEAD_INDICES: ReadonlySet<number> = new Set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+const BODY_HEAD_INDICES: ReadonlySet<number> = new Set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 /** Body landmark indices for hand/wrist detail (often hidden for a cleaner look). */
-export const BODY_WRIST_INDICES: ReadonlySet<number> = new Set([17, 18, 19, 20, 21, 22]);
+const BODY_WRIST_INDICES: ReadonlySet<number> = new Set([17, 18, 19, 20, 21, 22]);
 
 /**
  * Face-mesh polylines (lips, eyes, brows, oval). Each inner array is a flat
  * list of landmark indices arranged as repeated pairs, so consecutive pairs
  * (step of 2) form the polyline edges.
  */
-export const FACE_JUNCTIONS: ReadonlyArray<readonly number[]> = [
+const FACE_JUNCTIONS: ReadonlyArray<readonly number[]> = [
   // Lips.
   [
     61, 146, 146, 91, 91, 181, 181, 84, 84, 17, 17, 314, 314, 405, 405, 321, 321, 375, 375, 291, 61,

@@ -1,94 +1,40 @@
 /**
  * Shared types for the Second Self compositor and its layers.
  *
- * The reference resolution for all rendering is portrait 1080x1920 (the legacy
- * augmented-mirror display). The `pose_to_mirror` driver emits landmarks
- * already mapped into this space, so layers treat coordinates as absolute
- * reference-space pixels. The compositor scales the reference space to the
- * actual canvas size each frame.
+ * Every layer draws in a portrait 1080x1920 reference space (the augmented
+ * mirror display). The `pose_to_mirror` driver emits landmarks already mapped
+ * into this space, so layers treat coordinates as reference-space pixels. The
+ * compositor fits the reference space onto the window each frame.
  */
+
+import type { DriverEventData, Layer as SdkLayer } from '@gosai/sdk';
 
 export const REF_WIDTH = 1080;
 export const REF_HEIGHT = 1920;
 
 /**
- * A single landmark. The `pose_to_mirror` driver emits `[x, y, depth, vis]`;
- * raw `pose` data is `[x, y, vis]`. Accessors must tolerate both, so we keep
- * this as a numeric tuple with optional trailing components.
+ * A single landmark: `[x, y, depth, visibility]` from `pose_to_mirror`,
+ * `[x, y, visibility]` from raw `pose` data.
  */
 export type Landmark = number[];
 
-/** Payload emitted by the `pose_to_mirror` driver's `mirrored_data` event. */
-export interface MirroredData {
-  body_pose: Landmark[];
-  /** MediaPipe right hand (handedness pre-swapped upstream for mirror view). */
-  right_hand_pose: Landmark[];
-  left_hand_pose: Landmark[];
-  face_mesh: Landmark[];
-  /** Metric 3D body landmarks `[x, y, z, vis]` (meters), passed through. */
-  body_world_pose?: Landmark[];
-  ts?: number;
-}
+export type MirroredData = DriverEventData<'pose_to_mirror', 'mirrored_data'>;
+export type RawPoseData = DriverEventData<'pose', 'raw_data'>;
+export type FrequencyData = DriverEventData<'frequency_analysis', 'frequency'>;
+export type SignData = DriverEventData<'slr', 'new_sign'>;
 
-/**
- * Payload emitted by the `pose` driver's `raw_data` event: landmarks in the
- * camera frame's pixel space (unflipped, unsmoothed), plus metric 3D world
- * landmarks and the frame size. This is what the aria avatar consumes, exactly
- * like the legacy app (Kalidokit needs aspect-correct, unmirrored input).
- */
-export interface RawPoseData {
-  body_pose: Landmark[];
-  /** Hand keys follow the legacy swapped convention (see drivers README). */
-  right_hand_pose: Landmark[];
-  left_hand_pose: Landmark[];
-  face_mesh: Landmark[];
-  /** Metric 3D body landmarks `[x, y, z, vis]` (meters, hip-origin). */
-  body_world_pose: Landmark[];
-  frame_width: number;
-  frame_height: number;
-}
-
-/** Payload emitted by the `frequency_analysis` driver's `frequency` event. */
-export interface FrequencyData {
-  max_frequency: number;
-  amplitude: number;
-  rfft: number[];
-  blocksize?: number;
-  samplerate?: number;
-}
-
-/** Payload emitted by the `slr` driver's `new_sign` event. */
-export interface SignData {
-  guessed_sign: string;
-  probability: number;
-}
-
-/** Per-frame context handed to every active layer's `render`. */
+/** Per-frame context handed to every running layer's `render`. */
 export interface FrameContext {
-  /** Canvas 2D context, already transformed into 1080x1920 reference space. */
-  ctx: CanvasRenderingContext2D;
-  refWidth: number;
-  refHeight: number;
-  /** performance.now() timestamp of this frame. */
-  timestamp: number;
-  /** Milliseconds since the previous frame. */
-  deltaMs: number;
-  /** Frames since the experience started. */
-  frameCount: number;
+  /** Canvas 2D context, already transformed into the reference space. */
+  readonly ctx: CanvasRenderingContext2D;
+  /** `performance.now()` timestamp of this frame. */
+  readonly timestamp: number;
+  /** Milliseconds since the previous frame, capped by the runtime. */
+  readonly deltaMs: number;
 }
 
 /**
- * A layer is a self-contained visual module. Layers never own a canvas; they
- * draw into the shared reference-space context provided each frame and read
- * real-time data from the shared {@link MirrorFeed}.
+ * A self-contained visual module. Layers draw into the shared reference-space
+ * context and read real-time data from the shared `MirrorFeed`.
  */
-export interface Layer {
-  /** Optional async preload (load images/fonts/JSON). */
-  preload?(): Promise<void>;
-  /** Called when the layer becomes active. */
-  start?(): void | Promise<void>;
-  /** Called every frame while active. */
-  render(frame: FrameContext): void;
-  /** Called when deactivated. Must release any listeners/resources. */
-  stop?(): void;
-}
+export type Layer = SdkLayer<FrameContext>;

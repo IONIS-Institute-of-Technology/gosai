@@ -1,149 +1,160 @@
 /**
- * Music Training: sing/play to match a falling score.
+ * Music Training: sing or play to match a falling score.
  *
- * Ports the legacy `music_training` app (components/music_training.js). The
- * dominant microphone pitch (from the `frequency_analysis` feed) places a
- * cursor on a piano-key strip. "Play La Vie En Rose" both plays the melody via
- * the shared {@link Synth} and spawns falling target notes; matching them with
- * your voice earns score.
+ * The dominant microphone pitch (from the `frequency_analysis` feed) places a
+ * cursor on a piano-key strip. "Play La Vie En Rose" plays the melody on the
+ * shared {@link Synth} and sends the same notes up the screen; keeping the
+ * cursor on a note as it crosses the strip earns score. Notes move by elapsed
+ * time, in step with the synth's clock-based schedule.
  */
 
-import { drawText, strokeLine } from '../shared/canvas.js';
 import type { LayerDeps } from '../shared/deps.js';
-import { fillRect, strokeRect } from '../shared/canvas.js';
+import { drawText, strokeLine } from '../shared/draw.js';
 import {
+  drawKeyboard,
   freqToKey,
+  LA_VIE_EN_ROSE,
   MUSICAL_ELEMENTS,
   noteDurationSec,
   scoreToNotes,
-  SCORES,
+  type Score,
 } from '../shared/music.js';
 import { ParticleSystem } from '../shared/particles.js';
-import { REF_HEIGHT, type FrameContext, type Layer } from '../shared/types.js';
+import { REF_HEIGHT, type Layer } from '../shared/types.js';
 
+const SLUG = 'music-training';
 const GAP = 10;
 const SHIFT = 180;
 const CURSOR_Y = 200;
-const NOTE_SPEED = 5; // px per frame (legacy ~60fps reference).
+/** How fast notes rise, in px/s. */
+const NOTE_SPEED = 300;
+/** Score points per second of matching, one per frame of the legacy 60 fps loop. */
+const POINTS_PER_S = 60;
+/** How close the cursor must be to a note, in px. */
+const MATCH_PX = 6;
+/** The `frequency_analysis` amplitude a sound needs to move the cursor. */
 const AMP_GATE = 2;
+const PARTICLE_LIFE_MS = 5000;
+const PARTICLES_PER_S = 20;
+const CYAN = { r: 0, g: 191, b: 255 };
 
-interface FallingNote {
-  x: number;
+export interface FallingNote {
+  readonly x: number;
+  /** Top of the note; it rises as time passes. */
   y: number;
-  distance: number;
-  score: number;
-  scored: boolean;
+  /** Length in px, proportional to the note's duration. */
+  readonly length: number;
+}
+
+const keyToPx = (key: number): number =>
+  (key + Math.floor((key - 4) / 12) + Math.floor((key - 9) / 12)) * GAP - SHIFT;
+
+/** The notes of a score laid out below the screen, one after the other. */
+export function layoutNotes(score: Score): FallingNote[] {
+  let y = REF_HEIGHT;
+  return score.notes.map(([name = '', durationName = '']) => {
+    const key = MUSICAL_ELEMENTS.notes_key[name];
+    const note = {
+      x: key === undefined ? 0 : keyToPx(key),
+      y,
+      length: noteDurationSec(score, durationName) * NOTE_SPEED,
+    };
+    y += note.length;
+    return note;
+  });
+}
+
+/**
+ * Moves the notes up by `deltaMs` and drops the ones that left the screen.
+ * Returns the points earned: notes that reached the strip score while the
+ * cursor sits on them. A `cursorX` of null means no pitch is detected.
+ */
+export function advanceNotes(
+  notes: FallingNote[],
+  deltaMs: number,
+  cursorX: number | null,
+): number {
+  let points = 0;
+  for (let i = notes.length - 1; i >= 0; i--) {
+    const note = notes[i]!;
+    note.y -= (NOTE_SPEED * deltaMs) / 1000;
+    if (note.y < CURSOR_Y && matches(note, cursorX)) points += (POINTS_PER_S * deltaMs) / 1000;
+    if (note.y + note.length < 0) notes.splice(i, 1);
+  }
+  return points;
+}
+
+function matches(note: FallingNote, cursorX: number | null): boolean {
+  return cursorX !== null && Math.abs(note.x - cursorX) < MATCH_PX;
 }
 
 export function createMusicTrainingLayer(deps: LayerDeps): Layer {
-  const particles = new ParticleSystem(300);
-  let fallingNotes: FallingNote[] = [];
-  let totalScore = 0;
-  let cursorX = 0;
-  const unsubscribes: Array<() => void> = [];
+  const particles = new ParticleSystem(PARTICLE_LIFE_MS);
+  let notes: FallingNote[] = [];
+  let score = 0;
+  let unsubscribes: Array<() => void> = [];
 
-  const keyToPxl = (key: number): number =>
-    (key + Math.floor((key - 4) / 12) + Math.floor((key - 9) / 12)) * GAP - SHIFT;
-
-  function spawnTutorial(): void {
-    const score = SCORES.laVieEnRose!;
-    const notes: FallingNote[] = [];
-    let lineY = REF_HEIGHT;
-    for (const [name, durName] of score.notes) {
-      const dur = noteDurationSec(score, durName, MUSICAL_ELEMENTS);
-      const distance = dur * NOTE_SPEED * 60;
-      const key = MUSICAL_ELEMENTS.notes_key[name];
-      const x = key === undefined ? 0 : keyToPxl(key);
-      notes.push({ x, y: lineY, distance, score: 0, scored: false });
-      lineY += distance;
-    }
-    fallingNotes = notes;
-    totalScore = 0;
+  function stopTutorial(): void {
+    deps.synth.stopScore();
+    notes = [];
   }
 
   return {
     start(): void {
       particles.clear();
-      fallingNotes = [];
-      totalScore = 0;
-      cursorX = 0;
-      unsubscribes.push(
-        deps.controller.onOption('music-training', 'Play La Vie En Rose', () => {
-          deps.synth.playScore(scoreToNotes(SCORES.laVieEnRose!, MUSICAL_ELEMENTS, 0.5));
-          spawnTutorial();
+      notes = [];
+      score = 0;
+      unsubscribes = [
+        deps.options.onTrigger(SLUG, 'Play La Vie En Rose', () => {
+          deps.synth.playScore(scoreToNotes(LA_VIE_EN_ROSE, 0.5));
+          notes = layoutNotes(LA_VIE_EN_ROSE);
+          score = 0;
         }),
-        deps.controller.onOption('music-training', 'Stop', () => {
-          deps.synth.stopScore();
-          fallingNotes = [];
-        }),
-      );
+        deps.options.onTrigger(SLUG, 'Stop', stopTutorial),
+      ];
     },
 
-    render(frame: FrameContext): void {
-      const { ctx } = frame;
-      const showBars = deps.controller.getOption('music-training', 'Show bars');
-      if (showBars) drawBars(ctx, keyToPxl);
+    render({ ctx, deltaMs }): void {
+      if (deps.options.get(SLUG, 'Show bars')) {
+        drawKeyboard(ctx, keyToPx, {
+          y: CURSOR_Y,
+          whiteWidth: GAP * 2.2,
+          whiteHeight: 250,
+          blackWidth: GAP * 1.2,
+          blackHeight: 200,
+        });
+      }
 
-      const f = deps.feed.frequency.data;
-      if (f.max_frequency > 30 && f.amplitude > AMP_GATE) {
-        const key = freqToKey(f.max_frequency);
-        cursorX = keyToPxl(key);
+      const { max_frequency, amplitude } = deps.feed.frequency.data;
+      const cursorX =
+        max_frequency > 30 && amplitude > AMP_GATE ? keyToPx(freqToKey(max_frequency)) : null;
+      if (cursorX !== null) {
         ctx.fillStyle = 'rgb(0,191,255)';
         ctx.beginPath();
         ctx.arc(cursorX, CURSOR_Y, 8, 0, Math.PI * 2);
         ctx.fill();
-        if (Math.floor(Math.random() * 3) === 0)
-          particles.add(cursorX, CURSOR_Y, { r: 0, g: 191, b: 255 });
-      } else {
-        cursorX = 0;
+        particles.emit(cursorX, CURSOR_Y, CYAN, PARTICLES_PER_S, deltaMs);
       }
-      particles.run(ctx);
+      particles.run(ctx, deltaMs);
 
-      updateFallingNotes(ctx);
-
-      if (fallingNotes.length > 0) {
-        drawText(ctx, `Score: ${totalScore}`, 50, 120, 40, '#fff', 'left', 'middle');
+      score += advanceNotes(notes, deltaMs, cursorX);
+      for (const note of notes) {
+        const color = matches(note, cursorX) ? 'rgb(80,255,120)' : 'rgb(170,170,170)';
+        strokeLine(ctx, note.x, note.y, note.x, note.y + note.length, 5, color);
+      }
+      if (notes.length > 0) {
+        drawText(ctx, `Score: ${Math.floor(score)}`, 50, 120, 40, '#fff', 'left', 'middle');
       }
     },
+
+    // The score can't pause in step with the synth, so sleep ends the tutorial.
+    suspend: stopTutorial,
 
     stop(): void {
-      for (const u of unsubscribes) u();
-      unsubscribes.length = 0;
-      deps.synth.stopScore();
+      for (const unsubscribe of unsubscribes) unsubscribe();
+      unsubscribes = [];
+      stopTutorial();
       particles.clear();
-      fallingNotes = [];
     },
   };
-
-  function updateFallingNotes(ctx: CanvasRenderingContext2D): void {
-    for (let i = fallingNotes.length - 1; i >= 0; i--) {
-      const n = fallingNotes[i]!;
-      n.y -= NOTE_SPEED;
-      const validating = Math.abs(n.x - cursorX) < 6 && cursorX !== 0;
-      if (n.y < CURSOR_Y && !n.scored && validating) {
-        n.score += 1;
-        totalScore += 1;
-      }
-      const color = validating ? 'rgb(80,255,120)' : 'rgb(170,170,170)';
-      strokeLine(ctx, n.x, n.y, n.x, n.y + n.distance, 5, color);
-      if (n.y + n.distance < 0) fallingNotes.splice(i, 1);
-    }
-  }
-}
-
-function drawBars(ctx: CanvasRenderingContext2D, keyToPxl: (k: number) => number): void {
-  const keys = MUSICAL_ELEMENTS.notes_key;
-  for (const note of Object.keys(keys)) {
-    if (note.includes('#') || keys[note]! < 0) continue;
-    const x = keyToPxl(keys[note]!);
-    const w = GAP * 2.2;
-    fillRect(ctx, x - w / 2, CURSOR_Y, w, 250, 'rgba(255,255,255,0.9)');
-    strokeRect(ctx, x - w / 2, CURSOR_Y, w, 250, 2, '#000');
-  }
-  for (const note of Object.keys(keys)) {
-    if (!note.includes('#')) continue;
-    const x = keyToPxl(keys[note]!);
-    const w = GAP * 1.2;
-    fillRect(ctx, x - w / 2, CURSOR_Y, w, 200, 'rgb(16,16,16)');
-  }
 }
