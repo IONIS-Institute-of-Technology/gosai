@@ -1,13 +1,13 @@
 /**
- * System monitor. Samples process-level metrics periodically and forwards
- * performance samples emitted by drivers to clients.
+ * System monitor. Samples OS-wide CPU and memory usage periodically and
+ * publishes them as `system:stats`.
  */
 
 import { cpus, freemem, totalmem, uptime } from 'node:os';
-import type { PerformanceSample, SystemStats } from '@gosai/shared';
+import type { SystemStats } from '@gosai/shared';
 import { ServerEvents } from '@gosai/shared/events';
-import type { EventBus } from '../ipc/index.js';
-import type { ChildLogger } from '../logger/index.js';
+import type { EventBus } from '../ipc/bus.js';
+import type { ChildLogger } from '../logger/logger.js';
 
 export interface SystemMonitorOptions {
   readonly bus: EventBus;
@@ -16,7 +16,6 @@ export interface SystemMonitorOptions {
 }
 
 const DEFAULT_INTERVAL_MS = 2000;
-const MAX_RECENT_SAMPLES = 200;
 
 interface CpuSnapshot {
   readonly idle: number;
@@ -26,19 +25,8 @@ interface CpuSnapshot {
 export class SystemMonitor {
   private timer: ReturnType<typeof setInterval> | null = null;
   private lastCpu: CpuSnapshot | null = null;
-  private readonly recentPerformance: PerformanceSample[] = [];
-  private readonly perfUnsubscribe: () => void;
 
-  constructor(private readonly options: SystemMonitorOptions) {
-    this.perfUnsubscribe = options.bus.on(ServerEvents.PerformanceSample, (_event, payload) => {
-      if (this.isPerformanceSample(payload)) {
-        this.recentPerformance.push(payload);
-        if (this.recentPerformance.length > MAX_RECENT_SAMPLES) {
-          this.recentPerformance.shift();
-        }
-      }
-    });
-  }
+  constructor(private readonly options: SystemMonitorOptions) {}
 
   start(): void {
     if (this.timer) return;
@@ -52,18 +40,12 @@ export class SystemMonitor {
       clearInterval(this.timer);
       this.timer = null;
     }
-    this.perfUnsubscribe();
-  }
-
-  recentSamples(): readonly PerformanceSample[] {
-    return this.recentPerformance.slice();
   }
 
   private sample(): void {
     try {
-      const cpu = this.cpuPercent();
       const stats: SystemStats = {
-        cpuPercent: cpu,
+        cpuPercent: this.cpuPercent(),
         memoryBytes: totalmem() - freemem(),
         memoryTotalBytes: totalmem(),
         uptimeMs: Math.floor(uptime() * 1000),
@@ -76,27 +58,13 @@ export class SystemMonitor {
 
   private cpuPercent(): number {
     const next = aggregateCpu();
-    if (!this.lastCpu) {
-      this.lastCpu = next;
-      return 0;
-    }
-    const idleDelta = next.idle - this.lastCpu.idle;
-    const totalDelta = next.total - this.lastCpu.total;
+    const last = this.lastCpu;
     this.lastCpu = next;
+    if (!last) return 0;
+    const idleDelta = next.idle - last.idle;
+    const totalDelta = next.total - last.total;
     if (totalDelta <= 0) return 0;
     return Math.max(0, Math.min(100, ((totalDelta - idleDelta) / totalDelta) * 100));
-  }
-
-  private isPerformanceSample(value: unknown): value is PerformanceSample {
-    if (typeof value !== 'object' || value === null) return false;
-    const v = value as Record<string, unknown>;
-    return (
-      typeof v.source === 'string' &&
-      typeof v.type === 'string' &&
-      typeof v.metric === 'string' &&
-      typeof v.value === 'number' &&
-      typeof v.timestamp === 'number'
-    );
   }
 }
 

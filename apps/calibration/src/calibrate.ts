@@ -19,7 +19,6 @@ import {
   type CalibrationRole,
   type CalibrationStepContext,
   type ExperienceRuntimeContext,
-  type InstalledApp,
 } from '@gosai/sdk';
 import { detectRole } from './shared.js';
 import {
@@ -55,7 +54,7 @@ export default defineExperience<State>({
   async start(rt, state) {
     const targetAppSlug = detectTargetAppSlug();
     const { definition, statusKey } = await loadTargetCalibration(rt, targetAppSlug);
-    const targetStorage = createStorageClient(targetAppSlug, rt.app.server, rt.app.serverBaseUrl);
+    const targetStorage = createStorageClient(targetAppSlug, rt.app.server);
     const context: CalibrationStepContext = {
       rt,
       role: state.role,
@@ -127,7 +126,7 @@ async function loadTargetCalibration(
   rt: ExperienceRuntimeContext,
   targetAppSlug: string,
 ): Promise<{ definition: CalibrationDefinition; statusKey: string }> {
-  const apps = await rt.app.server.request<{ apps: InstalledApp[] }>('apps:list');
+  const apps = await rt.app.server.request('apps:list');
   const target = apps.apps.find((app) => app.manifest.slug === targetAppSlug);
   if (!target) throw new Error(`Calibration target app ${targetAppSlug} is not installed`);
 

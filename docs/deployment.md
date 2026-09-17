@@ -100,8 +100,8 @@ When the packaged app launches, desktop and kiosk alike:
    an upgrade), or when no launch used it for 30 days. Runtimes of other
    apps or other extras stay until then.
 3. It starts the embedded server on `127.0.0.1` with an ephemeral port (the
-   OS picks a free one) and hands that port to its windows. The port is also
-   written to `<GOSAI_HOME>/server-info.json`.
+   OS picks a free one) and hands that port to its windows. The server
+   prints the port on its `GOSAI_READY` line.
 4. The dashboard (or, in a kiosk, the app) opens.
 
 If the Python runtime can't be installed, GOSAI still starts and says so: a
@@ -179,9 +179,11 @@ re-pointed without rebuilding:
 | `--kiosk-calibrate`           | `GOSAI_KIOSK_CALIBRATE=1`   | Force the calibration wizard on this launch       |
 
 Device assignments (which camera / microphone / resolution the app uses)
-live in `<home>/apps/<slug>/_config/settings.json` and persist across
+live in `<home>/data/<slug>/device-settings.json` and persist across
 launches. App key/value storage (calibration profiles, ...) is under
-`<home>/apps/<slug>/_data/`; logs under `<home>/logs/`.
+`<home>/data/<slug>/storage/`; logs under `<home>/logs/`. The server moves data
+from the old `<home>/apps/<slug>/_data` and `_config` locations on its first
+start, and uninstalling an app keeps its data.
 
 ### Calibration
 
@@ -202,7 +204,7 @@ are packaged together with the built-in calibration runner. On the kiosk:
   The wizard runs first, then the app starts as usual. Subsequent normal
   launches reuse the new profile.
 
-The profile lives in `<home>/apps/<slug>/_data/`, so wiping the data
+The profile lives in `<home>/data/<slug>/storage/`, so wiping the data
 directory also clears calibration.
 
 For unattended operation, a systemd user unit keeps the kiosk alive. With

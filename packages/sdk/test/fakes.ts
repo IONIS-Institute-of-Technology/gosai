@@ -7,9 +7,19 @@ export interface SentRequest {
   readonly payload: unknown;
 }
 
-/** In-memory server connection that records requests and listeners. */
-export class FakeServer implements ServerConnection {
+type Resource = { acquire(): Promise<void>; release(): Promise<void> };
+
+/**
+ * In-memory server connection that records requests and listeners. Its
+ * methods are untyped; `connection` hands it to code that wants the typed
+ * `ServerConnection`.
+ */
+export class FakeServer {
   readonly requests: SentRequest[] = [];
+  readonly authToken = undefined;
+  readonly serverInfo = null;
+  private readonly holds = new Map<string, { count: number; resource: Resource }>();
+  private readonly errorListeners = new Set<(error: unknown, context: string) => void>();
   readonly listeners = new Map<string, Set<(payload: unknown) => void>>();
   closed = false;
   /** Returns the reply for a request, or throws to reject it. */
@@ -36,6 +46,41 @@ export class FakeServer implements ServerConnection {
 
   onStatus(): () => void {
     return () => undefined;
+  }
+
+  onError(listener: (error: unknown, context: string) => void): () => void {
+    this.errorListeners.add(listener);
+    return () => this.errorListeners.delete(listener);
+  }
+
+  /** Shares one acquisition per key, like ServerClient, without reconnects. */
+  retain(key: string, resource: Resource): { ready: Promise<void>; release(): void } {
+    const existing = this.holds.get(key);
+    if (existing) existing.count += 1;
+    else this.holds.set(key, { count: 1, resource });
+    const ready = existing ? Promise.resolve() : resource.acquire();
+    ready.catch((err: unknown) => this.reportError(err, `acquiring ${key}`));
+    let released = false;
+    return {
+      ready,
+      release: () => {
+        const hold = this.holds.get(key);
+        if (released || !hold) return;
+        released = true;
+        hold.count -= 1;
+        if (hold.count > 0) return;
+        this.holds.delete(key);
+        void hold.resource.release().catch(() => undefined);
+      },
+    };
+  }
+
+  reportError(error: unknown, context: string): void {
+    for (const listener of this.errorListeners) listener(error, context);
+  }
+
+  get connection(): ServerConnection & { close(): void } {
+    return this as unknown as ServerConnection & { close(): void };
   }
 
   close(): void {

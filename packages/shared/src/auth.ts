@@ -14,7 +14,7 @@
  */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { assertSlug, isValidSlug } from './slug.js';
+import { assertSlug, isReservedSlug, isValidSlug } from './slug.js';
 
 export type TokenScope =
   | { readonly kind: 'dashboard' }
@@ -38,7 +38,10 @@ export function mintAppToken(
   appSlug: string,
   extraSlugs: readonly string[] = [],
 ): string {
-  const slugs = [...new Set([appSlug, ...extraSlugs])].map((slug) => assertSlug(slug, 'app slug'));
+  const slugs = [...new Set([appSlug, ...extraSlugs])].map((slug) => {
+    if (isReservedSlug(slug)) throw new Error(`${slug} is reserved and can't be an app slug`);
+    return assertSlug(slug, 'app slug');
+  });
   const body = slugs.join('+');
   return `${APP_PREFIX}.${body}.${sign(dashboardToken, body)}`;
 }
@@ -58,7 +61,9 @@ export function verifyToken(
 
   const slugs = body.split('+');
   const [appSlug] = slugs;
-  if (appSlug === undefined || !slugs.every(isValidSlug)) return null;
+  if (appSlug === undefined || !slugs.every((s) => isValidSlug(s) && !isReservedSlug(s))) {
+    return null;
+  }
   return { kind: 'app', appSlug, slugs };
 }
 

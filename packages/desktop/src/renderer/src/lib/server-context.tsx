@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { ServerClient, type ConnectionStatus } from './server-client.js';
+import { ServerClient, type ConnectionStatus } from '@gosai/shared/client';
+import type { EventPayload } from '@gosai/shared/protocol';
 import { SERVER_TOKEN, SERVER_WS_URL } from './server-url.js';
 
 const DEFAULT_URL = SERVER_WS_URL;
@@ -40,10 +41,10 @@ export function useServer(): ServerContextValue {
   return ctx;
 }
 
-export function useServerEvent<T = unknown>(event: string, listener: (payload: T) => void): void {
+export function useServerEvent<E extends string>(
+  event: E,
+  listener: (payload: EventPayload<E>) => void,
+): void {
   const { client } = useServer();
-  useEffect(() => {
-    const off = client.on(event, (payload) => listener(payload as T));
-    return off;
-  }, [client, event, listener]);
+  useEffect(() => client.on(event, listener), [client, event, listener]);
 }

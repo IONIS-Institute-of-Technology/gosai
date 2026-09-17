@@ -7,6 +7,7 @@
 
 export { defineExperience } from './experience.js';
 export type {
+  AppConfigClient,
   AppContext,
   AppEventsClient,
   AppEventsSubscription,
@@ -24,6 +25,7 @@ export type {
   StorageClient,
   // Manifest and server state shapes apps read.
   AppCalibrationSchema,
+  AppDeviceSettings,
   AppManifest,
   AppRequirements,
   AppSettingsField,

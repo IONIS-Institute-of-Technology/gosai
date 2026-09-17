@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { AppSettingsField, AppSettingsSchema, InstalledApp } from '@gosai/shared';
-import { SERVER_BASE_URL, serverHeaders } from '../../lib/server-url.js';
+import type {
+  AppSettingValue,
+  AppSettingsField,
+  AppSettingsSchema,
+  AppSettingsValues,
+  InstalledApp,
+} from '@gosai/shared';
+import { getSettingValue } from '@gosai/shared/app-settings';
+import { isNotConnectedError } from '@gosai/shared/client';
+import { useServer } from '../../lib/server-context.js';
 
-type SettingValue = string | number | boolean;
-type ConfigObject = Record<string, unknown>;
+/** Unsaved edits by field key. `null` restores the field's default. */
+type Changes = Record<string, AppSettingValue | null>;
 
 interface AppSettingsModalProps {
   app: InstalledApp;
@@ -13,18 +21,19 @@ interface AppSettingsModalProps {
 
 /**
  * Generic settings editor rendered from an app's declarative
- * {@link AppSettingsSchema}. Loads the current config object from the app's
- * key/value storage, lets the user edit each declared field, and writes the
- * merged object back. Field keys are dotted paths into the config object.
+ * {@link AppSettingsSchema}. Loads the app's settings merged with their
+ * defaults, lets the user edit each declared field, and saves the edited
+ * fields; the server checks each value against its field.
  */
 export function AppSettingsModal({
   app,
   schema,
   onClose,
 }: AppSettingsModalProps): React.ReactElement {
+  const { client } = useServer();
   const slug = app.manifest.slug;
-  const storageKey = schema.storageKey ?? 'config';
-  const [config, setConfig] = useState<ConfigObject>({});
+  const [values, setValues] = useState<AppSettingsValues>({});
+  const [changes, setChanges] = useState<Changes>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -34,18 +43,14 @@ export function AppSettingsModal({
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(
-        `${SERVER_BASE_URL}/v1/apps/${slug}/storage/${encodeURIComponent(storageKey)}`,
-        { headers: serverHeaders() },
-      );
-      const stored = res.status === 200 ? ((await res.json()) as ConfigObject) : {};
-      setConfig(stored && typeof stored === 'object' ? stored : {});
+      setValues(await client.request('app:settings:get', { appSlug: slug }));
+      setChanges({});
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (!isNotConnectedError(err)) setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
-  }, [slug, storageKey]);
+  }, [client, slug]);
 
   useEffect(() => {
     void load();
@@ -60,24 +65,22 @@ export function AppSettingsModal({
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  const setField = (key: string, value: SettingValue): void => {
-    setConfig((prev) => setPath(prev, key, value));
+  const setField = (key: string, value: AppSettingValue): void => {
+    setChanges((prev) => ({ ...prev, [key]: value }));
     setSaved(false);
+  };
+
+  const valueOf = (field: AppSettingsField): unknown => {
+    if (!Object.hasOwn(changes, field.key)) return getSettingValue(values, field.key);
+    return changes[field.key] ?? field.default;
   };
 
   const save = async (): Promise<void> => {
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch(
-        `${SERVER_BASE_URL}/v1/apps/${slug}/storage/${encodeURIComponent(storageKey)}`,
-        {
-          method: 'POST',
-          headers: serverHeaders({ 'content-type': 'application/json' }),
-          body: JSON.stringify(config),
-        },
-      );
-      if (!res.ok) throw new Error(`save failed (${res.status})`);
+      setValues(await client.request('app:settings:set', { appSlug: slug, values: changes }));
+      setChanges({});
       setSaved(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -87,13 +90,11 @@ export function AppSettingsModal({
   };
 
   const resetDefaults = (): void => {
-    let next: ConfigObject = {};
+    const next: Changes = {};
     for (const group of schema.groups) {
-      for (const field of group.fields) {
-        if (field.default !== undefined) next = setPath(next, field.key, field.default);
-      }
+      for (const field of group.fields) next[field.key] = null;
     }
-    setConfig(next);
+    setChanges(next);
     setSaved(false);
   };
 
@@ -143,7 +144,7 @@ export function AppSettingsModal({
                   <FieldRow
                     key={field.key}
                     field={field}
-                    value={getPath(config, field.key) ?? field.default}
+                    value={valueOf(field)}
                     onChange={(v) => setField(field.key, v)}
                   />
                 ))}
@@ -194,7 +195,7 @@ function FieldRow({
 }: {
   field: AppSettingsField;
   value: unknown;
-  onChange: (v: SettingValue) => void;
+  onChange: (v: AppSettingValue) => void;
 }): React.ReactElement {
   return (
     <label className="flex items-start justify-between gap-4">
@@ -219,7 +220,7 @@ function FieldInput({
 }: {
   field: AppSettingsField;
   value: unknown;
-  onChange: (v: SettingValue) => void;
+  onChange: (v: AppSettingValue) => void;
 }): React.ReactElement {
   const inputClass =
     'rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm text-neutral-100 focus:border-neutral-500 focus:outline-none';
@@ -270,32 +271,4 @@ function FieldInput({
       className={`${inputClass} w-40`}
     />
   );
-}
-
-// ── Dotted-path helpers ────────────────────────────────────────────────────
-
-function getPath(obj: ConfigObject, path: string): unknown {
-  let cur: unknown = obj;
-  for (const part of path.split('.')) {
-    if (typeof cur !== 'object' || cur === null) return undefined;
-    cur = (cur as ConfigObject)[part];
-  }
-  return cur;
-}
-
-/** Immutably set a dotted path, cloning objects along the way. */
-function setPath(obj: ConfigObject, path: string, value: SettingValue): ConfigObject {
-  const parts = path.split('.');
-  const root: ConfigObject = { ...obj };
-  let cur = root;
-  for (let i = 0; i < parts.length - 1; i++) {
-    const part = parts[i]!;
-    const existing = cur[part];
-    const next: ConfigObject =
-      typeof existing === 'object' && existing !== null ? { ...(existing as ConfigObject) } : {};
-    cur[part] = next;
-    cur = next;
-  }
-  cur[parts[parts.length - 1]!] = value;
-  return root;
 }

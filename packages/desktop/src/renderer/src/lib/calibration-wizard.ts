@@ -1,5 +1,5 @@
 import type { AppDeviceSettings, DisplayMode } from '@gosai/shared';
-import type { ServerClient } from './server-client.js';
+import type { ServerClient } from '@gosai/shared/client';
 
 export const CALIBRATION_SLUG = 'calibration';
 
@@ -67,9 +67,9 @@ export async function runCalibrationWizard(client: ServerClient, targetApp: stri
   };
 
   const offStep = client.on(`app:${appSlug}:wizard:step`, async (payload) => {
-    const data = payload as { step?: string };
-    if (!data?.step) return;
-    if (data.step === 'background') {
+    const step = (payload as { step?: unknown } | null)?.step;
+    if (typeof step !== 'string') return;
+    if (step === 'background') {
       try {
         await api.controlWindow.hide(control.windowId);
       } catch {
@@ -104,7 +104,7 @@ export async function pickDisplay(
   if (displays.length <= 1) return primary;
 
   try {
-    const config = (await client.request('config:get')) as { displayId?: number | null };
+    const config = await client.request('config:get');
     if (config.displayId != null) {
       const match = displays.find((d) => d.id === config.displayId);
       if (match) return match;
@@ -129,7 +129,7 @@ export async function pickDisplayForApp(
 
   let settings: AppDeviceSettings = {};
   try {
-    settings = (await client.request('app:config:get', { appSlug })) as AppDeviceSettings;
+    settings = await client.request('app:config:get', { appSlug });
   } catch {
     // No per-app settings yet.
   }

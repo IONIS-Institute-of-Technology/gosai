@@ -22,7 +22,7 @@ function environment(overrides: Partial<RuntimeEnvironment> = {}): {
 } {
   const server = new FakeServer();
   const frames = new FakeFrames();
-  return { server, frames, env: { server, frames, ...overrides } };
+  return { server, frames, env: { server: server.connection, frames, ...overrides } };
 }
 
 function errorLogs(server: FakeServer): string[] {

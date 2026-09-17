@@ -10,8 +10,8 @@ import {
 import { join } from 'node:path';
 import { appHostname } from '@gosai/shared/app-origin';
 import { mintAppToken } from '@gosai/shared/auth';
+import { ServerClient } from '@gosai/shared/client';
 import { IPC_CHANNELS } from './channels.js';
-import { reportUnauthorized } from './server-auth.js';
 
 interface WindowRegistryOptions {
   readonly rootDir: string;
@@ -94,13 +94,15 @@ export class WindowRegistry {
   private shuttingDown = false;
   private serverHost = '127.0.0.1';
   private serverPort = 7777;
+  /** Created on first use, so the dashboard token only goes to a known server address. */
+  private client: ServerClient | null = null;
 
   constructor(private readonly options: WindowRegistryOptions) {}
 
   /**
-   * Points every window opened from now on at the given server. Called with
-   * the embedded server's ephemeral port, or the port of a server started
-   * separately in development.
+   * Points every window opened from now on, and main's own connection, at the
+   * given server. Called with the embedded server's ephemeral port, or the
+   * port of a server started separately in development.
    */
   setServerAddress(addr: { host: string; port: number }): void {
     this.serverHost = addr.host;
@@ -111,6 +113,24 @@ export class WindowRegistry {
           '<slug>.localhost, which resolves to loopback; they will not reach it',
       );
     }
+    this.client?.close();
+    this.client = null;
+  }
+
+  /** Main's connection to the server, with the dashboard token. */
+  get server(): ServerClient {
+    this.client ??= this.connectClient();
+    return this.client;
+  }
+
+  private connectClient(): ServerClient {
+    const client = new ServerClient({
+      url: `ws://${this.serverHost}:${this.serverPort}/ws`,
+      token: this.options.dashboardToken,
+    });
+    client.onError((err, context) => console.error(`[gosai-desktop] ${context} failed`, err));
+    client.connect();
+    return client;
   }
 
   get serverBaseUrl(): string {
@@ -531,16 +551,15 @@ export class WindowRegistry {
 
   private stopExperienceOnServer(appSlug: string, experienceSlug: string): void {
     if (this.shuttingDown) return;
-    void fetch(`${this.serverBaseUrl}/v1/experiences/stop`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${this.options.dashboardToken}`,
-      },
-      body: JSON.stringify({ appSlug, experienceSlug }),
-    })
-      .then((res) => reportUnauthorized(res.status))
-      .catch(() => undefined);
+    const client = this.server;
+    void (async () => {
+      try {
+        await client.ready(5_000);
+        await client.request('experience:stop', { appSlug, experienceSlug });
+      } catch (err) {
+        console.error(`[gosai-desktop] could not stop ${appSlug}/${experienceSlug}`, err);
+      }
+    })();
   }
 
   private notifyExperienceEnded(appSlug: string, experienceSlug: string): void {

@@ -1,12 +1,25 @@
 import { describe, expect, test } from 'bun:test';
 import { mintAppToken, verifyToken, type TokenScope } from '@gosai/shared/auth';
 import { assertSlug, isValidSlug } from '@gosai/shared/slug';
-import { canSubscribe, commandDenial } from '../src/access/policy.js';
+import {
+  ALL_CAPABILITIES,
+  CAPABILITY_INFO,
+  DEFAULT_APP_CAPABILITIES,
+  type Capability,
+} from '@gosai/shared/capabilities';
+import { COMMANDS } from '@gosai/shared/commands';
+import type { CommandName } from '@gosai/shared/protocol';
+import {
+  canReceive,
+  commandDenial,
+  grantFor,
+  subscriptionDenial,
+  type Grant,
+} from '../src/access/capabilities.js';
 import { readBearerToken, RequestGuard } from '../src/access/request-guard.js';
 
 const SECRET = 'dashboard-secret';
 const DASHBOARD: TokenScope = { kind: 'dashboard' };
-const POOL: TokenScope = { kind: 'app', appSlug: 'pool', slugs: ['pool'] };
 
 describe('tokens', () => {
   test('the dashboard token has the dashboard scope', () => {
@@ -36,6 +49,9 @@ describe('tokens', () => {
   test('refuses to mint tokens for invalid slugs', () => {
     expect(() => mintAppToken(SECRET, '../x')).toThrow();
     expect(() => mintAppToken(SECRET, 'pool', ['a+b'])).toThrow();
+    // `system` is the dashboard's driver binding.
+    expect(() => mintAppToken(SECRET, 'system')).toThrow('reserved');
+    expect(() => mintAppToken(SECRET, 'pool', ['system'])).toThrow('reserved');
   });
 });
 
@@ -58,66 +74,171 @@ describe('slug validation', () => {
   });
 });
 
-describe('command policy', () => {
-  test('the dashboard may run everything', () => {
-    expect(commandDenial(DASHBOARD, 'app:install', { source: 'x' })).toBeNull();
-    expect(commandDenial(DASHBOARD, 'driver:execute', { driver: 'camera' })).toBeNull();
+describe('capabilities', () => {
+  const manifests: Record<string, readonly Capability[]> = {
+    pool: [],
+    logger: ['logs:read', 'app-config:write'],
+    greedy: ['apps:manage', 'config:write', 'devices:read'],
+  };
+  const grant = (scope: TokenScope): Grant => grantFor(scope, (slug) => manifests[slug]);
+  const app = (slug: string, extra: string[] = []): Grant =>
+    grant({ kind: 'app', appSlug: slug, slugs: [slug, ...extra] });
+  const DASH = grant(DASHBOARD);
+  const POOL_GRANT = app('pool');
+
+  test('the dashboard holds every capability', () => {
+    expect([...DASH.capabilities].sort()).toEqual([...ALL_CAPABILITIES].sort());
   });
 
-  test('apps may not install, uninstall or change the global config', () => {
-    expect(commandDenial(POOL, 'app:install', { source: 'x' })).not.toBeNull();
-    expect(commandDenial(POOL, 'app:uninstall', { slug: 'pool' })).not.toBeNull();
-    expect(commandDenial(POOL, 'config:set', {})).not.toBeNull();
-    expect(commandDenial(POOL, 'config:get', {})).toBeNull();
-    expect(commandDenial(POOL, 'apps:list', {})).toBeNull();
+  test('apps get the defaults plus what their manifest requests, never dashboard-only ones', () => {
+    expect([...POOL_GRANT.capabilities].sort()).toEqual([...DEFAULT_APP_CAPABILITIES].sort());
+    expect(app('logger').capabilities.has('logs:read')).toBe(true);
+    expect(app('logger').capabilities.has('app-config:write')).toBe(true);
+    const greedy = app('greedy');
+    expect(greedy.capabilities.has('devices:read')).toBe(true);
+    expect(greedy.capabilities.has('apps:manage')).toBe(false);
+    expect(greedy.capabilities.has('config:write')).toBe(false);
+    // An app whose manifest can't be found still gets the defaults.
+    expect(app('ghost').capabilities.size).toBe(DEFAULT_APP_CAPABILITIES.length);
   });
 
-  test('apps only touch their own settings, events and drivers', () => {
-    expect(commandDenial(POOL, 'app:config:get', { appSlug: 'pool' })).toBeNull();
-    expect(commandDenial(POOL, 'app:config:set', { appSlug: 'other' })).not.toBeNull();
-    expect(commandDenial(POOL, 'app:broadcast', { appSlug: 'other', topic: 't' })).not.toBeNull();
-    expect(commandDenial(POOL, 'driver:execute', { driver: 'd', binding: 'pool' })).toBeNull();
+  test('every command declares a capability, and dashboard-only ones stay with the dashboard', () => {
+    for (const [command, spec] of Object.entries(COMMANDS)) {
+      if (spec.capability !== null) expect(CAPABILITY_INFO[spec.capability]).toBeDefined();
+      expect(commandDenial(DASH, command as CommandName, payloadFor(command))).toBeNull();
+    }
+    expect(commandDenial(POOL_GRANT, 'app:install', { source: 'x' })).toContain('apps:manage');
+    expect(commandDenial(POOL_GRANT, 'app:uninstall', { slug: 'pool' })).toContain('apps:manage');
+    expect(commandDenial(POOL_GRANT, 'config:set', {})).toContain('config:write');
+    expect(commandDenial(POOL_GRANT, 'config:get', {})).toBeNull();
+    expect(commandDenial(POOL_GRANT, 'apps:list', {})).toBeNull();
+    expect(commandDenial(POOL_GRANT, 'system:ping', {})).toBeNull();
+  });
+
+  test('requestable capabilities need the manifest to ask for them', () => {
+    expect(commandDenial(POOL_GRANT, 'logs:history', {})).toContain('logs:read');
+    expect(commandDenial(app('logger'), 'logs:history', {})).toBeNull();
+    expect(commandDenial(POOL_GRANT, 'devices:list', {})).toContain('devices:read');
     expect(
-      commandDenial(POOL, 'driver:subscribe', { driver: 'd', binding: 'other' }),
+      commandDenial(POOL_GRANT, 'app:config:set', { appSlug: 'pool', settings: {} }),
+    ).toContain('app-config:write');
+    expect(
+      commandDenial(app('logger'), 'app:config:set', { appSlug: 'logger', settings: {} }),
+    ).toBeNull();
+  });
+
+  test('apps only touch their own settings, storage, events and drivers', () => {
+    expect(commandDenial(POOL_GRANT, 'app:config:get', { appSlug: 'pool' })).toBeNull();
+    expect(commandDenial(POOL_GRANT, 'app:config:get', { appSlug: 'other' })).not.toBeNull();
+    expect(commandDenial(POOL_GRANT, 'app:settings:get', { appSlug: 'other' })).not.toBeNull();
+    expect(commandDenial(POOL_GRANT, 'storage:get', { appSlug: 'pool', key: 'k' })).toBeNull();
+    expect(
+      commandDenial(POOL_GRANT, 'storage:set', { appSlug: 'other', key: 'k', value: 1 }),
     ).not.toBeNull();
-    // A missing binding means the dashboard's `system` binding.
-    expect(commandDenial(POOL, 'driver:get-data', { driver: 'd', event: 'e' })).not.toBeNull();
-    expect(commandDenial(POOL, 'driver:get-data', null)).not.toBeNull();
     expect(
-      commandDenial(POOL, 'experience:start', { appSlug: 'pool', experienceSlug: 'x' }),
+      commandDenial(POOL_GRANT, 'app:broadcast', { appSlug: 'other', topic: 't' }),
+    ).not.toBeNull();
+    expect(
+      commandDenial(POOL_GRANT, 'driver:execute', { driver: 'd', action: 'a', binding: 'pool' }),
     ).toBeNull();
     expect(
-      commandDenial(POOL, 'experience:start', {
+      commandDenial(POOL_GRANT, 'driver:subscribe', { driver: 'd', event: 'e', binding: 'other' }),
+    ).not.toBeNull();
+    // A missing binding means the dashboard's `system` binding.
+    expect(
+      commandDenial(POOL_GRANT, 'driver:get-data', { driver: 'd', event: 'e' }),
+    ).not.toBeNull();
+    expect(
+      commandDenial(POOL_GRANT, 'experience:start', { appSlug: 'pool', experienceSlug: 'x' }),
+    ).toBeNull();
+    expect(
+      commandDenial(POOL_GRANT, 'experience:start', {
         appSlug: 'pool',
         experienceSlug: 'x',
         driverBinding: 'other',
       }),
     ).not.toBeNull();
     expect(
-      commandDenial(POOL, 'experience:start', { appSlug: 'other', experienceSlug: 'x' }),
+      commandDenial(POOL_GRANT, 'experience:stop', { appSlug: 'other', experienceSlug: 'x' }),
     ).not.toBeNull();
-    expect(
-      commandDenial(POOL, 'experience:stop', { appSlug: 'pool', experienceSlug: 'x' }),
-    ).toBeNull();
-    expect(
-      commandDenial(POOL, 'experience:stop', { appSlug: 'other', experienceSlug: 'x' }),
-    ).not.toBeNull();
-    expect(commandDenial(POOL, 'experience:stop', {})).not.toBeNull();
   });
 
-  test("apps may not use wildcards or other apps' topics", () => {
-    expect(canSubscribe(DASHBOARD, '*')).toBe(true);
-    expect(canSubscribe(POOL, '*')).toBe(false);
-    expect(canSubscribe(POOL, 'driver:*')).toBe(false);
-    expect(canSubscribe(POOL, 'app:*')).toBe(false);
-    expect(canSubscribe(POOL, 'driver:event:pool')).toBe(true);
-    expect(canSubscribe(POOL, 'driver:event:other')).toBe(false);
-    expect(canSubscribe(POOL, 'app:pool:wizard:step')).toBe(true);
-    expect(canSubscribe(POOL, 'app:other:wizard:step')).toBe(false);
-    expect(canSubscribe(POOL, 'app:config-changed')).toBe(true);
-    expect(canSubscribe(POOL, 'server:log')).toBe(true);
+  test('a token that names extra apps reaches them', () => {
+    const calibration = app('calibration', ['pool']);
+    expect(
+      commandDenial(calibration, 'storage:set', { appSlug: 'pool', key: 'k', value: 1 }),
+    ).toBeNull();
+    expect(
+      commandDenial(calibration, 'experience:start', {
+        appSlug: 'calibration',
+        experienceSlug: 'calibrate',
+        driverBinding: 'pool',
+      }),
+    ).toBeNull();
+  });
+
+  test("apps never reach the dashboard's system binding", () => {
+    const forged = grant({ kind: 'app', appSlug: 'pool', slugs: ['pool', 'system'] });
+    expect(
+      commandDenial(forged, 'driver:execute', { driver: 'd', action: 'a', binding: 'system' }),
+    ).not.toBeNull();
+    expect(commandDenial(forged, 'driver:get-data', { driver: 'd', event: 'e' })).not.toBeNull();
+    expect(subscriptionDenial(forged, 'driver:event:system')).not.toBeNull();
+  });
+
+  test('apps log only under their own source', () => {
+    expect(
+      commandDenial(POOL_GRANT, 'app:log', { source: 'app:pool:main', message: 'm' }),
+    ).toBeNull();
+    expect(commandDenial(POOL_GRANT, 'app:log', { source: 'app:pool', message: 'm' })).toBeNull();
+    expect(
+      commandDenial(POOL_GRANT, 'app:log', { source: 'app:other:main', message: 'm' }),
+    ).not.toBeNull();
+    expect(commandDenial(POOL_GRANT, 'app:log', { source: 'server', message: 'm' })).not.toBeNull();
+    expect(commandDenial(DASH, 'app:log', { source: 'server', message: 'm' })).toBeNull();
+  });
+
+  test("apps may not use wildcards, other apps' topics or the server log", () => {
+    expect(subscriptionDenial(DASH, '*')).toBeNull();
+    expect(subscriptionDenial(POOL_GRANT, '*')).not.toBeNull();
+    expect(subscriptionDenial(POOL_GRANT, 'driver:*')).not.toBeNull();
+    expect(subscriptionDenial(POOL_GRANT, 'app:*')).not.toBeNull();
+    expect(subscriptionDenial(POOL_GRANT, 'driver:event:pool')).toBeNull();
+    expect(subscriptionDenial(POOL_GRANT, 'driver:event:other')).not.toBeNull();
+    expect(subscriptionDenial(POOL_GRANT, 'app:pool:wizard:step')).toBeNull();
+    expect(subscriptionDenial(POOL_GRANT, 'app:other:wizard:step')).not.toBeNull();
+    expect(subscriptionDenial(POOL_GRANT, 'app:config-changed')).toBeNull();
+    expect(subscriptionDenial(POOL_GRANT, 'experience:state-changed')).toBeNull();
+    expect(subscriptionDenial(POOL_GRANT, 'server:log')).toContain('logs:read');
+    expect(subscriptionDenial(app('logger'), 'server:log')).toBeNull();
+    expect(subscriptionDenial(DASH, 'no-such-event')).toBe('unknown event');
+  });
+
+  test("events about one app only reach that app's tokens", () => {
+    const changed = { appSlug: 'other', settings: {} };
+    expect(canReceive(DASH, 'app:config-changed', changed)).toBe(true);
+    expect(canReceive(POOL_GRANT, 'app:config-changed', changed)).toBe(false);
+    expect(canReceive(POOL_GRANT, 'app:config-changed', { ...changed, appSlug: 'pool' })).toBe(
+      true,
+    );
+    expect(canReceive(POOL_GRANT, 'server:log', {})).toBe(false);
+    expect(canReceive(POOL_GRANT, 'system:stats', {})).toBe(true);
   });
 });
+
+function payloadFor(command: string): never {
+  const payloads: Record<string, unknown> = {
+    'app:log': { source: 'app:pool', message: 'm' },
+    'experience:start': { appSlug: 'pool', experienceSlug: 'main' },
+  };
+  const payload = payloads[command] ?? {
+    appSlug: 'pool',
+    slug: 'pool',
+    binding: 'pool',
+    key: 'k',
+  };
+  return payload as never;
+}
 
 describe('request guard', () => {
   const guard = new RequestGuard({

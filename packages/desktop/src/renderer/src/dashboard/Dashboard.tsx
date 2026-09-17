@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import type { SystemStats } from '@gosai/shared';
 import { ServerProvider, useServer } from '../lib/server-context.js';
 import { AppsPanel } from './panels/AppsPanel.js';
 import { DriversPanel } from './panels/DriversPanel.js';
@@ -82,20 +83,10 @@ function PanelGate({ active }: { active: TabId }): React.ReactElement {
 
 function StatusBar(): React.ReactElement {
   const { status } = useServer();
-  const [systemStats, setSystemStats] = useState<{
-    cpuPercent: number;
-    memoryBytes: number;
-    memoryTotalBytes: number;
-    uptimeMs: number;
-  } | null>(null);
+  const [systemStats, setSystemStats] = useState<SystemStats | null>(null);
 
   const { client } = useServer();
-  useEffect(() => {
-    const off = client.on('system:stats', (payload) => {
-      setSystemStats(payload as typeof systemStats);
-    });
-    return off;
-  }, [client]);
+  useEffect(() => client.on('system:stats', setSystemStats), [client]);
 
   return (
     <footer className="flex items-center justify-between border-t border-neutral-800 bg-neutral-900/60 px-4 py-1.5 font-mono text-[11px] text-neutral-400">

@@ -1,5 +1,5 @@
 import type { RunningExperience } from '@gosai/shared';
-import type { ServerClient } from './server-client.js';
+import type { ServerClient } from '@gosai/shared/client';
 
 /** Stop an experience on the server and close all of its desktop windows. */
 export async function stopExperienceFully(

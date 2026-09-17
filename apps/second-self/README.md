@@ -123,9 +123,9 @@ distance (weak-perspective shoulder-span estimate, same math as
 between states.
 
 It lives in the app's key/value storage under `config` (edit via the app's
-**Settings** button in the dashboard, or `POST
-/v1/apps/second-self/storage/config` with
-`{ "projection": { "mode": "reflection" } }`).
+**Settings** button in the dashboard, or send the server's `app:settings:set`
+command with `{ "appSlug": "second-self", "values": { "projection.mode":
+"reflection" } }`).
 
 Everything else adapts by itself:
 

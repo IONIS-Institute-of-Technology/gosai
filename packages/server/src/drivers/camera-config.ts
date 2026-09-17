@@ -4,7 +4,7 @@ import type {
   GlobalConfig,
   MicrophoneSettings,
 } from '@gosai/shared';
-import type { ChildLogger } from '../logger/index.js';
+import type { ChildLogger } from '../logger/logger.js';
 import { SYSTEM_BINDING, type DriverManager } from './manager.js';
 
 /** Where device settings come from: the global config and per-app overrides. */
@@ -128,9 +128,14 @@ export async function applyAppDeviceSettings(
     await applyCameraSettings(drivers, binding, camera, log);
   }
 
-  if (next.microphone && drivers.isInstanceRunning(binding, 'microphone')) {
+  if (drivers.isInstanceRunning(binding, 'microphone')) {
     try {
-      await applyMicrophoneSettings(drivers, binding, next.microphone, previous.microphone);
+      await applyMicrophoneSettings(
+        drivers,
+        binding,
+        next.microphone ?? {},
+        previous.microphone ?? {},
+      );
     } catch (err) {
       log.warn('failed to apply microphone settings to running driver', {
         binding,
@@ -143,13 +148,15 @@ export async function applyAppDeviceSettings(
 async function applyMicrophoneSettings(
   drivers: DriverManager,
   binding: string,
-  next: MicrophoneSettings,
-  previous: MicrophoneSettings | undefined,
+  next: Partial<MicrophoneSettings>,
+  previous: Partial<MicrophoneSettings>,
 ): Promise<void> {
-  if (next.device !== previous?.device) {
-    await drivers.execute(binding, 'microphone', 'set_device', next.device);
+  // No device override means the system default.
+  const device = next.device ?? null;
+  if (device !== (previous.device ?? null)) {
+    await drivers.execute(binding, 'microphone', 'set_device', device);
   }
-  if (next.samplerate != null && next.samplerate !== previous?.samplerate) {
+  if (next.samplerate != null && next.samplerate !== previous.samplerate) {
     await drivers.execute(binding, 'microphone', 'set_samplerate', next.samplerate);
   }
 }

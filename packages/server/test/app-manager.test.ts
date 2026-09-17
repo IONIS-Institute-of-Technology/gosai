@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
@@ -141,7 +141,8 @@ describe('app manager', () => {
         'calibration failed to start',
       );
       expect(drivers.leases.size).toBe(0);
-      expect(manager.listRunningExperiences()[0]?.state).toBe('crashed');
+      // A failed start doesn't stay in the running list.
+      expect(manager.listRunningExperiences()).toEqual([]);
     }
 
     drivers.failing.clear();
@@ -151,6 +152,198 @@ describe('app manager', () => {
     await manager.stopExperience('pool', 'main');
     expect(drivers.leases.size).toBe(0);
     expect(manager.listRunningExperiences()).toEqual([]);
+  });
+});
+
+describe('app manager lifecycle', () => {
+  function manifestApp(dir: string, manifest: Record<string, unknown>): void {
+    const appDir = join(dir, String(manifest.slug));
+    mkdirSync(appDir, { recursive: true });
+    writeFileSync(join(appDir, 'gosai.app.json'), JSON.stringify(manifest));
+  }
+
+  function setup(): {
+    paths: ReturnType<typeof makePaths>;
+    drivers: StubDrivers;
+    bus: EventBus;
+    create(builtinAppsDir?: string): AppManager;
+  } {
+    const paths = makePaths();
+    const drivers = new StubDrivers();
+    const bus = new EventBus();
+    return {
+      paths,
+      drivers,
+      bus,
+      create: (builtinAppsDir) =>
+        new AppManager({
+          paths,
+          logger: new Logger({ logsDir: paths.logs }),
+          bus,
+          drivers: drivers as unknown as DriverManager,
+          ...(builtinAppsDir ? { builtinAppsDir } : {}),
+        }),
+    };
+  }
+
+  const chain = {
+    slug: 'pool',
+    name: 'Pool',
+    version: '1.0.0',
+    experiences: [
+      { slug: 'main', name: 'Main', entry: 'main.js', drivers: ['hand_pose'], required: ['base'] },
+      { slug: 'base', name: 'Base', entry: 'base.js', drivers: ['camera'] },
+    ],
+  };
+
+  test('starts required experiences first and rolls them back when the start fails', async () => {
+    const { paths, drivers, create } = setup();
+    manifestApp(paths.apps, chain);
+    const manager = create();
+
+    await manager.startExperience('pool', 'main');
+    expect(drivers.subscribes.map((c) => c.driver)).toEqual(['camera', 'hand_pose']);
+    expect(
+      manager
+        .listRunningExperiences()
+        .map((e) => e.experienceSlug)
+        .sort(),
+    ).toEqual(['base', 'main']);
+    await manager.stopExperience('pool', 'main');
+    await manager.stopExperience('pool', 'base');
+
+    drivers.failing.add('hand_pose');
+    await expect(manager.startExperience('pool', 'main')).rejects.toThrow('hand_pose');
+    expect(manager.listRunningExperiences()).toEqual([]);
+    expect(drivers.leases.size).toBe(0);
+  });
+
+  test('keeps a required experience that was already running when a start fails', async () => {
+    const { paths, drivers, create } = setup();
+    manifestApp(paths.apps, chain);
+    const manager = create();
+    await manager.startExperience('pool', 'base');
+    drivers.failing.add('hand_pose');
+    await expect(manager.startExperience('pool', 'main')).rejects.toThrow();
+    expect(manager.listRunningExperiences().map((e) => e.experienceSlug)).toEqual(['base']);
+  });
+
+  test('publishes a crashed state for a failed start', async () => {
+    const { paths, drivers, bus, create } = setup();
+    manifestApp(paths.apps, chain);
+    const manager = create();
+    const states: string[] = [];
+    bus.on('experience:state-changed', (_event, payload) => {
+      const state = payload as { experienceSlug: string; state: string };
+      states.push(`${state.experienceSlug}:${state.state}`);
+    });
+    drivers.failing.add('camera');
+    await expect(manager.startExperience('pool', 'base')).rejects.toThrow();
+    expect(states).toEqual(['base:starting', 'base:crashed']);
+    expect(manager.getApp('pool')?.state).toBe('crashed');
+  });
+
+  test('auto-starts the startup experiences, or the default one', async () => {
+    const { paths, create } = setup();
+    manifestApp(paths.apps, { ...chain, startup: ['base'] });
+    manifestApp(paths.apps, {
+      slug: 'other',
+      name: 'Other',
+      version: '1.0.0',
+      default: 'second',
+      experiences: [
+        { slug: 'first', name: 'First', entry: 'first.js' },
+        { slug: 'second', name: 'Second', entry: 'second.js' },
+      ],
+    });
+    const manager = create();
+    await manager.autoStart(['pool', 'other', 'ghost']);
+    expect(
+      manager
+        .listRunningExperiences()
+        .map((e) => `${e.appSlug}/${e.experienceSlug}`)
+        .sort(),
+    ).toEqual(['other/second', 'pool/base']);
+  });
+
+  test('marks apps built-in by where they were found, and keeps data on uninstall', async () => {
+    const { paths, create } = setup();
+    const builtin = join(paths.root, 'builtin');
+    manifestApp(builtin, { ...chain, slug: 'shipped' });
+    manifestApp(paths.apps, chain);
+    const manager = create(builtin);
+    expect(manager.getApp('shipped')?.builtin).toBe(true);
+    expect(manager.getApp('pool')).toMatchObject({ builtin: false, source: 'git' });
+    expect(manager.getApp('pool')).not.toHaveProperty('installPath');
+    await expect(manager.uninstall('shipped')).rejects.toThrow('built-in');
+
+    const dataFile = join(paths.data, 'pool', 'storage', 'score.json');
+    mkdirSync(join(paths.data, 'pool', 'storage'), { recursive: true });
+    writeFileSync(dataFile, '1');
+    expect(await manager.uninstall('pool')).toBe(false);
+    expect(existsSync(join(paths.apps, 'pool'))).toBe(false);
+    expect(existsSync(dataFile)).toBe(true);
+
+    manifestApp(paths.apps, chain);
+    manager.discover();
+    expect(await manager.uninstall('pool', { deleteData: true })).toBe(true);
+    expect(existsSync(join(paths.data, 'pool'))).toBe(false);
+  });
+
+  test('keeps the crashed state when a failed start rolls back its requirements', async () => {
+    const { paths, drivers, create } = setup();
+    manifestApp(paths.apps, chain);
+    const manager = create();
+    drivers.failing.add('hand_pose');
+    await expect(manager.startExperience('pool', 'main')).rejects.toThrow();
+    expect(manager.getApp('pool')?.state).toBe('crashed');
+    drivers.failing.clear();
+    await manager.startExperience('pool', 'base');
+    expect(manager.getApp('pool')?.state).toBe('running');
+  });
+
+  test('grants built-in apps their requested capabilities and installed apps only approved ones', () => {
+    const { paths, create } = setup();
+    const builtin = join(paths.root, 'builtin');
+    const requesting = { ...chain, capabilities: ['logs:read', 'devices:read'] };
+    manifestApp(builtin, { ...requesting, slug: 'shipped' });
+    manifestApp(paths.apps, requesting);
+    const manager = create(builtin);
+    expect(manager.grantedCapabilities('shipped')).toEqual(['logs:read', 'devices:read']);
+    expect(manager.grantedCapabilities('pool')).toEqual([]);
+
+    // Approving something the manifest doesn't request grants nothing extra.
+    const approved = manager.approveCapabilities('pool', ['devices:read', 'app-config:write']);
+    expect(approved.grantedCapabilities).toEqual(['devices:read']);
+    expect(manager.grantedCapabilities('pool')).toEqual(['devices:read']);
+    expect(() => manager.approveCapabilities('shipped', [])).toThrow('Built-in');
+    // The approval survives a restart.
+    expect(create(builtin).grantedCapabilities('pool')).toEqual(['devices:read']);
+  });
+
+  test('lists apps with an invalid manifest and can still uninstall them', async () => {
+    const { paths } = setup();
+    manifestApp(paths.apps, { ...chain, slug: 'broken', experiences: [] });
+    manifestApp(paths.apps, { ...chain, builtin: false, homepage: 'https://example.com' });
+    const logger = new Logger({ logsDir: paths.logs });
+    const bus = new EventBus();
+    const manager = new AppManager({
+      paths,
+      logger,
+      bus,
+      drivers: new StubDrivers() as unknown as DriverManager,
+    });
+    // Old and unknown fields only warn.
+    expect(manager.getApp('pool')).toBeDefined();
+    expect(logger.history().some((entry) => entry.message.includes('homepage'))).toBe(true);
+
+    expect(manager.getApp('broken')).toBeUndefined();
+    expect(manager.listInvalidApps()).toEqual([
+      { slug: 'broken', builtin: false, error: expect.stringContaining('experiences') },
+    ]);
+    expect(await manager.uninstall('broken')).toBe(false);
+    expect(existsSync(join(paths.apps, 'broken'))).toBe(false);
+    expect(manager.listInvalidApps()).toEqual([]);
   });
 });
 

@@ -1,4 +1,5 @@
 {
+  "$schema": "../../packages/shared/schemas/gosai.app.schema.json",
   "slug": "interactive-pool",
   "name": "Interactive Pool",
   "version": "1.0.0",

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { formatLogData, type LogEntry, type LogLevel } from '@gosai/shared';
+import { formatLogEntry, type LogEntry, type LogLevel } from '@gosai/shared';
 import { useServer } from '../../lib/server-context.js';
 import { Panel } from '../components/Panel.js';
 
@@ -30,7 +30,7 @@ export function LogsPanel(): React.ReactElement {
     if (status !== 'connected') return;
     void (async () => {
       try {
-        const history = (await client.request('logs:history')) as { logs: LogEntry[] };
+        const history = await client.request('logs:history');
         setLogs(history.logs);
       } catch {
         // ignore
@@ -39,7 +39,7 @@ export function LogsPanel(): React.ReactElement {
   }, [client, status]);
 
   useEffect(() => {
-    const off = client.on('server:log', (payload) => append(payload as LogEntry));
+    const off = client.on('server:log', append);
     return off;
   }, [client, append]);
 
@@ -54,11 +54,11 @@ export function LogsPanel(): React.ReactElement {
     return logs.filter((entry) => {
       if (level !== 'all' && entry.level !== level) return false;
       if (!text) return true;
-      const dataText = entry.data ? formatLogData(entry.data).toLowerCase() : '';
+      const formatted = formatLogEntry(entry);
       return (
         entry.source.toLowerCase().includes(text) ||
-        entry.message.toLowerCase().includes(text) ||
-        dataText.includes(text)
+        formatted.message.toLowerCase().includes(text) ||
+        (formatted.details ?? '').toLowerCase().includes(text)
       );
     });
   }, [logs, level, filter]);
@@ -119,12 +119,7 @@ export function LogsPanel(): React.ReactElement {
                   {entry.source}
                 </td>
                 <td className="px-2 py-0.5 text-neutral-300">
-                  <div className="whitespace-pre-wrap break-words">{entry.message}</div>
-                  {entry.data && Object.keys(entry.data).length > 0 ? (
-                    <pre className="mt-0.5 whitespace-pre-wrap break-words text-neutral-500">
-                      {formatLogData(entry.data)}
-                    </pre>
-                  ) : null}
+                  <LogMessage entry={entry} />
                 </td>
               </tr>
             ))}
@@ -133,6 +128,18 @@ export function LogsPanel(): React.ReactElement {
         <div ref={tailRef} />
       </div>
     </div>
+  );
+}
+
+function LogMessage({ entry }: { entry: LogEntry }): React.ReactElement {
+  const { message, details } = formatLogEntry(entry);
+  return (
+    <>
+      <div className="whitespace-pre-wrap break-words">{message}</div>
+      {details ? (
+        <pre className="mt-0.5 whitespace-pre-wrap break-words text-neutral-500">{details}</pre>
+      ) : null}
+    </>
   );
 }
 

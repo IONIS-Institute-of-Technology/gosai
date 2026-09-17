@@ -22,8 +22,8 @@ export { bootAppHost, browserAppHostEnvironment, readLaunchParams } from './app-
 export { appHostname, appSlugFromHostname } from '@gosai/shared/app-origin';
 export type { AppHostControl, AppHostEnvironment, LaunchParams } from './app-host-page.js';
 
-export { ServerClient } from './connection.js';
-export type { ConnectionStatus, ServerClientOptions } from './connection.js';
+export { ServerClient } from '@gosai/shared/client';
+export type { ConnectionStatus, ServerClientOptions } from '@gosai/shared/client';
 
 export type { SettingsBackend } from './settings.js';
 

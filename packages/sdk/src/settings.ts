@@ -1,26 +1,21 @@
 /**
- * App settings declared by the manifest `settings` schema. The dashboard
- * stores the values as one nested object under the schema's storage key.
+ * App settings declared by the manifest `settings` schema. The server stores
+ * them as one nested object and answers `app:settings:get` with the stored
+ * values merged over the manifest defaults.
  */
 
-import type { AppSettingsSchema } from '@gosai/shared';
-import type { SettingsClient, StorageClient } from './types.js';
+import type { AppSettingValue } from '@gosai/shared';
+import type { ServerConnection, SettingsClient } from './types.js';
 
 type SettingsObject = Record<string, unknown>;
 
-/**
- * Where settings come from. Today the SDK merges stored values over the
- * manifest defaults itself; a server command that returns the merged
- * settings can implement this interface instead.
- */
+/** Where settings come from. The runtime uses the server's `app:settings:*` commands. */
 export interface SettingsBackend {
   /** Current settings with the manifest defaults applied. */
   load(): Promise<SettingsObject>;
   /** Stores values by dotted key on top of what is already stored. */
   update(values: Readonly<Record<string, unknown>>): Promise<void>;
 }
-
-export const DEFAULT_SETTINGS_STORAGE_KEY = 'config';
 
 export function createSettingsClient(backend: SettingsBackend): SettingsClient {
   return {
@@ -29,59 +24,34 @@ export function createSettingsClient(backend: SettingsBackend): SettingsClient {
   };
 }
 
-/** Settings backed by app storage and the schema's defaults. */
-export function storageSettingsBackend(
-  schema: AppSettingsSchema | undefined,
-  storage: StorageClient,
-): SettingsBackend {
-  const key = schema?.storageKey ?? DEFAULT_SETTINGS_STORAGE_KEY;
-  const readStored = async (): Promise<SettingsObject> => {
-    const stored = await storage.get<unknown>(key);
-    return isPlainObject(stored) ? stored : {};
-  };
+/**
+ * Settings backed by the server, which merges the manifest defaults in and
+ * checks each value against its declared field.
+ */
+export function serverSettingsBackend(appSlug: string, server: ServerConnection): SettingsBackend {
   return {
-    load: async () => mergeSettings(settingsDefaults(schema), await readStored()),
+    load: async () => ({ ...(await server.request('app:settings:get', { appSlug })) }),
     update: async (values) => {
-      let next = await readStored();
-      for (const [path, value] of Object.entries(values)) next = setPath(next, path, value);
-      await storage.set(key, next);
+      await server.request('app:settings:set', { appSlug, values: settingValues(values) });
     },
   };
 }
 
-/** The schema's field defaults as a nested object. */
-export function settingsDefaults(schema: AppSettingsSchema | undefined): SettingsObject {
-  let defaults: SettingsObject = {};
-  for (const group of schema?.groups ?? []) {
-    for (const field of group.fields) {
-      if (field.default !== undefined) defaults = setPath(defaults, field.key, field.default);
+/** Checks the values are ones a setting can hold; `null` restores a default. */
+function settingValues(
+  values: Readonly<Record<string, unknown>>,
+): Record<string, AppSettingValue | null> {
+  const out: Record<string, AppSettingValue | null> = {};
+  for (const [key, value] of Object.entries(values)) {
+    if (
+      value !== null &&
+      typeof value !== 'string' &&
+      typeof value !== 'number' &&
+      typeof value !== 'boolean'
+    ) {
+      throw new TypeError(`setting ${key} must be a string, number, boolean or null`);
     }
-  }
-  return defaults;
-}
-
-/**
- * Deep-merges `stored` over `defaults` into a new object. Nested objects
- * merge key by key; any other stored value replaces the default.
- */
-export function mergeSettings(defaults: SettingsObject, stored: SettingsObject): SettingsObject {
-  const out: SettingsObject = { ...defaults };
-  for (const [key, value] of Object.entries(stored)) {
-    const base = out[key];
-    out[key] = isPlainObject(base) && isPlainObject(value) ? mergeSettings(base, value) : value;
+    out[key] = value;
   }
   return out;
-}
-
-/** Returns a copy of `target` with `value` written at a dotted `path`. */
-function setPath(target: SettingsObject, path: string, value: unknown): SettingsObject {
-  const [head, ...rest] = path.split('.');
-  if (head === undefined || head === '') return target;
-  if (rest.length === 0) return { ...target, [head]: value };
-  const child = target[head];
-  return { ...target, [head]: setPath(isPlainObject(child) ? child : {}, rest.join('.'), value) };
-}
-
-function isPlainObject(value: unknown): value is SettingsObject {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

@@ -1,66 +1,45 @@
 import type { ServerConnection, StorageClient } from './types.js';
 
+/**
+ * Storage for `appSlug`, such as a calibration target's. The third argument,
+ * a server base URL from when storage went over HTTP, is ignored.
+ */
 export function createStorageClient(
   appSlug: string,
   server: ServerConnection,
-  baseUrl: string,
+  _baseUrl?: string,
 ): StorageClient {
-  return new StorageClientImpl(appSlug, server, baseUrl);
+  return new StorageClientImpl(appSlug, server);
 }
 
 /**
- * App-scoped key/value store. Backed by REST endpoints on the server:
- * `GET/POST/DELETE /v1/apps/<slug>/storage/<key>`, authorized with the
- * connection's token.
- *
- * Keys are normalised to safe filename characters by the server. Values are
- * stored as JSON; only JSON-serializable values are supported.
+ * App-scoped key/value store, backed by the server's `storage:*` commands.
+ * Values are stored as JSON; only JSON-serializable values are supported.
+ * Keys use letters, digits, `.`, `_` and `-`.
  */
 export class StorageClientImpl implements StorageClient {
   constructor(
     private readonly appSlug: string,
     private readonly server: ServerConnection,
-    private readonly baseUrl: string,
   ) {}
 
   get<T = unknown>(key: string): Promise<T | undefined>;
   get<T>(key: string, fallback: T): Promise<T>;
   async get<T>(key: string, fallback?: T): Promise<T | undefined> {
-    const res = await fetch(this.keyUrl(key), { headers: this.headers() });
-    if (res.status === 404) return fallback;
-    if (!res.ok) throw new Error(`storage.get(${key}) -> ${res.status}`);
-    return (await res.json()) as T;
+    const stored = await this.server.request('storage:get', { appSlug: this.appSlug, key });
+    return stored.found ? (stored.value as T) : fallback;
   }
 
   async set(key: string, value: unknown): Promise<void> {
-    const res = await fetch(this.keyUrl(key), {
-      method: 'POST',
-      headers: this.headers({ 'content-type': 'application/json' }),
-      body: JSON.stringify(value),
-    });
-    if (!res.ok) throw new Error(`storage.set(${key}) -> ${res.status}`);
+    await this.server.request('storage:set', { appSlug: this.appSlug, key, value });
   }
 
   async remove(key: string): Promise<void> {
-    const res = await fetch(this.keyUrl(key), { method: 'DELETE', headers: this.headers() });
-    if (!res.ok && res.status !== 404) throw new Error(`storage.remove(${key}) -> ${res.status}`);
+    await this.server.request('storage:remove', { appSlug: this.appSlug, key });
   }
 
   async list(): Promise<string[]> {
-    const res = await fetch(`${this.baseUrl}/v1/apps/${this.appSlug}/storage`, {
-      headers: this.headers(),
-    });
-    if (!res.ok) throw new Error(`storage.list -> ${res.status}`);
-    const data = (await res.json()) as { keys: string[] };
-    return data.keys;
-  }
-
-  private keyUrl(key: string): string {
-    return `${this.baseUrl}/v1/apps/${this.appSlug}/storage/${encodeURIComponent(key)}`;
-  }
-
-  private headers(extra: Record<string, string> = {}): Record<string, string> {
-    const token = this.server.authToken;
-    return token ? { ...extra, authorization: `Bearer ${token}` } : extra;
+    const { keys } = await this.server.request('storage:list', { appSlug: this.appSlug });
+    return keys;
   }
 }

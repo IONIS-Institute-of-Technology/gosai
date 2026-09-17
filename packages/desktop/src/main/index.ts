@@ -153,8 +153,8 @@ function main(): void {
     if (quitting) return;
     quitting = true;
     event.preventDefault();
-    // Suppress per-window POST /v1/experiences/stop; apps.shutdown() handles all
-    // experiences in a single call.
+    // Don't send experience:stop for each closing window; the server's
+    // shutdown stops every experience at once.
     windows.setShuttingDown();
     void (async () => {
       // Let running experiences stop before the server goes away.

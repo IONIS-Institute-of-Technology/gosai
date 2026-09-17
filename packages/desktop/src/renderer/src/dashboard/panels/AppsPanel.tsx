@@ -7,8 +7,8 @@ import type {
   CameraSettings,
   DeviceCatalog,
   DisplayMode,
-  GlobalConfig,
   InstalledApp,
+  InvalidApp,
   RunningExperience,
 } from '@gosai/shared';
 import {
@@ -18,11 +18,11 @@ import {
 } from '../../lib/calibration-wizard.js';
 import { stopAllAppExperiences, stopExperienceFully } from '../../lib/stop-experience.js';
 import { useServer } from '../../lib/server-context.js';
-import { isNotConnectedError } from '../../lib/server-client.js';
+import { isNotConnectedError, ServerRequestError } from '@gosai/shared/client';
 import { Panel } from '../components/Panel.js';
 import { EmptyState } from '../components/EmptyState.jsx';
 import { AppSettingsModal } from '../components/AppSettingsModal.js';
-import { SERVER_BASE_URL, serverHeaders } from '../../lib/server-url.js';
+import { SERVER_BASE_URL } from '../../lib/server-url.js';
 
 const DEFAULT_CALIBRATION_STATUS_KEY = 'calibration_status';
 
@@ -53,6 +53,7 @@ type CalStatus = 'unknown' | 'calibrated' | 'required';
 export function AppsPanel(): React.ReactElement {
   const { client, status } = useServer();
   const [apps, setApps] = useState<InstalledApp[]>([]);
+  const [invalidApps, setInvalidApps] = useState<InvalidApp[]>([]);
   const [running, setRunning] = useState<RunningExperience[]>([]);
   const [installSource, setInstallSource] = useState('');
   const [installing, setInstalling] = useState(false);
@@ -73,7 +74,7 @@ export function AppsPanel(): React.ReactElement {
       setDevicesLoading(true);
       try {
         const [cat, disp] = await Promise.all([
-          (client.request('devices:list') as Promise<DeviceCatalog>).catch(() => null),
+          client.request('devices:list').catch(() => null),
           (window.gosai?.displays.list() ?? Promise.resolve(null)).catch(() => null),
         ]);
         if (cat) setDevices(cat);
@@ -89,17 +90,16 @@ export function AppsPanel(): React.ReactElement {
 
   const refresh = useCallback(async () => {
     try {
-      const appsResult = (await client.request('apps:list')) as { apps: InstalledApp[] };
+      const appsResult = await client.request('apps:list');
       setApps(appsResult.apps);
+      setInvalidApps(appsResult.invalid);
     } catch (err) {
       if (!isNotConnectedError(err)) {
         setError(err instanceof Error ? err.message : String(err));
       }
     }
     try {
-      const expResult = (await client.request('experiences:list')) as {
-        experiences: RunningExperience[];
-      };
+      const expResult = await client.request('experiences:list');
       setRunning(expResult.experiences);
     } catch {
       // ignore
@@ -112,13 +112,12 @@ export function AppsPanel(): React.ReactElement {
 
   useEffect(() => {
     const offList = client.on('apps:list-changed', (payload) => {
-      const data = payload as { apps: InstalledApp[] };
-      setApps(data.apps);
+      setApps(payload.apps);
+      setInvalidApps(payload.invalid);
     });
-    const offRunning = client.on('experiences:list-changed', (payload) => {
-      const data = payload as { experiences: RunningExperience[] };
-      setRunning(data.experiences);
-    });
+    const offRunning = client.on('experiences:list-changed', (payload) =>
+      setRunning(payload.experiences),
+    );
     return () => {
       offList();
       offRunning();
@@ -130,7 +129,28 @@ export function AppsPanel(): React.ReactElement {
     setInstalling(true);
     setError(null);
     try {
-      await client.request('app:install', { source: installSource.trim() });
+      const source = installSource.trim();
+      let installed;
+      try {
+        installed = await client.request('app:install', { source });
+      } catch (err) {
+        const conflict =
+          err instanceof ServerRequestError &&
+          (err.details as { reason?: string } | undefined)?.reason === 'app-data-conflict';
+        if (!conflict || !confirm(`${err.message}\n\nInstall anyway and reuse that data?`)) {
+          throw err;
+        }
+        installed = await client.request('app:install', { source, reuseData: true });
+      }
+      // TODO(PR 13): ask the operator before approving; until then the dashboard approves
+      // everything the app requests.
+      const requested = installed.manifest.capabilities ?? [];
+      if (requested.length > 0) {
+        await client.request('app:capabilities:set', {
+          appSlug: installed.manifest.slug,
+          capabilities: [...requested],
+        });
+      }
       setInstallSource('');
     } catch (err) {
       if (!isNotConnectedError(err)) {
@@ -207,6 +227,32 @@ export function AppsPanel(): React.ReactElement {
           </ul>
         )}
       </Panel>
+
+      {invalidApps.length > 0 ? (
+        <Panel title={`Invalid (${invalidApps.length})`}>
+          <ul className="divide-y divide-neutral-800 overflow-hidden rounded border border-neutral-800">
+            {invalidApps.map((invalid) => (
+              <li key={invalid.slug} className="flex items-start gap-3 bg-neutral-900/40 px-4 py-3">
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="font-mono text-sm text-neutral-100">{invalid.slug}</span>
+                  <span className="font-mono text-[11px] break-words text-red-300">
+                    {invalid.error}
+                  </span>
+                </span>
+                {invalid.builtin ? null : (
+                  <button
+                    type="button"
+                    onClick={() => void handleUninstall(invalid.slug)}
+                    className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-neutral-500 hover:text-red-400"
+                  >
+                    uninstall
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      ) : null}
     </div>
   );
 }
@@ -257,20 +303,16 @@ function AppRow({
 
   const probeCalibration = useCallback(async (): Promise<void> => {
     if (!needsCalibration) return;
-    let ok = false;
     try {
-      const res = await fetch(
-        `${SERVER_BASE_URL}/v1/apps/${app.manifest.slug}/storage/${encodeURIComponent(
-          calibrationStatusKey,
-        )}`,
-        { headers: serverHeaders() },
-      );
-      ok = res.status === 200;
-    } catch {
-      ok = false;
+      const status = await client.request('storage:get', {
+        appSlug: app.manifest.slug,
+        key: calibrationStatusKey,
+      });
+      setCalStatus(status.found ? 'calibrated' : 'required');
+    } catch (err) {
+      if (!isNotConnectedError(err)) setCalStatus('required');
     }
-    setCalStatus(ok ? 'calibrated' : 'required');
-  }, [app.manifest.slug, calibrationStatusKey, needsCalibration]);
+  }, [client, app.manifest.slug, calibrationStatusKey, needsCalibration]);
 
   useEffect(() => {
     if (needsCalibration) void probeCalibration();
@@ -356,12 +398,19 @@ function AppRow({
           >
             ▸
           </span>
+          {app.manifest.icon ? (
+            <img
+              src={`${SERVER_BASE_URL}/v1/apps/${app.manifest.slug}/static/${app.manifest.icon}`}
+              alt=""
+              className="h-8 w-8 shrink-0 rounded object-cover"
+            />
+          ) : null}
           <span className="flex min-w-0 flex-col">
             <span className="flex items-center gap-2">
               <span className="truncate text-sm font-medium text-neutral-100">
                 {app.manifest.name}
               </span>
-              {app.manifest.builtin ? (
+              {app.builtin ? (
                 <span className="rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-neutral-400">
                   built-in
                 </span>
@@ -372,6 +421,7 @@ function AppRow({
             </span>
             <span className="truncate font-mono text-[11px] text-neutral-500">
               {app.manifest.slug} v{app.manifest.version}
+              {app.manifest.author ? ` · by ${app.manifest.author}` : ''}
               {anyRunning ? ` · running: ${running.map((r) => r.experienceSlug).join(', ')}` : ''}
             </span>
           </span>
@@ -473,7 +523,7 @@ function AppRow({
             />
           ) : null}
 
-          {!app.manifest.builtin ? (
+          {!app.builtin ? (
             <div className="flex justify-end">
               <button
                 type="button"
@@ -574,7 +624,7 @@ function DeviceSettingsSection({
     void (async () => {
       setLoading(true);
       try {
-        const s = (await client.request('app:config:get', { appSlug })) as AppDeviceSettings;
+        const s = await client.request('app:config:get', { appSlug });
         if (!cancelled) setSettings(s ?? {});
       } catch (err) {
         if (!cancelled && !isNotConnectedError(err)) {
@@ -596,7 +646,7 @@ function DeviceSettingsSection({
     let cancelled = false;
     void (async () => {
       try {
-        const cfg = (await client.request('config:get')) as GlobalConfig;
+        const cfg = await client.request('config:get');
         if (!cancelled) setGlobalCamera(cfg.camera);
       } catch {
         // Non-fatal: controls fall back to whatever the device reports.
@@ -610,10 +660,7 @@ function DeviceSettingsSection({
   const save = async (patch: AppDeviceSettingsPatch): Promise<void> => {
     setSaving(true);
     try {
-      const next = (await client.request('app:config:set', {
-        appSlug,
-        settings: patch,
-      })) as AppDeviceSettings;
+      const next = await client.request('app:config:set', { appSlug, settings: patch });
       setSettings(next);
     } catch (err) {
       if (!isNotConnectedError(err)) {
@@ -726,7 +773,7 @@ function DeviceSettingsSection({
 
 interface CameraSettingsControlsProps {
   /** The app's stored camera overrides (may be partial or undefined). */
-  camera: CameraSettings | undefined;
+  camera: Partial<CameraSettings> | undefined;
   /** Global camera config supplying inherited defaults. */
   defaults: CameraSettings | null;
   options: ReadonlyArray<{ index: number; label: string }>;

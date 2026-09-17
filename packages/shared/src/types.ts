@@ -2,6 +2,8 @@
  * Core type definitions shared across all GOSAI packages.
  */
 
+import type { Capability } from './capabilities.js';
+
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 export interface LogEntry {
@@ -142,9 +144,18 @@ export interface AppManifest {
    * used. Must reference an existing experience slug.
    */
   readonly default?: string;
+  /** Python integration for app-provided drivers. Reserved; the installer reads `requirements`. */
   readonly python?: PythonConfig;
+  /**
+   * Experiences to start when the server boots, for apps listed in
+   * {@link GlobalConfig.autoStartApps}. Defaults to the default experience.
+   */
   readonly startup?: readonly string[];
-  readonly builtin?: boolean;
+  /**
+   * Capabilities the app asks for on top of the defaults every app gets. The
+   * dashboard shows them at install time.
+   */
+  readonly capabilities?: readonly Capability[];
   /**
    * Device kinds this app needs. Drives the per-app device picker in the
    * dashboard. Omitted kinds default to `false`.
@@ -159,7 +170,8 @@ export interface AppManifest {
    * Declarative settings schema. When present, the dashboard renders an
    * editable settings form for the app; values are persisted to the app's
    * key/value storage under {@link AppSettingsSchema.storageKey} as a single
-   * (possibly nested) JSON object, which the app reads via `rt.storage`.
+   * (possibly nested) JSON object. `app:settings:get` returns it merged with
+   * the declared defaults.
    */
   readonly settings?: AppSettingsSchema;
   /** Network access beyond the defaults the app window's security policy allows. */
@@ -241,10 +253,24 @@ export interface AppSettingsSchema {
 
 export interface InstalledApp {
   readonly manifest: AppManifest;
-  readonly installPath: string;
   readonly installedAt: number;
-  readonly source: string;
+  /** `builtin` for apps shipped with GOSAI, `git` for installed ones. */
+  readonly source: 'builtin' | 'git';
+  /** True for apps shipped with GOSAI. They can't be uninstalled. */
+  readonly builtin: boolean;
+  /**
+   * Requested capabilities the app's tokens hold: all of them for built-in
+   * apps, the approved ones for installed apps.
+   */
+  readonly grantedCapabilities: readonly Capability[];
   readonly state: AppState;
+}
+
+/** An installed app whose manifest doesn't parse. The dashboard offers to uninstall it. */
+export interface InvalidApp {
+  readonly slug: string;
+  readonly builtin: boolean;
+  readonly error: string;
 }
 
 export interface RunningExperience {
@@ -252,7 +278,6 @@ export interface RunningExperience {
   readonly experienceSlug: string;
   readonly state: ExperienceState;
   readonly startedAt: number;
-  readonly pid?: number;
 }
 
 export interface DisplayInfo {
@@ -311,26 +336,30 @@ export interface AppDisplaySettings {
 }
 
 /**
- * Per-application device assignments, persisted per app slug. Camera and
+ * Per-application device overrides, persisted per app slug. Camera and
  * microphone are exclusive (each app binds its own device); speaker and display
- * may be shared across apps.
+ * may be shared across apps. A missing field inherits the global setting or the
+ * system default.
  */
 export interface AppDeviceSettings {
-  readonly display?: AppDisplaySettings;
-  readonly camera?: CameraSettings;
-  readonly microphone?: MicrophoneSettings;
-  readonly speaker?: SpeakerSettings;
-}
-
-/**
- * Patch shape for updating per-app device settings. Each device block may be
- * partial; the store shallow-merges it over the existing block.
- */
-export interface AppDeviceSettingsPatch {
   readonly display?: Partial<AppDisplaySettings>;
   readonly camera?: Partial<CameraSettings>;
   readonly microphone?: Partial<MicrophoneSettings>;
   readonly speaker?: Partial<SpeakerSettings>;
+}
+
+/** Makes every field of `T` nullable, where `null` clears the stored override. */
+export type Clearable<T> = { readonly [K in keyof T]?: T[K] | null };
+
+/**
+ * Patch for per-app device settings. Each block is shallow-merged over the
+ * stored block. `null` for a block or a field removes that override.
+ */
+export interface AppDeviceSettingsPatch {
+  readonly display?: Clearable<AppDisplaySettings> | null;
+  readonly camera?: Clearable<CameraSettings> | null;
+  readonly microphone?: Clearable<MicrophoneSettings> | null;
+  readonly speaker?: Clearable<SpeakerSettings> | null;
 }
 
 /** A single enumerated hardware device offered to the per-app device picker. */
@@ -348,9 +377,34 @@ export interface DeviceCatalog {
 
 export interface GlobalConfig {
   readonly displayId: number | null;
+  /** Port a standalone server listens on when `GOSAI_PORT` isn't set. */
   readonly serverPort: number;
+  /** Apps whose `startup` experiences start when the server boots. */
   readonly autoStartApps: readonly string[];
   readonly camera: CameraSettings;
+}
+
+/** Patch for {@link GlobalConfig}. `camera` is merged field by field. */
+export interface GlobalConfigPatch {
+  readonly displayId?: number | null;
+  readonly serverPort?: number;
+  readonly autoStartApps?: readonly string[];
+  readonly camera?: Partial<CameraSettings>;
+}
+
+/** Values of an app's declared settings, nested by the dotted field keys. */
+export type AppSettingsValues = Readonly<Record<string, unknown>>;
+
+/** A declared setting's value. `null` in a patch restores the default. */
+export type AppSettingValue = string | number | boolean;
+
+/** A driver event routed to one binding, delivered as `driver:event:<binding>`. */
+export interface DriverEventPayload {
+  readonly driver: string;
+  readonly event: string;
+  readonly data: unknown;
+  readonly ts: number;
+  readonly binding: string;
 }
 
 export interface PerformanceSample {

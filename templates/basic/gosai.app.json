@@ -1,4 +1,5 @@
 {
+  "$schema": "../../packages/shared/schemas/gosai.app.schema.json",
   "slug": "hello-gosai",
   "name": "Hello GOSAI",
   "version": "0.1.0",

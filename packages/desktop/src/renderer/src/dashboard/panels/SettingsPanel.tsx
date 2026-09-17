@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { CameraFormat, CameraFormatsResult, GlobalConfig } from '@gosai/shared';
+import type {
+  CameraFormat,
+  CameraFormatsResult,
+  GlobalConfig,
+  GlobalConfigPatch,
+} from '@gosai/shared';
 import { useServer } from '../../lib/server-context.js';
-import { isNotConnectedError } from '../../lib/server-client.js';
+import { isNotConnectedError } from '@gosai/shared/client';
 import { Panel } from '../components/Panel.js';
 import { EmptyState } from '../components/EmptyState.js';
 
@@ -42,7 +47,7 @@ export function SettingsPanel(): React.ReactElement {
 
   const refresh = useCallback(async () => {
     try {
-      const cfg = (await client.request('config:get')) as GlobalConfig;
+      const cfg = await client.request('config:get');
       setConfig(cfg);
     } catch (err) {
       if (!isNotConnectedError(err)) {
@@ -100,14 +105,14 @@ export function SettingsPanel(): React.ReactElement {
   }, []);
 
   useEffect(() => {
-    const off = client.on('server:config-changed', (payload) => setConfig(payload as GlobalConfig));
+    const off = client.on('server:config-changed', setConfig);
     return off;
   }, [client]);
 
-  const updateConfig = async (patch: Partial<GlobalConfig>): Promise<void> => {
+  const updateConfig = async (patch: GlobalConfigPatch): Promise<void> => {
     setSaving(true);
     try {
-      const next = (await client.request('config:set', patch)) as GlobalConfig;
+      const next = await client.request('config:set', patch);
       setConfig(next);
     } catch (err) {
       if (!isNotConnectedError(err)) {

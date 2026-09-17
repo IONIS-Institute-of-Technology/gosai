@@ -4,17 +4,19 @@
  * the experience stops.
  */
 
-import type { AppManifest } from '@gosai/shared';
+import type { AppDeviceSettings, AppManifest } from '@gosai/shared';
 import { createAssetsClient } from './assets.js';
 import { forwardCspViolations } from './csp-violations.js';
-import { ServerClient } from './connection.js';
+import { ServerClient } from '@gosai/shared/client';
+import { AppConfigClientImpl } from './app-config.js';
 import { DriverClientImpl } from './driver-client.js';
 import { AppEventsClientImpl } from './events-client.js';
 import { ExperienceRouterImpl } from './experience-router.js';
 import { AppLoggerImpl } from './logger.js';
-import { createSettingsClient, storageSettingsBackend, type SettingsBackend } from './settings.js';
+import { createSettingsClient, serverSettingsBackend, type SettingsBackend } from './settings.js';
 import { StorageClientImpl } from './storage.js';
 import type {
+  AppConfigClient,
   AppContext,
   AppEventsClient,
   AppEventsSubscription,
@@ -75,7 +77,7 @@ export interface RuntimeEnvironment {
   readonly server: ServerConnection & { close(): void };
   readonly frames: FrameScheduler;
   readonly createAudioContext?: () => AudioContext;
-  /** Replaces the storage-backed settings, e.g. with a server command. */
+  /** Replaces the settings backed by the server's `app:settings:*` commands. */
   readonly settings?: SettingsBackend;
   /** Where `securitypolicyviolation` events fire, normally `document`. They are logged. */
   readonly violations?: EventTarget;
@@ -98,7 +100,7 @@ export async function runExperience<TState>(
 ): Promise<RuntimeHandle> {
   const client = new ServerClient({
     url: options.wsUrl ?? defaultWsUrl(options.serverBaseUrl),
-    ...(options.authToken ? { authToken: options.authToken } : {}),
+    ...(options.authToken ? { token: options.authToken } : {}),
   });
   client.connect();
   try {
@@ -134,11 +136,16 @@ export async function startRuntime<TState>(
   }
 
   const log = new AppLoggerImpl(`app:${options.appSlug}:${options.experienceSlug}`, server);
+  // Failed driver subscriptions and throwing event listeners end up in the app's log.
+  const offErrors = server.onError((err, context) =>
+    log.error(`${context} failed`, describeError(err)),
+  );
   const drivers = new TrackedDriverClient(
     new DriverClientImpl(server, options.driverBinding ?? options.appSlug),
   );
   const events = new TrackedEventsClient(new AppEventsClientImpl(options.appSlug, server));
-  const storage = new StorageClientImpl(options.appSlug, server, options.serverBaseUrl);
+  const storage = new StorageClientImpl(options.appSlug, server);
+  const appConfig = new TrackedAppConfigClient(new AppConfigClientImpl(options.appSlug, server));
   const router = new ExperienceRouterImpl(options.appSlug, server);
   router.setCurrent(options.experienceSlug);
   const audio = new RuntimeAudio(env.createAudioContext, controller.signal);
@@ -157,13 +164,12 @@ export async function startRuntime<TState>(
     app,
     drivers,
     storage,
-    settings: createSettingsClient(
-      env.settings ?? storageSettingsBackend(options.manifest.settings, storage),
-    ),
+    settings: createSettingsClient(env.settings ?? serverSettingsBackend(options.appSlug, server)),
     assets: createAssetsClient(options.serverBaseUrl, options.appSlug),
     log,
     router,
     events,
+    appConfig,
     signal: controller.signal,
     get audio(): AudioContext {
       return audio.get();
@@ -189,12 +195,14 @@ export async function startRuntime<TState>(
       controller.abort();
       drivers.release();
       events.release();
+      appConfig.release();
       try {
         if (initialized) await definition.stop?.(ctx, state as TState);
       } catch (err) {
         log.error('stop failed', describeError(err));
       } finally {
         await audio.close();
+        offErrors();
         server.close();
       }
     })();
@@ -271,9 +279,10 @@ class TrackedDriverClient implements DriverClient {
   constructor(private readonly inner: DriverClient) {}
 
   on(driver: string, event: string, listener: (data: unknown) => void): DriverSubscription {
-    if (this.released) return { unsubscribe: () => undefined };
+    if (this.released) return { ready: Promise.resolve(), unsubscribe: () => undefined };
     const inner = this.inner.on(driver, event, listener);
     const subscription: DriverSubscription = {
+      ready: inner.ready,
       unsubscribe: () => {
         if (this.open.delete(subscription)) inner.unsubscribe();
       },
@@ -293,6 +302,33 @@ class TrackedDriverClient implements DriverClient {
   release(): void {
     this.released = true;
     for (const subscription of this.open) subscription.unsubscribe();
+  }
+}
+
+/** Listens for device assignment changes only while the experience runs. */
+class TrackedAppConfigClient implements AppConfigClient {
+  private readonly open = new Set<() => void>();
+  private released = false;
+
+  constructor(private readonly inner: AppConfigClient) {}
+
+  get(): Promise<AppDeviceSettings> {
+    return this.inner.get();
+  }
+
+  onChange(listener: (settings: AppDeviceSettings) => void): () => void {
+    if (this.released) return () => undefined;
+    const off = this.inner.onChange(listener);
+    const unsubscribe = (): void => {
+      if (this.open.delete(unsubscribe)) off();
+    };
+    this.open.add(unsubscribe);
+    return unsubscribe;
+  }
+
+  release(): void {
+    this.released = true;
+    for (const unsubscribe of this.open) unsubscribe();
   }
 }
 

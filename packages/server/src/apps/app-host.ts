@@ -14,7 +14,9 @@ import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { TokenScope } from '@gosai/shared/auth';
-import { appSlugFromHostname } from '@gosai/shared/app-origin';
+import { appSlugFromHostname, isConnectSource } from '@gosai/shared/app-origin';
+
+export { isConnectSource };
 
 /** The import map is constant so the CSP can allow it by hash instead of 'unsafe-inline'. */
 export const HOST_PAGE_IMPORT_MAP = JSON.stringify({
@@ -59,20 +61,6 @@ export function appContentSecurityPolicy(options: AppPolicyOptions): string {
     "form-action 'none'",
     "frame-ancestors 'none'",
   ].join('; ');
-}
-
-const CONNECT_SOURCE =
-  /^(?:https?|wss?):\/\/(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*|\[[0-9A-Fa-f:.]+\])(?::(\d{1,5}))?$/;
-
-/**
- * Whether `value` is a plain `scheme://host[:port]` origin with an http,
- * https, ws or wss scheme: no path, query, wildcard, quote or whitespace.
- */
-export function isConnectSource(value: unknown): value is string {
-  if (typeof value !== 'string') return false;
-  const match = CONNECT_SOURCE.exec(value);
-  if (!match) return false;
-  return match[1] === undefined || Number(match[1]) <= 65535;
 }
 
 export const HOST_PAGE_HTML = `<!doctype html>

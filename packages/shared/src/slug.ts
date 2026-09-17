@@ -19,3 +19,13 @@ export function assertSlug(value: unknown, field = 'slug'): string {
   }
   return value;
 }
+
+/**
+ * Driver binding of the dashboard's own driver instances. No app may use it as
+ * its slug, or its token would reach those instances.
+ */
+export const SYSTEM_BINDING = 'system';
+
+export function isReservedSlug(value: string): boolean {
+  return value === SYSTEM_BINDING;
+}

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { DriverInfo, DriverRuntimeInfo } from '@gosai/shared';
 import { useServer } from '../../lib/server-context.js';
-import { isNotConnectedError } from '../../lib/server-client.js';
+import { isNotConnectedError } from '@gosai/shared/client';
 import { Panel } from '../components/Panel.js';
 import { EmptyState } from '../components/EmptyState.js';
 
@@ -12,7 +12,7 @@ export function DriversPanel(): React.ReactElement {
 
   const refresh = useCallback(async () => {
     try {
-      const result = (await client.request('drivers:list')) as { drivers: DriverInfo[] };
+      const result = await client.request('drivers:list');
       setDrivers(result.drivers);
     } catch (err) {
       if (!isNotConnectedError(err)) {
@@ -26,10 +26,7 @@ export function DriversPanel(): React.ReactElement {
   }, [status, refresh]);
 
   useEffect(() => {
-    const off = client.on('drivers:list-changed', (payload) => {
-      const data = payload as { drivers: DriverInfo[] };
-      setDrivers(data.drivers);
-    });
+    const off = client.on('drivers:list-changed', (payload) => setDrivers(payload.drivers));
     return off;
   }, [client]);
 

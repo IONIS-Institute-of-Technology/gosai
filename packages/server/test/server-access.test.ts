@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
@@ -10,6 +10,7 @@ const POOL_TOKEN = mintAppToken(SECRET, 'pool');
 
 let server: GosaiServer;
 let base: string;
+let dataDir: string;
 let sdkDir: string;
 
 function writeApp(dir: string, slug: string, extra: Record<string, unknown> = {}): void {
@@ -37,12 +38,12 @@ beforeAll(async () => {
     config: join(tmp, 'config'),
   };
   for (const dir of Object.values(paths)) mkdirSync(dir, { recursive: true });
+  dataDir = paths.data;
   const builtin = join(tmp, 'builtin');
   writeApp(join(builtin, 'pool'), 'pool');
   writeApp(join(builtin, 'relay'), 'relay', {
     network: { connect: ['ws://relay.local:8080', 'http://192.168.1.20'] },
   });
-  // Installed apps keep storage and settings inside their install directory.
   writeApp(join(paths.apps, 'other'), 'other');
   writeFileSync(join(tmp, 'outside.txt'), 'outside');
   symlinkSync(join(tmp, 'outside.txt'), join(builtin, 'pool', 'dist', 'leak.txt'));
@@ -79,7 +80,7 @@ describe('HTTP access', () => {
     expect((await fetch(`${base}/healthz`)).status).toBe(200);
     expect((await fetch(`${base}/v1/info`)).status).toBe(401);
     expect((await fetch(`${base}/v1/info`, { headers: bearer('wrong') })).status).toBe(401);
-    expect((await fetch(`${base}/v1/apps`, { headers: bearer(POOL_TOKEN) })).status).toBe(200);
+    expect((await fetch(`${base}/v1/info`, { headers: bearer(POOL_TOKEN) })).status).toBe(200);
   });
 
   test('/v1/info does not expose filesystem paths', async () => {
@@ -104,7 +105,7 @@ describe('HTTP access', () => {
   test('reflects allowed origins instead of a wildcard', async () => {
     const res = await fetch(`${base}/v1/info`, { headers: { ...bearer(SECRET), origin: 'null' } });
     expect(res.headers.get('access-control-allow-origin')).toBe('null');
-    const preflight = await fetch(`${base}/v1/apps/pool/storage/key`, {
+    const preflight = await fetch(`${base}/v1/info`, {
       method: 'OPTIONS',
       headers: { origin: 'http://localhost:5173' },
     });
@@ -115,35 +116,11 @@ describe('HTTP access', () => {
     expect(plain.headers.get('access-control-allow-origin')).toBeNull();
   });
 
-  test('app tokens only reach their own storage', async () => {
-    const write = await fetch(`${base}/v1/apps/pool/storage/score`, {
-      method: 'POST',
-      headers: { ...bearer(POOL_TOKEN), 'content-type': 'application/json' },
-      body: JSON.stringify(3),
-    });
-    expect(write.status).toBe(200);
-    const read = await fetch(`${base}/v1/apps/pool/storage/score`, { headers: bearer(POOL_TOKEN) });
-    expect(await read.json()).toBe(3);
-
-    const otherRead = await fetch(`${base}/v1/apps/other/storage/score`, {
-      headers: bearer(POOL_TOKEN),
-    });
-    expect(otherRead.status).toBe(403);
-    const otherList = await fetch(`${base}/v1/apps/other/storage`, { headers: bearer(POOL_TOKEN) });
-    expect(otherList.status).toBe(403);
-    const dashboardRead = await fetch(`${base}/v1/apps/pool/storage/score`, {
-      headers: bearer(SECRET),
-    });
-    expect(await dashboardRead.json()).toBe(3);
-  });
-
   test("static route doesn't serve app storage, settings or dot files", async () => {
-    const write = await fetch(`${base}/v1/apps/other/storage/secret`, {
-      method: 'POST',
-      headers: { ...bearer(SECRET), 'content-type': 'application/json' },
-      body: JSON.stringify('hidden'),
-    });
-    expect(write.status).toBe(200);
+    // Data moved out of app directories; a leftover old copy still stays private.
+    const legacy = join(server.apps.getInstallPath('other')!, '_data', 'storage');
+    mkdirSync(legacy, { recursive: true });
+    writeFileSync(join(legacy, 'secret.json'), JSON.stringify('hidden'));
     const code = await fetch(`${base}/v1/apps/other/static/dist/main.js`);
     expect(code.status).toBe(200);
 
@@ -162,32 +139,19 @@ describe('HTTP access', () => {
     }
   });
 
-  test("app tokens can't start or stop another app's experiences over HTTP", async () => {
-    for (const action of ['start', 'stop']) {
-      const res = await fetch(`${base}/v1/experiences/${action}`, {
-        method: 'POST',
-        headers: { ...bearer(POOL_TOKEN), 'content-type': 'application/json' },
-        body: JSON.stringify({ appSlug: 'other', experienceSlug: 'main' }),
-      });
-      expect(res.status).toBe(403);
+  test('routes that duplicated WebSocket commands are gone', async () => {
+    for (const path of ['/v1/apps', '/v1/drivers', '/v1/experiences', '/v1/config', '/v1/logs']) {
+      expect((await fetch(`${base}${path}`, { headers: bearer(SECRET) })).status).toBe(404);
     }
-    const own = await fetch(`${base}/v1/experiences/stop`, {
-      method: 'POST',
-      headers: { ...bearer(POOL_TOKEN), 'content-type': 'application/json' },
-      body: JSON.stringify({ appSlug: 'pool', experienceSlug: 'main' }),
-    });
-    expect(own.status).toBe(200);
-  });
-
-  test('rejects invalid slugs in routes', async () => {
-    const res = await fetch(`${base}/v1/apps/Bad_Slug/storage/key`, { headers: bearer(SECRET) });
-    expect(res.status).toBe(400);
     const start = await fetch(`${base}/v1/experiences/start`, {
       method: 'POST',
       headers: { ...bearer(SECRET), 'content-type': 'application/json' },
-      body: JSON.stringify({ appSlug: '../pool', experienceSlug: 'main' }),
+      body: JSON.stringify({ appSlug: 'pool', experienceSlug: 'main' }),
     });
-    expect(start.status).toBe(400);
+    expect(start.status).toBe(404);
+    expect(
+      (await fetch(`${base}/v1/apps/pool/storage/key`, { headers: bearer(SECRET) })).status,
+    ).toBe(404);
   });
 
   test('static route serves app files and blocks traversal and symlink escapes', async () => {
@@ -218,6 +182,7 @@ interface CommandResponse {
 async function connect(token: string | null): Promise<{
   request(type: string, payload?: unknown): Promise<CommandResponse>;
   nextEvent(type: string): Promise<unknown>;
+  onEvent(type: string, listener: (payload: unknown) => void): void;
   close(): void;
 }> {
   const url =
@@ -227,6 +192,7 @@ async function connect(token: string | null): Promise<{
   const ws = new WebSocket(url);
   const pending = new Map<string, (res: CommandResponse) => void>();
   const waiting = new Map<string, (payload: unknown) => void>();
+  const listeners = new Map<string, (payload: unknown) => void>();
   await new Promise<void>((resolve, reject) => {
     ws.addEventListener('message', (ev) => {
       const msg = JSON.parse(String(ev.data)) as {
@@ -235,7 +201,10 @@ async function connect(token: string | null): Promise<{
       };
       if (msg.type === 'server:welcome') resolve();
       if (msg.type === 'response') pending.get(msg.payload.requestId)?.(msg.payload);
-      else waiting.get(msg.type)?.(msg.payload);
+      else {
+        waiting.get(msg.type)?.(msg.payload);
+        listeners.get(msg.type)?.(msg.payload);
+      }
     });
     ws.addEventListener('error', () => reject(new Error('socket error')));
     ws.addEventListener('close', () => reject(new Error('socket closed')));
@@ -251,9 +220,99 @@ async function connect(token: string | null): Promise<{
     nextEvent(type) {
       return new Promise((resolve) => waiting.set(type, resolve));
     },
+    onEvent(type, listener) {
+      listeners.set(type, listener);
+    },
     close: () => ws.close(),
   };
 }
+
+describe('storage commands', () => {
+  test('app tokens only reach their own storage', async () => {
+    const pool = await connect(POOL_TOKEN);
+    const dashboard = await connect(SECRET);
+    try {
+      expect(
+        (await pool.request('storage:set', { appSlug: 'pool', key: 'score', value: 3 })).ok,
+      ).toBe(true);
+      expect((await pool.request('storage:get', { appSlug: 'pool', key: 'score' })).data).toEqual({
+        found: true,
+        value: 3,
+      });
+      expect((await pool.request('storage:get', { appSlug: 'pool', key: 'missing' })).data).toEqual(
+        {
+          found: false,
+        },
+      );
+      expect((await pool.request('storage:list', { appSlug: 'pool' })).data).toEqual({
+        keys: ['score'],
+      });
+
+      for (const [type, payload] of [
+        ['storage:get', { appSlug: 'other', key: 'score' }],
+        ['storage:list', { appSlug: 'other' }],
+        ['storage:set', { appSlug: 'other', key: 'score', value: 1 }],
+        ['storage:remove', { appSlug: 'other', key: 'score' }],
+      ] as const) {
+        const res = await pool.request(type, payload);
+        expect(res.error?.code).toBe('FORBIDDEN');
+      }
+
+      expect(
+        (await dashboard.request('storage:get', { appSlug: 'pool', key: 'score' })).data,
+      ).toEqual({
+        found: true,
+        value: 3,
+      });
+      expect(
+        (await pool.request('storage:remove', { appSlug: 'pool', key: 'score' })).data,
+      ).toEqual({
+        removed: true,
+      });
+      const unknownApp = await dashboard.request('storage:get', { appSlug: 'ghost', key: 'k' });
+      expect(unknownApp.error?.code).toBe('HANDLER_ERROR');
+    } finally {
+      pool.close();
+      dashboard.close();
+    }
+  });
+
+  test('stored values live in the data directory', async () => {
+    const dashboard = await connect(SECRET);
+    try {
+      await dashboard.request('storage:set', { appSlug: 'other', key: 'where', value: 'data' });
+      expect(server.storage.get('other', 'where')).toEqual({ found: true, value: 'data' });
+      expect(existsSync(join(dataDir, 'other', 'storage', 'where.json'))).toBe(true);
+    } finally {
+      dashboard.close();
+    }
+  });
+});
+
+describe('app broadcasts', () => {
+  test('reach the other windows of the app but not the sender', async () => {
+    const sender = await connect(POOL_TOKEN);
+    const receiver = await connect(POOL_TOKEN);
+    try {
+      for (const client of [sender, receiver]) {
+        expect((await client.request('subscribe', { events: ['app:pool:ping'] })).ok).toBe(true);
+      }
+      const echoed: unknown[] = [];
+      sender.onEvent('app:pool:ping', (payload) => echoed.push(payload));
+      const received = receiver.nextEvent('app:pool:ping');
+      expect(
+        (await sender.request('app:broadcast', { appSlug: 'pool', topic: 'ping', data: 7 })).ok,
+      ).toBe(true);
+      expect(await received).toBe(7);
+      // A round trip on the sender's socket shows nothing was queued behind the reply.
+      expect((await sender.request('system:ping')).ok).toBe(true);
+      expect(echoed).toEqual([]);
+    } finally {
+      sender.close();
+      receiver.close();
+    }
+  });
+});
 
 describe('WebSocket access', () => {
   test('the upgrade needs a valid token', async () => {
@@ -268,6 +327,12 @@ describe('WebSocket access', () => {
     try {
       expect((await client.request('subscribe', { events: ['*'] })).ok).toBe(true);
       expect((await client.request('config:get')).ok).toBe(true);
+      expect((await client.request('drivers:schema', {})).data).toEqual({ schemas: {} });
+      const unknown = await client.request('drivers:schema', { driver: 'nope' });
+      expect(unknown.error?.message).toBe('Unknown driver: nope');
+      expect((await client.request('drivers:schema', { driver: 7 })).error?.code).toBe(
+        'INVALID_PAYLOAD',
+      );
       expect((await client.request('app:config:get', { appSlug: 'other' })).ok).toBe(true);
     } finally {
       client.close();
@@ -283,6 +348,8 @@ describe('WebSocket access', () => {
     };
     try {
       await forbidden('app:install', { source: 'https://example.com/app.git' });
+      await forbidden('logs:history', {});
+      await forbidden('subscribe', { events: ['server:log'] });
       await forbidden('app:uninstall', { slug: 'other' });
       await forbidden('config:set', { displayId: 1 });
       await forbidden('subscribe', { events: ['*'] });
@@ -298,9 +365,11 @@ describe('WebSocket access', () => {
       expect(batch.error?.message).toContain('app:other:batched');
       expect(batch.error?.message).not.toContain('app:pool:batched');
       const received = client.nextEvent('app:pool:batched');
+      // Broadcasts skip the sender, so another window of the app sends it.
+      const otherWindow = await connect(POOL_TOKEN);
       expect(
         (
-          await client.request('app:broadcast', {
+          await otherWindow.request('app:broadcast', {
             appSlug: 'pool',
             topic: 'batched',
             data: { n: 1 },
@@ -308,6 +377,7 @@ describe('WebSocket access', () => {
         ).ok,
       ).toBe(true);
       expect(await received).toEqual({ n: 1 });
+      otherWindow.close();
       await forbidden('app:config:get', { appSlug: 'other' });
       await forbidden('app:broadcast', { appSlug: 'other', topic: 't' });
       await forbidden('driver:execute', { driver: 'camera', action: 'x' });
@@ -316,12 +386,18 @@ describe('WebSocket access', () => {
       await forbidden('experience:stop', { appSlug: 'other', experienceSlug: 'main' });
 
       expect((await client.request('subscribe', { events: ['app:pool:topic'] })).ok).toBe(true);
-      expect((await client.request('subscribe', { events: ['server:log'] })).ok).toBe(true);
+      expect((await client.request('subscribe', { events: ['system:stats'] })).ok).toBe(true);
       expect((await client.request('app:config:get', { appSlug: 'pool' })).ok).toBe(true);
       expect((await client.request('app:broadcast', { appSlug: 'pool', topic: 't' })).ok).toBe(
         true,
       );
-      expect((await client.request('apps:list')).ok).toBe(true);
+      const listed = await client.request('apps:list');
+      expect(listed.ok).toBe(true);
+      expect(JSON.stringify(listed.data)).not.toContain('installPath');
+      await forbidden('app:log', { source: 'server', message: 'spoofed' });
+      expect((await client.request('app:log', { source: 'app:pool:main', message: 'hi' })).ok).toBe(
+        true,
+      );
       expect((await client.request('drivers:schema', {})).ok).toBe(true);
       expect((await client.request('system:ping')).ok).toBe(true);
     } finally {
@@ -339,9 +415,11 @@ describe('WebSocket access', () => {
         ['app:broadcast', { appSlug: 'a:b', topic: 't' }],
         ['driver:get-data', { driver: 'camera', event: 'frame', binding: '../x' }],
         ['experience:start', { appSlug: 'pool', experienceSlug: 'main', driverBinding: '../x' }],
+        ['storage:get', { appSlug: '../x', key: 'k' }],
       ] as const) {
         const res = await client.request(type, payload);
         expect(res.ok).toBe(false);
+        expect(res.error?.code).toBe('INVALID_PAYLOAD');
         expect(res.error?.message).toMatch(/must match/);
       }
     } finally {
@@ -460,11 +538,11 @@ describe('app origins', () => {
   });
 
   test("app origins may call the server with their own app's token only", async () => {
-    const own = await fetch(`${base}/v1/apps/pool/storage`, {
+    const own = await fetch(`${base}/v1/info`, {
       headers: { ...bearer(POOL_TOKEN), host: appHost('pool') },
     });
     expect(own.status).toBe(200);
-    const crossOrigin = await fetch(`${base}/v1/apps/pool/storage`, {
+    const crossOrigin = await fetch(`${base}/v1/info`, {
       headers: { ...bearer(POOL_TOKEN), origin: `http://${appHost('pool')}` },
     });
     expect(crossOrigin.status).toBe(200);
@@ -472,7 +550,7 @@ describe('app origins', () => {
       `http://${appHost('pool')}`,
     );
 
-    const otherOrigin = await fetch(`${base}/v1/apps/pool/storage`, {
+    const otherOrigin = await fetch(`${base}/v1/info`, {
       headers: { ...bearer(POOL_TOKEN), host: appHost('other') },
     });
     expect(otherOrigin.status).toBe(403);

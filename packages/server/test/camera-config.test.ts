@@ -8,7 +8,7 @@ import {
   type DeviceSettingsSources,
 } from '../src/drivers/camera-config.js';
 import type { DriverManager } from '../src/drivers/manager.js';
-import type { ChildLogger } from '../src/logger/index.js';
+import type { ChildLogger } from '../src/logger/logger.js';
 
 const GLOBAL_CAMERA: CameraSettings = { device: 0, width: 1280, height: 720, fps: 30 };
 

@@ -9,10 +9,11 @@
 import { randomUUID } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import type { AppManifest } from '@gosai/shared';
 import { assertSlug } from '@gosai/shared/slug';
-import type { ChildLogger } from '../logger/index.js';
+import type { ChildLogger } from '../logger/logger.js';
 import type { GosaiPaths } from '../paths.js';
-import { parseManifest, type DiscoveredApp } from './manifest.js';
+import { MANIFEST_FILE, parseManifest, type DiscoveredApp } from './manifest.js';
 
 export interface InstallTimeouts {
   readonly gitMs: number;
@@ -30,6 +31,8 @@ export interface InstallOptions {
   /** Accept `file:` URLs. Only for tests. */
   readonly allowFileSources?: boolean;
   readonly timeouts?: Partial<InstallTimeouts>;
+  /** Runs once the manifest is read, before the build. Throw to refuse the app. */
+  readonly checkManifest?: (manifest: AppManifest) => void;
 }
 
 export interface InstallResult {
@@ -100,11 +103,13 @@ export async function installApp(options: InstallOptions): Promise<InstallResult
       timeoutMs: timeouts.gitMs,
       logger,
     });
-    const manifestPath = join(stagingPath, 'gosai.app.json');
+    const manifestPath = join(stagingPath, MANIFEST_FILE);
     if (!existsSync(manifestPath)) {
       throw new Error('Cloned repository does not contain gosai.app.json');
     }
-    const manifest = parseManifest(manifestPath);
+    const manifest = parseManifest(manifestPath, (warning) =>
+      logger.warn(`manifest warning: ${warning}`),
+    );
     const slug = assertSlug(options.slugOverride ?? manifest.slug, 'app slug');
     if (busySlugs.has(slug)) {
       throw new Error(`App ${slug} is already being installed or uninstalled`);
@@ -116,6 +121,7 @@ export async function installApp(options: InstallOptions): Promise<InstallResult
     if (existsSync(finalPath)) {
       throw new Error(`App ${slug} is already installed at ${finalPath}`);
     }
+    options.checkManifest?.(manifest);
 
     await maybeInstallJsDeps({ appPath: stagingPath, logger, timeoutMs: timeouts.jsInstallMs });
     await maybeRunBuild({ appPath: stagingPath, logger, timeoutMs: timeouts.buildMs });
@@ -130,14 +136,7 @@ export async function installApp(options: InstallOptions): Promise<InstallResult
     }
 
     moveIntoPlace(stagingPath, finalPath);
-    return {
-      cloned: true,
-      app: {
-        manifest,
-        installPath: finalPath,
-        manifestPath: join(finalPath, 'gosai.app.json'),
-      },
-    };
+    return { cloned: true, app: { manifest, installPath: finalPath } };
   } catch (err) {
     rmSync(stagingPath, { recursive: true, force: true });
     throw err;
@@ -146,6 +145,7 @@ export async function installApp(options: InstallOptions): Promise<InstallResult
   }
 }
 
+/** Deletes the app's checkout. Its data under `paths.data` is the caller's business. */
 export async function uninstallApp(slug: string, paths: GosaiPaths): Promise<void> {
   assertSlug(slug, 'app slug');
   if (busySlugs.has(slug)) {
@@ -161,19 +161,6 @@ export async function uninstallApp(slug: string, paths: GosaiPaths): Promise<voi
   } finally {
     busySlugs.delete(slug);
   }
-}
-
-export function linkBuiltinApp(sourcePath: string): DiscoveredApp {
-  const manifestPath = join(sourcePath, 'gosai.app.json');
-  if (!existsSync(manifestPath)) {
-    throw new Error(`Built-in app at ${sourcePath} has no gosai.app.json`);
-  }
-  const manifest = parseManifest(manifestPath);
-  return {
-    manifest: { ...manifest, builtin: true },
-    installPath: sourcePath,
-    manifestPath,
-  };
 }
 
 function gitEnv(allowFile: boolean): Record<string, string> {

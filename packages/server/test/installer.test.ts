@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -209,6 +210,68 @@ describe('installer', () => {
       drivers: {} as DriverManager,
     });
     expect(existsSync(join(paths.apps, '.staging'))).toBe(false);
+  });
+
+  test('refuses data an app from another source left, unless asked to reuse it', async () => {
+    const paths = makePaths();
+    const manager = new AppManager({
+      paths,
+      logger,
+      bus: new EventBus(),
+      drivers: {} as DriverManager,
+      allowFileInstalls: true,
+    });
+    const original = makeRepo(paths.root, 'same-slug', 'true');
+    const installed = await manager.installFromGit(original, { capabilities: ['logs:read'] });
+    expect(installed.grantedCapabilities).toEqual([]);
+    writeFileSync(join(paths.data, 'same-slug', 'keep.txt'), 'data');
+    expect(await manager.uninstall('same-slug')).toBe(false);
+
+    // The same source may pick its data back up.
+    await manager.installFromGit(original);
+    await manager.uninstall('same-slug');
+
+    const impostor = makeRepo(paths.root, 'same-slug', 'true');
+    const refused = await manager.installFromGit(impostor).catch((err: unknown) => err);
+    expect((refused as { details?: unknown }).details).toEqual({ reason: 'app-data-conflict' });
+    expect(existsSync(join(paths.apps, 'same-slug'))).toBe(false);
+    expect(stagingEntries(paths)).toEqual([]);
+
+    await manager.installFromGit(impostor, { reuseData: true });
+    expect(existsSync(join(paths.data, 'same-slug', 'keep.txt'))).toBe(true);
+  });
+
+  test('records the git origin of apps installed before install records existed', async () => {
+    const paths = makePaths();
+    const options = {
+      paths,
+      logger,
+      bus: new EventBus(),
+      drivers: {} as DriverManager,
+      allowFileInstalls: true,
+    };
+    const source = makeRepo(paths.root, 'older-app', 'true');
+    await new AppManager(options).installFromGit(source);
+    rmSync(join(paths.data, 'older-app'), { recursive: true });
+
+    new AppManager(options);
+    const record = JSON.parse(readFileSync(join(paths.data, 'older-app', 'install.json'), 'utf8'));
+    expect(record).toMatchObject({ source, approvedCapabilities: [] });
+  });
+
+  test('refuses leftover data of unknown origin', async () => {
+    const paths = makePaths();
+    mkdirSync(join(paths.data, 'orphan', 'storage'), { recursive: true });
+    const manager = new AppManager({
+      paths,
+      logger,
+      bus: new EventBus(),
+      drivers: {} as DriverManager,
+      allowFileInstalls: true,
+    });
+    await expect(manager.installFromGit(makeRepo(paths.root, 'orphan', 'true'))).rejects.toThrow(
+      'unknown source',
+    );
   });
 
   test('uninstall validates the slug', async () => {

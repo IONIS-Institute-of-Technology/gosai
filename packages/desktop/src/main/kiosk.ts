@@ -14,8 +14,8 @@
 import { existsSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { app, screen } from 'electron';
+import type { ServerClient } from '@gosai/shared/client';
 import { bootRuntime, showBootWarnings } from './boot.js';
-import { reportUnauthorized } from './server-auth.js';
 import type { ServerRunner } from './server-runner.js';
 import type { SplashWindow } from './splash.js';
 import type { KioskConfig } from './kiosk-config.js';
@@ -24,8 +24,6 @@ import {
   hasCalibrationRunner,
   isCalibrated,
   runKioskCalibration,
-  serverHeaders,
-  type ServerAccess,
 } from './kiosk-calibration.js';
 import type { WindowRegistry } from './windows.js';
 
@@ -106,10 +104,11 @@ export async function runKiosk(options: RunKioskOptions): Promise<ServerRunner> 
 
   const { address } = runtime;
   windows.setServerAddress(address);
-  const server: ServerAccess = {
-    baseUrl: `http://${address.host}:${address.port}`,
-    token: dashboardToken,
-  };
+  const server = windows.server;
+  // The steps below report their own failures; the window still opens.
+  await server.ready(30_000).catch((err: unknown) => {
+    console.error(`[gosai-kiosk] could not connect to the embedded server: ${String(err)}`);
+  });
 
   const appSlug = config.manifest.slug;
   const displays = screen.getAllDisplays();
@@ -141,7 +140,7 @@ export async function runKiosk(options: RunKioskOptions): Promise<ServerRunner> 
 
   console.log(
     `[gosai-kiosk] ${config.manifest.name ?? appSlug} (${basename(config.appDir)}) ` +
-      `running on ${server.baseUrl}, home=${config.homeDir}`,
+      `running on ${windows.serverBaseUrl}, home=${config.homeDir}`,
   );
   return serverRunner;
 }
@@ -154,7 +153,7 @@ export async function runKiosk(options: RunKioskOptions): Promise<ServerRunner> 
 async function maybeCalibrate(
   config: KioskConfig,
   windows: WindowRegistry,
-  server: ServerAccess,
+  server: ServerClient,
   displayId: number,
 ): Promise<void> {
   const schema = config.manifest.calibration;
@@ -183,21 +182,16 @@ async function maybeCalibrate(
 }
 
 async function startExperienceWithRetry(
-  server: ServerAccess,
+  server: ServerClient,
   appSlug: string,
   experienceSlug: string,
   attempts = 3,
 ): Promise<boolean> {
   for (let i = 0; i < attempts; i++) {
     try {
-      const res = await fetch(`${server.baseUrl}/v1/experiences/start`, {
-        method: 'POST',
-        headers: serverHeaders(server, { 'content-type': 'application/json' }),
-        body: JSON.stringify({ appSlug, experienceSlug }),
-      });
-      if (res.ok) return true;
-      reportUnauthorized(res.status);
-      console.error(`[gosai-kiosk] experience start failed (${res.status}): ${await res.text()}`);
+      await server.ready(10_000);
+      await server.request('experience:start', { appSlug, experienceSlug });
+      return true;
     } catch (err) {
       console.error(`[gosai-kiosk] experience start attempt ${i + 1} failed: ${String(err)}`);
     }

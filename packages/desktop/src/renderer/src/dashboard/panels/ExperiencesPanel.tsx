@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { RunningExperience } from '@gosai/shared';
 import { useServer } from '../../lib/server-context.js';
 import { stopExperienceFully } from '../../lib/stop-experience.js';
-import { isNotConnectedError } from '../../lib/server-client.js';
+import { isNotConnectedError } from '@gosai/shared/client';
 import { Panel } from '../components/Panel.js';
 import { EmptyState } from '../components/EmptyState.js';
 
@@ -21,9 +21,7 @@ export function ExperiencesPanel(): React.ReactElement {
 
   const refresh = useCallback(async () => {
     try {
-      const result = (await client.request('experiences:list')) as {
-        experiences: RunningExperience[];
-      };
+      const result = await client.request('experiences:list');
       setRunning(result.experiences);
     } catch (err) {
       if (!isNotConnectedError(err)) {
@@ -54,8 +52,7 @@ export function ExperiencesPanel(): React.ReactElement {
 
   useEffect(() => {
     const off = client.on('experiences:list-changed', (payload) => {
-      const data = payload as { experiences: RunningExperience[] };
-      setRunning(data.experiences);
+      setRunning(payload.experiences);
       void refreshWindows();
     });
     return off;

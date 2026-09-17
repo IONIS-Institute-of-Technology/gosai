@@ -17,7 +17,7 @@ import {
   type BridgeRequest,
   type BridgeResponse,
 } from '@gosai/shared/protocol';
-import type { ChildLogger } from '../logger/index.js';
+import type { ChildLogger } from '../logger/logger.js';
 
 /** Discriminated-union-friendly Omit<BridgeRequest, 'id'>. */
 export type BridgeRequestSansId = BridgeRequest extends infer T
