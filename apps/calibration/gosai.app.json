@@ -3,6 +3,7 @@
   "slug": "calibration",
   "name": "Calibration",
   "version": "0.1.0",
+  "sdk": "^0.1.0",
   "description": "Generic per-app calibration runner. Loads the target app's calibration module and runs it in control/projector windows.",
   "author": "GOSAI",
   "default": "calibrate",

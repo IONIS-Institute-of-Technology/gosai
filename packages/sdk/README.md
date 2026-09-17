@@ -37,6 +37,7 @@ A starter app lives in [`templates/basic`](../../templates/basic).
   "slug": "my-app", // lowercase letters, digits and dashes, at most 63 characters
   "name": "My App",
   "version": "0.1.0",
+  "sdk": "^0.1.0", // @gosai/sdk versions the app works with
   "description": "What the app does",
   "author": "you",
   "default": "main", // experience the dashboard launches; defaults to the first one
@@ -97,6 +98,12 @@ A starter app lives in [`templates/basic`](../../templates/basic).
   },
 }
 ```
+
+`sdk` is a semver range of the `@gosai/sdk` versions your app works with,
+usually `^` and the version you build against. GOSAI serves one SDK version to
+app windows; it refuses to install an app whose range excludes that version and
+lists an installed one as invalid, with the reason, in the dashboard. While the
+SDK is `0.x`, `^0.1.0` means `>=0.1.0 <0.2.0`.
 
 `requirements` drives the per-app device pickers in the dashboard. Device
 choices are applied to your drivers automatically: `rt.drivers.on('camera', ...)`
@@ -346,7 +353,9 @@ bun build src/main.ts --target=browser --format=esm --outfile dist/main.js --ext
 
 GOSAI runs each app on its own origin, `http://<slug>.localhost:<port>`. The
 page there has an import map that resolves `@gosai/sdk` to the server's copy
-of the SDK, fetches your manifest, imports your entry and runs it. Files in
+of the SDK under `/sdk/<version>/`, fetches your manifest, imports your entry
+and runs it. The runtime checks that the server speaks the SDK's protocol
+version and shows an error instead of starting when it doesn't. Files in
 your app are served under `/v1/apps/<slug>/static/`; use `rt.assets.url` to
 build their URLs.
 

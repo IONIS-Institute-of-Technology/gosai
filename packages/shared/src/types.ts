@@ -135,6 +135,12 @@ export interface AppManifest {
   readonly name: string;
   readonly description?: string;
   readonly version: string;
+  /**
+   * Versions of `@gosai/sdk` the app works with, as a semver range such as
+   * `^0.1.0`. The server refuses to install the app, and lists it as invalid,
+   * when the SDK it serves is outside the range.
+   */
+  readonly sdk?: string;
   readonly author?: string;
   readonly icon?: string;
   readonly experiences: readonly ExperienceDescriptor[];

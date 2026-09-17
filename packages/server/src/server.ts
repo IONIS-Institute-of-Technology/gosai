@@ -34,7 +34,7 @@ export interface ServerOptions {
   /** The Python project with the driver bridge. Drivers are off without it. */
   readonly pythonDir?: string;
   readonly builtinAppsDir?: string;
-  /** The built SDK (`index.js`, `host.js`, `app-host.js`), served under `/sdk/`. */
+  /** The built SDK (`index.js`, `host.js`, `app-host.js`), served under `/sdk/<version>/`. */
   readonly sdkDir?: string;
   readonly enablePython?: boolean;
   /**

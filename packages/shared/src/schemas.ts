@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { isConnectSource } from './app-origin.js';
 import { isValidSettingKey } from './app-settings.js';
 import { CAPABILITY_INFO, isCapability, type Capability } from './capabilities.js';
+import { isSemverRange } from './semver-range.js';
 import { isReservedSlug, isValidSlug, SLUG_PATTERN } from './slug.js';
 import type {
   AppCalibrationSchema,
@@ -250,6 +251,13 @@ export const appManifestSchema = z
       .describe('Unique app id. Names its directory and driver binding.'),
     name: nonEmpty.describe('Display name.'),
     version: nonEmpty,
+    sdk: z
+      .string()
+      .refine(isSemverRange, 'must be a semver range such as ^0.1.0')
+      .optional()
+      .describe(
+        'Versions of @gosai/sdk the app works with, as a semver range such as ^0.1.0. GOSAI refuses to install or list the app when its SDK is outside the range.',
+      ),
     description: z.string().optional(),
     author: z.string().optional().describe('Shown by the dashboard.'),
     icon: appPathSchema

@@ -3,6 +3,7 @@
   "slug": "hello-gosai",
   "name": "Hello GOSAI",
   "version": "0.1.0",
+  "sdk": "^0.1.0",
   "description": "Minimal GOSAI app: a canvas, a driver subscription, storage and settings.",
   "author": "GOSAI",
   "default": "main",

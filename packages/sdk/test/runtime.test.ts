@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import { defineExperience } from '../src/experience.js';
+import { PROTOCOL_VERSION, type WelcomePayload } from '@gosai/shared/protocol';
+import { ProtocolVersionError } from '../src/protocol-check.js';
 import { startRuntime, type RuntimeEnvironment } from '../src/runtime.js';
 import type { ExperienceDefinition, ExperienceRuntimeContext, FrameInfo } from '../src/types.js';
 import { FakeFrames, FakeServer, runtimeOptions } from './fakes.js';
@@ -504,6 +506,60 @@ describe('Content Security Policy violations', () => {
     expect(messages).toHaveLength(21);
     expect(messages[20]).toContain('only the first 20 are logged');
     await handle.stop();
+  });
+});
+
+describe('protocol version', () => {
+  const welcome = (protocolVersion: number): WelcomePayload => ({
+    protocolVersion,
+    serverVersion: '9.9.9',
+    clientId: 'c1',
+    capabilities: [],
+  });
+
+  test('refuses to start against a server that speaks another protocol', async () => {
+    const { server, env } = environment();
+    server.serverInfo = welcome(PROTOCOL_VERSION + 1);
+    let initialized = false;
+    const started = startRuntime(
+      {
+        init: () => {
+          initialized = true;
+        },
+      },
+      runtimeOptions(),
+      env,
+    );
+    await expect(started).rejects.toBeInstanceOf(ProtocolVersionError);
+    await expect(started).rejects.toThrow(
+      `The GOSAI server 9.9.9 speaks protocol version ${PROTOCOL_VERSION + 1}`,
+    );
+    expect(initialized).toBe(false);
+    expect(server.closed).toBe(true);
+  });
+
+  test('stops when it reconnects to a server that speaks another protocol', async () => {
+    const { server, env } = environment();
+    server.serverInfo = welcome(PROTOCOL_VERSION);
+    const fatal: unknown[] = [];
+    let stopped = false;
+    await startRuntime(
+      {
+        stop: () => {
+          stopped = true;
+        },
+      },
+      runtimeOptions({ onFatalError: (err) => fatal.push(err) }),
+      env,
+    );
+    server.reconnect(welcome(PROTOCOL_VERSION));
+    expect(fatal).toEqual([]);
+    server.reconnect(welcome(PROTOCOL_VERSION + 1));
+    await Promise.resolve();
+    expect(fatal).toHaveLength(1);
+    expect(fatal[0]).toBeInstanceOf(ProtocolVersionError);
+    await Bun.sleep(0);
+    expect(stopped).toBe(true);
   });
 });
 

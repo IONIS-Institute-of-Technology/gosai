@@ -22,6 +22,7 @@ export { bootAppHost, browserAppHostEnvironment, readLaunchParams } from './app-
 export { appHostname, appSlugFromHostname } from '@gosai/shared/app-origin';
 export type { AppHostControl, AppHostEnvironment, LaunchParams } from './app-host-page.js';
 
+export { assertProtocolVersion, ProtocolVersionError } from './protocol-check.js';
 export { ServerClient } from '@gosai/shared/client';
 export type { ConnectionStatus, ServerClientOptions } from '@gosai/shared/client';
 

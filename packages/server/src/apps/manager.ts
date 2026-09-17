@@ -28,6 +28,7 @@ import {
 } from './manifest.js';
 import { installApp, uninstallApp } from './installer.js';
 import { gitOrigin, InstallRecords } from './install-records.js';
+import { SDK_VERSION } from './sdk-version.js';
 
 export interface AppManagerOptions {
   readonly paths: GosaiPaths;
@@ -37,6 +38,8 @@ export interface AppManagerOptions {
   readonly builtinAppsDir?: string;
   /** Let installs clone `file:` URLs. Only for tests. */
   readonly allowFileInstalls?: boolean;
+  /** SDK version app `sdk` ranges are checked against. Defaults to the one the server serves. */
+  readonly sdkVersion?: string;
 }
 
 export interface InstallOptions {
@@ -86,6 +89,10 @@ export class AppManager {
   private readonly records: InstallRecords;
   private readonly invalid = new Map<string, InvalidAppRecord>();
 
+  private get sdkVersion(): string {
+    return this.options.sdkVersion ?? SDK_VERSION;
+  }
+
   constructor(private readonly options: AppManagerOptions) {
     this.log = options.logger.child('apps');
     this.records = new InstallRecords(options.paths, this.log);
@@ -97,12 +104,12 @@ export class AppManager {
     this.catalogue.clear();
     this.invalid.clear();
     if (this.options.builtinAppsDir) {
-      const builtin = discoverApps(this.options.builtinAppsDir, this.log);
+      const builtin = discoverApps(this.options.builtinAppsDir, this.log, this.sdkVersion);
       for (const found of builtin.apps) this.ingest(found, true);
       for (const app of builtin.invalid) this.invalid.set(app.slug, { ...app, builtin: true });
     }
     // An installed app replaces a built-in one with the same slug.
-    const installed = discoverApps(this.options.paths.apps, this.log);
+    const installed = discoverApps(this.options.paths.apps, this.log, this.sdkVersion);
     for (const found of installed.apps) {
       this.ingest(found, false);
       this.invalid.delete(found.manifest.slug);
@@ -180,6 +187,7 @@ export class AppManager {
       logger: this.log,
       paths: this.options.paths,
       allowFileSources: this.options.allowFileInstalls === true,
+      sdkVersion: this.sdkVersion,
       checkManifest: (manifest) => {
         if (!options.reuseData) this.checkLeftoverData(manifest.slug, trimmed);
       },

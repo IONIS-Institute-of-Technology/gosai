@@ -15,8 +15,10 @@ import {
   appSlugFromHost,
   hostPageResponse,
   resolveSdkFile,
+  SDK_BASE_PATH,
 } from '../apps/app-host.js';
 import type { AppManager } from '../apps/manager.js';
+import { SDK_VERSION } from '../apps/sdk-version.js';
 import { resolveStaticFile } from '../apps/static-files.js';
 import { SERVER_VERSION } from '../version.js';
 
@@ -26,7 +28,7 @@ export interface HttpRoutesOptions {
   readonly authenticate: (req: Request) => TokenScope | null;
   /** The bound port, read per request because port 0 resolves late. */
   readonly port: () => number;
-  /** The built SDK served under `/sdk/`, when built. */
+  /** The built SDK served under `/sdk/<version>/`, when built. */
   readonly sdkDir?: string;
 }
 
@@ -64,18 +66,30 @@ export function createHttpRoutes(options: HttpRoutesOptions): Hono {
     if (!manifest) return c.json({ error: `app ${slug} is not installed` }, 404);
     return c.json(manifest, 200, { 'cache-control': 'no-store' });
   });
-  app.get('/sdk/:file', (c) => {
+  app.get('/sdk/:version/:file', (c) => {
+    const version = c.req.param('version');
+    if (version !== SDK_VERSION) {
+      return c.json(
+        { error: `this server provides @gosai/sdk ${SDK_VERSION}, not ${version}` },
+        404,
+      );
+    }
     const file = options.sdkDir ? resolveSdkFile(options.sdkDir, c.req.param('file')) : null;
     if (!file) return c.json({ error: 'SDK file not found; run `bun run build:sdk`' }, 404);
     return new Response(Bun.file(file), {
       headers: {
         'content-type': 'text/javascript; charset=utf-8',
+        // Revalidated: a development build changes without a version bump.
         'cache-control': 'no-cache',
         'x-content-type-options': 'nosniff',
       },
     });
   });
-  app.get('/sdk-runtime.js', (c) => c.redirect('/sdk/index.js', 308));
+  // Unversioned URLs from before the SDK was versioned.
+  app.get('/sdk/:file', (c) =>
+    c.redirect(`${SDK_BASE_PATH}${encodeURIComponent(c.req.param('file'))}`, 308),
+  );
+  app.get('/sdk-runtime.js', (c) => c.redirect(`${SDK_BASE_PATH}index.js`, 308));
 
   // App files load through `import()` and `<img>`, which can't send a token.
   // Every other /v1 route needs one, and a page on an app origin may only use

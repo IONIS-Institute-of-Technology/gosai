@@ -7,6 +7,7 @@
 import type { AppDeviceSettings, AppManifest } from '@gosai/shared';
 import { createAssetsClient } from './assets.js';
 import { forwardCspViolations } from './csp-violations.js';
+import { assertProtocolVersion } from './protocol-check.js';
 import { ServerClient } from '@gosai/shared/client';
 import { AppConfigClientImpl } from './app-config.js';
 import { DriverClientImpl } from './driver-client.js';
@@ -62,7 +63,11 @@ export interface RuntimeOptions {
   readonly maxRenderFailures?: number;
   /** How long to wait for the server connection. Defaults to 5000 ms. */
   readonly connectTimeoutMs?: number;
-  /** Called when the runtime stops the experience on its own, after repeated render failures. */
+  /**
+   * Called when the runtime stops the experience on its own: after repeated
+   * render failures, or with a `ProtocolVersionError` when the server it
+   * reconnected to speaks another protocol version.
+   */
   readonly onFatalError?: (error: unknown) => void;
 }
 
@@ -142,12 +147,31 @@ export async function startRuntime<TState>(
     server.close();
     throw new Error(`${options.appSlug} has no experience "${options.experienceSlug}"`);
   }
+  if (server.serverInfo) {
+    try {
+      assertProtocolVersion(server.serverInfo);
+    } catch (err) {
+      server.close();
+      throw err;
+    }
+  }
 
   const log = new AppLoggerImpl(`app:${options.appSlug}:${options.experienceSlug}`, server);
   // Failed driver subscriptions and throwing event listeners end up in the app's log.
   const offErrors = server.onError((err, context) =>
     log.error(`${context} failed`, describeError(err)),
   );
+  // A server replaced while the experience runs may speak another protocol.
+  const offStatus = server.onStatus((status) => {
+    if (status !== 'connected' || !server.serverInfo) return;
+    try {
+      assertProtocolVersion(server.serverInfo);
+    } catch (err) {
+      console.error(err);
+      void stop();
+      options.onFatalError?.(err);
+    }
+  });
   const drivers = new TrackedDriverClient(
     new DriverClientImpl(server, options.driverBinding ?? options.appSlug),
   );
@@ -211,6 +235,7 @@ export async function startRuntime<TState>(
       } finally {
         await audio.close();
         offErrors();
+        offStatus();
         server.close();
       }
     })();

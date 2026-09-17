@@ -94,7 +94,7 @@ git init && git add . && git commit -m "initial"
 | `GOSAI_PYTHON_DIR`         | Override the Python source/venv directory. Skips the packaged first-run Python install.             |
 | `GOSAI_BUILTIN_APPS`       | Override the built-in apps discovery root.                                                          |
 | `GOSAI_PYTHON=0`           | Disable the Python bridge entirely.                                                                 |
-| `GOSAI_SDK_DIR`            | Directory of the built SDK bundle the server serves to app windows under `/sdk/`.                   |
+| `GOSAI_SDK_DIR`            | Directory of the built SDK bundle the server serves under `/sdk/<version>/`.                        |
 | `GOSAI_AUTOSTART_SERVER=1` | Make the desktop app start its own server when run from source.                                     |
 | `GOSAI_AUTOSTART_SERVER=0` | Make the packaged desktop app connect to a server started separately.                               |
 | `GOSAI_SERVER_BIN`         | Server executable the desktop app starts instead of the bundled one or the source.                  |

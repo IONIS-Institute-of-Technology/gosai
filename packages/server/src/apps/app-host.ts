@@ -5,9 +5,9 @@
  * without DNS, and treat it as a secure context.
  *
  * On an app origin the server serves a static host page at `/`, the app's
- * manifest at `/gosai.app.json`, and on every origin the SDK bundle at `/sdk/`.
- * The host page loads the SDK's app host script, which imports the
- * experience entry and runs it.
+ * manifest at `/gosai.app.json`, and on every origin the SDK bundle at
+ * `/sdk/<version>/`. The host page loads the SDK's app host script, which
+ * imports the experience entry and runs it.
  */
 
 import { createHash } from 'node:crypto';
@@ -15,12 +15,16 @@ import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { TokenScope } from '@gosai/shared/auth';
 import { appSlugFromHostname, isConnectSource } from '@gosai/shared/app-origin';
+import { SDK_VERSION } from './sdk-version.js';
 
 export { isConnectSource };
 
+/** Where the SDK bundle is served. The version in the path changes with every SDK release. */
+export const SDK_BASE_PATH = `/sdk/${encodeURIComponent(SDK_VERSION)}/`;
+
 /** The import map is constant so the CSP can allow it by hash instead of 'unsafe-inline'. */
 export const HOST_PAGE_IMPORT_MAP = JSON.stringify({
-  imports: { '@gosai/sdk': '/sdk/index.js', '@gosai/sdk/': '/sdk/' },
+  imports: { '@gosai/sdk': `${SDK_BASE_PATH}index.js`, '@gosai/sdk/': SDK_BASE_PATH },
 });
 
 const IMPORT_MAP_HASH = createHash('sha256').update(HOST_PAGE_IMPORT_MAP).digest('base64');
@@ -71,7 +75,7 @@ export const HOST_PAGE_HTML = `<!doctype html>
     <meta name="color-scheme" content="dark" />
     <title>GOSAI</title>
     <script type="importmap">${HOST_PAGE_IMPORT_MAP}</script>
-    <script type="module" src="/sdk/app-host.js"></script>
+    <script type="module" src="${SDK_BASE_PATH}app-host.js"></script>
   </head>
   <body></body>
 </html>
@@ -129,8 +133,9 @@ export function appOriginDenial(req: Request, scope: TokenScope): string | null 
 const SDK_FILE = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
 
 /**
- * Resolves `/sdk/<name>` to a bundle file. `name` may omit `.js`, because the
- * import map's `@gosai/sdk/` prefix turns `@gosai/sdk/host` into `/sdk/host`.
+ * Resolves `/sdk/<version>/<name>` to a bundle file. `name` may omit `.js`,
+ * because the import map's `@gosai/sdk/` prefix turns `@gosai/sdk/host` into
+ * `/sdk/<version>/host`.
  */
 export function resolveSdkFile(sdkDir: string, name: string): string | null {
   if (!SDK_FILE.test(name)) return null;

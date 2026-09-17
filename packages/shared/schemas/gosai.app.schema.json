@@ -23,6 +23,10 @@
       "type": "string",
       "minLength": 1
     },
+    "sdk": {
+      "description": "Versions of @gosai/sdk the app works with, as a semver range such as ^0.1.0. GOSAI refuses to install or list the app when its SDK is outside the range.",
+      "type": "string"
+    },
     "description": {
       "type": "string"
     },
