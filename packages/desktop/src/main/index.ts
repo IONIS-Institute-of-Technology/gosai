@@ -7,7 +7,7 @@ import { bootRuntime, showBootFailure, showBootWarnings, type BootMode } from '.
 import { CalibrationOrchestrator } from './calibration.js';
 import { ExperienceWindows } from './experience-windows.js';
 import { registerIpc } from './ipc.js';
-import { applyKioskPaths, runKiosk } from './kiosk.js';
+import { applyKioskPaths, kioskDisplay, runKiosk } from './kiosk.js';
 import { resolveKioskConfig, type KioskConfig } from './kiosk-config.js';
 import { parseLaunchArgs } from './launch-args.js';
 import { installWebContentsGuards } from './security.js';
@@ -67,7 +67,13 @@ function main(): void {
   delete process.env.GOSAI_DASHBOARD_TOKEN;
 
   const windows = new WindowRegistry({ rootDir: import.meta.dirname, dashboardToken });
-  const experienceWindows = new ExperienceWindows(windows);
+  // A kiosk opens its windows on the display its settings name.
+  const kiosk = kioskConfig;
+  const experienceWindows = new ExperienceWindows(
+    windows,
+    kiosk ? { resolveDisplay: () => kioskDisplay(kiosk) } : {},
+  );
+  let exitCode = 0;
   const calibration = new CalibrationOrchestrator(windows, experienceWindows);
   let serverRunner: ServerRunner | null = null;
   let booted = false;
@@ -101,8 +107,13 @@ function main(): void {
           config: kioskConfig,
           windows,
           calibration,
+          experienceWindows,
           dashboardToken,
           splash,
+          quit: (code) => {
+            exitCode = code;
+            app.quit();
+          },
         });
         booted = true;
       } catch (err) {
@@ -152,7 +163,8 @@ function main(): void {
 
   app.on('window-all-closed', () => {
     // Boot and kiosks pass through moments without windows (splash, then
-    // calibration, then app). Kiosks quit when the app window closes.
+    // calibration, then app, and between experiences). Kiosks quit by the
+    // rules in kiosk-lifecycle.ts.
     if (mode === 'desktop' && booted) app.quit();
   });
 
@@ -169,7 +181,7 @@ function main(): void {
       // Let running experiences stop before the server goes away.
       await Promise.all([windows.closeAllControlWindows(), windows.closeAllAppHosts()]);
       if (serverRunner?.isRunning()) await serverRunner.stop().catch(() => undefined);
-      app.exit();
+      app.exit(exitCode);
     })();
   });
 }

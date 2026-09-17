@@ -150,10 +150,15 @@ At launch the shell:
    described above, so any number of kiosks can run side by side with no
    port configuration.
 3. Runs the app's calibration when needed (see below).
-4. Starts the app's experience and opens it fullscreen on the primary
-   display (or the display index baked in at packaging time).
+4. Starts the app's experience. Like the desktop app, the kiosk opens a
+   window for each experience the app runs, fullscreen on the primary display
+   (or the display index baked in at packaging time), and closes it when the
+   experience stops, so an app can switch experiences with
+   `rt.router.switchTo`.
 
-Closing the window quits the kiosk with exit code 0. When the server or a
+Closing the window quits the kiosk with exit code 0. So does the app stopping
+all its experiences without starting another within 3 seconds; when the last
+one crashed instead, the kiosk exits with code 1. When the server or a
 window's renderer process dies, the kiosk exits with code 1. Artifacts land
 in `packages/desktop/release/kiosk/<slug>/`.
 

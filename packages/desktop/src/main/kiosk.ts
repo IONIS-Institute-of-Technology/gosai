@@ -21,6 +21,9 @@ import type { SplashWindow } from './splash.js';
 import type { KioskConfig } from './kiosk-config.js';
 import type { CalibrationOrchestrator } from './calibration.js';
 import { planKioskCalibration, usesCalibrationRunner } from './calibration-plan.js';
+import type { ResolvedDisplay } from './displays.js';
+import type { ExperienceWindows } from './experience-windows.js';
+import { KioskLifecycle } from './kiosk-lifecycle.js';
 import type { WindowRegistry } from './windows.js';
 
 /**
@@ -37,8 +40,22 @@ export interface RunKioskOptions {
   readonly config: KioskConfig;
   readonly windows: WindowRegistry;
   readonly calibration: CalibrationOrchestrator;
+  /** Opens and closes the kiosk's windows by following the server. Started here. */
+  readonly experienceWindows: ExperienceWindows;
   readonly dashboardToken: string;
   readonly splash: SplashWindow;
+  /** Quits the kiosk with an exit code, stopping its windows and server first. */
+  quit(code: number): void;
+}
+
+/** The display and mode the kiosk's windows open with. Needs the app to be ready. */
+export function kioskDisplay(config: KioskConfig): ResolvedDisplay {
+  const displays = screen.getAllDisplays();
+  const display =
+    config.displayIndex !== undefined
+      ? (displays[config.displayIndex] ?? screen.getPrimaryDisplay())
+      : screen.getPrimaryDisplay();
+  return { displayId: display.id, fullscreen: config.fullscreen };
 }
 
 /**
@@ -82,7 +99,7 @@ function linkApp(appsDir: string, slug: string, target: string): void {
  * stop it on quit. Throws when the server can't start.
  */
 export async function runKiosk(options: RunKioskOptions): Promise<ServerRunner> {
-  const { config, windows, calibration, dashboardToken, splash } = options;
+  const { config, windows, calibration, experienceWindows, dashboardToken, splash, quit } = options;
 
   const runtime = await bootRuntime({
     dashboardToken,
@@ -108,13 +125,22 @@ export async function runKiosk(options: RunKioskOptions): Promise<ServerRunner> 
   });
 
   const appSlug = config.manifest.slug;
-  const displays = screen.getAllDisplays();
-  const display =
-    config.displayIndex !== undefined
-      ? (displays[config.displayIndex] ?? screen.getPrimaryDisplay())
-      : screen.getPrimaryDisplay();
+  const display = kioskDisplay(config);
 
-  await maybeCalibrate(config, calibration, server, display.id);
+  await maybeCalibrate(config, calibration, server, display.displayId);
+
+  // From here main opens and closes the app's windows as its experiences
+  // start and stop, including when the app switches experiences.
+  const lifecycle = new KioskLifecycle({
+    appSlug,
+    exit: ({ code, reason }) => {
+      console.log(`[gosai-kiosk] quitting with ${code}: ${reason}`);
+      quit(code);
+    },
+  });
+  server.on('experience:state-changed', (experience) => lifecycle.onExperience(experience));
+  windows.onAppWindowClosedByUser(() => lifecycle.onWindowClosedByUser());
+  experienceWindows.start();
 
   const started = await startExperienceWithRetry(server, appSlug, config.experienceSlug);
   if (!started) {
@@ -122,18 +148,12 @@ export async function runKiosk(options: RunKioskOptions): Promise<ServerRunner> 
       `[gosai-kiosk] could not start ${appSlug}/${config.experienceSlug} on the server; ` +
         'opening the window anyway so the error is visible',
     );
+    windows.openAppHost({
+      appSlug,
+      experienceSlug: config.experienceSlug,
+      ...display,
+    });
   }
-
-  const handle = windows.openAppHost({
-    displayId: display.id,
-    appSlug,
-    experienceSlug: config.experienceSlug,
-    fullscreen: config.fullscreen,
-  });
-
-  handle.window.on('closed', () => {
-    app.quit();
-  });
 
   console.log(
     `[gosai-kiosk] ${config.manifest.name ?? appSlug} (${basename(config.appDir)}) ` +
