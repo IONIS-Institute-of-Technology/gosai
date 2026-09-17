@@ -93,7 +93,15 @@ class ComputeResult(msgspec.Struct, kw_only=True):
     inverse: list[float]
     surface_matrix: list[float] | None
     surface_inverse: list[float] | None
-    surface_quad_display: list[Point] | None
+    surface_quad_display: Annotated[
+        list[Point] | None,
+        Meta(
+            description=(
+                "The surface corners TL, TR, BR, BL in display pixels. Null without a"
+                " focus quad, or when a corner maps to infinity on the display."
+            )
+        ),
+    ]
     surface_size: Size
     frame_size: Size | None
     samples: int
@@ -142,7 +150,8 @@ class ReprojectPointsParams(msgspec.Struct, kw_only=True):
 
 class ReprojectedPoints(msgspec.Struct, kw_only=True):
     ok: bool = True
-    points: list[Point]
+    # In input order; null where a point maps to infinity.
+    points: list[Point | None]
 
 
 def _xy(point: PointLike) -> tuple[float, float]:
@@ -329,17 +338,24 @@ class CalibrationDriver(BaseDriver):
             jpeg_base64=encoded, width=meta["width"], height=meta["height"], ts=meta["ts"]
         )
 
-    @action("Warp a camera pixel into display or surface space.")
+    @action("Warp a camera pixel into display or surface space. Fails when it maps to infinity.")
     def reproject_point(self, params: ReprojectPointParams) -> ReprojectedPoint:
         [[x, y]] = homography.warp_points(self._matrix_for(params.space), [[params.x, params.y]])
+        if not (np.isfinite(x) and np.isfinite(y)):
+            raise ValueError(f"({params.x}, {params.y}) maps to infinity in '{params.space}' space")
         return ReprojectedPoint(x=float(x), y=float(y))
 
-    @action("Warp camera pixels into display or surface space.")
+    @action("Warp camera pixels into display or surface space, null where one maps to infinity.")
     def reproject_points(self, params: ReprojectPointsParams) -> ReprojectedPoints:
         warped = homography.warp_points(
             self._matrix_for(params.space), [_xy(p) for p in params.points]
         )
-        return ReprojectedPoints(points=[Point(x=float(x), y=float(y)) for x, y in warped])
+        return ReprojectedPoints(
+            points=[
+                Point(x=float(x), y=float(y)) if np.isfinite(x) and np.isfinite(y) else None
+                for x, y in warped
+            ]
+        )
 
     def _matrix_for(self, space: Space) -> homography.Matrix:
         with self._lock:

@@ -260,6 +260,22 @@ describe('listener cleanup on stop', () => {
     expect(server.closed).toBe(true);
   });
 
+  test('stop removes settings listeners', async () => {
+    const { server, env } = environment();
+    const seen: unknown[] = [];
+    const handle = await startRuntime(
+      { start: (rt) => void rt.settings.onChange((values) => seen.push(values)) },
+      runtimeOptions(),
+      env,
+    );
+    server.emit('app:settings-changed', { appSlug: 'demo', values: { debug: true } });
+    await handle.stop();
+    server.emit('app:settings-changed', { appSlug: 'demo', values: { debug: false } });
+    expect(seen).toEqual([{ debug: true }]);
+    expect(server.listenerCount()).toBe(0);
+    expect(handle.context.settings.onChange(() => undefined)).toBeFunction();
+  });
+
   test('uses the driver binding for driver requests', async () => {
     const { server, env } = environment();
     const handle = await startRuntime({}, runtimeOptions({ driverBinding: 'pool' }), env);

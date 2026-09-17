@@ -13,9 +13,8 @@
  * table when the rotation is applied.
  */
 
-import { REF_HEIGHT, REF_WIDTH, type FrameContext, type Layer } from '../shared/types.js';
-import { fillCircle, strokeLine } from '../shared/canvas-utils.js';
-import type { PoolFeed } from '../shared/feed.js';
+import { fillCircle, strokeLine } from '../shared/draw.js';
+import { REF_HEIGHT, REF_WIDTH, type PoolFrame, type PoolLayer } from '../shared/types.js';
 
 const GRID_COLS = 22;
 const GRID_ROWS = 12;
@@ -27,20 +26,18 @@ const ORIGIN_Y = REF_HEIGHT / 2; // 540
 const GRID_COLOR = '#c8c8c8';
 const LINE_COLORS = ['#009dff', '#38ff15'];
 
-export function createAffineLayer(feed: PoolFeed): Layer {
+export function createAffineLayer(): PoolLayer {
   return {
-    render(frame: FrameContext): void {
-      const { ctx } = frame;
+    render({ ctx, tracking }: PoolFrame): void {
       ctx.save();
       ctx.translate(REF_WIDTH, REF_HEIGHT);
       ctx.rotate(Math.PI);
 
       drawGrid(ctx);
 
-      const balls = feed.balls.balls;
       // Mirror ball positions about the grid centre so they show up at their
       // physical pool-table positions once the global rotation is applied.
-      const mirrored = balls.map((b) => ({
+      const mirrored = tracking.balls.map((b) => ({
         x: -(b.x - ORIGIN_X) + ORIGIN_X,
         y: -(b.y - ORIGIN_Y) + ORIGIN_Y,
       }));

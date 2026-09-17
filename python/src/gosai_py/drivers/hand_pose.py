@@ -186,12 +186,18 @@ class HandPoseDriver(BaseDriver):
             if hand
         ]
 
+        # A hand with a landmark the surface homography sends to infinity is dropped.
+        warped = self._warp(hands, cam_w, cam_h)
+        kept = [i for i, hand in enumerate(warped) if np.isfinite(hand).all()]
+        if len(kept) < len(warped):
+            hands_handedness = [hands_handedness[i] for i in kept if i < len(hands_handedness)]
+
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         self.record("inference_ms", elapsed_ms)
         self.emit(
             "raw_data",
             {
-                "hands_landmarks": [hand.tolist() for hand in self._warp(hands, cam_w, cam_h)],
+                "hands_landmarks": [warped[i].tolist() for i in kept],
                 "hands_handedness": hands_handedness,
                 "ts": time.time(),
                 "capture_ts": capture_ts,

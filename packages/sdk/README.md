@@ -207,6 +207,7 @@ Release other resources (WebGL renderers, media elements) in `stop`.
 | `rt.storage.set(key, value)`, `remove`, `list` | Per-app key/value storage.                                                                                                               |
 | `rt.settings.get<T>()`                         | Settings from the manifest schema: stored values merged over the defaults.                                                               |
 | `rt.settings.set({ 'display.zoom': 2 })`       | Store settings by dotted key; `null` restores a default. Throws for undeclared keys and values that aren't strings, numbers or booleans. |
+| `rt.settings.onChange(listener)`               | Called with the settings each time they change, for example from the dashboard. Returns a function that removes the listener.            |
 | `rt.assets.url(path)`                          | URL of a file in the app, relative to its root, e.g. `assets/a.png`.                                                                     |
 | `rt.events.emit(topic, data)`, `rt.events.on`  | Messages to the app's other windows, e.g. from a projector to a control window.                                                          |
 | `rt.log.debug/info/warn/error(message, data?)` | Logs shown in the dashboard's Logs panel.                                                                                                |

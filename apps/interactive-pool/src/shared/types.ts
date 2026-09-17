@@ -1,88 +1,46 @@
 /**
- * Shared types used across all interactive-pool layers.
+ * Types shared by the interactive-pool layers.
  *
- * The "reference resolution" for all layer rendering is 1920x1080 (matching the
- * legacy projector setup). The ball driver emits coordinates in that space
- * after applying the calibration homography to detections, so layers can treat
- * ball coordinates as absolute reference-space pixels. The compositor scales
- * the reference space to the actual canvas size each frame.
+ * Every layer draws in a 1920x1080 reference space, the legacy projector
+ * setup. With a calibration the ball and hand_pose drivers already emit
+ * coordinates in that space, and the canvas maps it onto the window.
  */
+
+import type { DriverTypes, FrameInfo, Layer, LayerDefinition } from '@gosai/sdk';
 
 export const REF_WIDTH = 1920;
 export const REF_HEIGHT = 1080;
 
-/** A detected pool ball, in reference-space (1920x1080) pixels. */
-export interface Ball {
-  x: number;
-  y: number;
-  diameter: number;
-  /** Smoothed velocity in px/s (reference space). 0 when unknown. */
-  vx: number;
-  vy: number;
+/** A detected ball in reference-space pixels, with its velocity in px/s. */
+export type Ball = DriverTypes.ball.Ball;
+
+/** 21 MediaPipe landmarks as `[x, y, z?]`, x and y normalised to 0..1. */
+export type Hand = DriverTypes.hand_pose.HandPosePayload['hands_landmarks'][number];
+
+/** The latest tracking data, updated in place by the driver subscriptions. */
+export interface Tracking {
+  balls: readonly Ball[];
+  /** `performance.now()` when `balls` last changed. */
+  ballsUpdatedAt: number;
+  /** Detection rate the ball driver reports. */
+  ballFps: number;
+  hands: readonly Hand[];
 }
 
-/**
- * MediaPipe-style hand pose payload emitted by the `hand_pose` driver.
- *
- * `hands_landmarks` is `[handIndex][landmarkIndex] = [x, y, z?]` with `x` and
- * `y` normalised to 0..1 over the camera frame.
- *
- * Optional fields appear when paired drivers are active.
- */
-export interface HandPosePayload {
-  hands_landmarks?: number[][][];
-  hands_handedness?: Array<[unknown, unknown, unknown]>;
-  hands_sign?: Array<[string, ...unknown[]]>;
+/** What every layer receives each frame. */
+export interface PoolFrame extends FrameInfo {
+  /** The canvas context, already transformed to reference space. */
+  readonly ctx: CanvasRenderingContext2D;
+  readonly tracking: Tracking;
 }
 
-/** Shape we feed to layer renderers each frame. */
-export interface FrameContext {
-  /** Canvas drawing context. Already cleared by the compositor when relevant. */
-  ctx: CanvasRenderingContext2D;
-  /** Effective width in reference-space pixels (always REF_WIDTH). */
-  refWidth: number;
-  /** Effective height in reference-space pixels (always REF_HEIGHT). */
-  refHeight: number;
-  /** Timestamp of this frame, in ms (performance.now). */
-  timestamp: number;
-  /** Delta from previous frame, in ms. */
-  deltaMs: number;
-  /** Frame counter since experience start. */
-  frameCount: number;
-}
+export type PoolLayer = Layer<PoolFrame>;
 
-/**
- * Standard layer contract. A layer is a self-contained visual module managed
- * by the main orchestrator. Layers do not own their canvas; they draw into
- * the shared context provided each frame.
- */
-export interface Layer {
-  /** Optional async preload (load assets, etc). */
-  preload?(): Promise<void>;
-  /** Called when the layer becomes active. Sync or async. */
-  start?(): void | Promise<void>;
-  /** Called every frame while the layer is active. */
-  render(frame: FrameContext): void;
-  /** Called when the layer is deactivated. Must release listeners. */
-  stop?(): void;
-}
-
-/** Snapshot of latest hand-pose data shared between layers (e.g. menu). */
-export interface HandsSnapshot {
-  /** For each detected hand, an array of 21 landmarks in 0..1 normalised coords. */
-  hands: number[][][];
-  /** Handedness labels, optional and parallel to `hands`. */
-  handedness: Array<[unknown, unknown, unknown]>;
-  /** Last update timestamp. */
-  lastUpdate: number;
-}
-
-/** Snapshot of latest ball data shared between layers. */
-export interface BallsSnapshot {
-  /** Active ball positions in reference-space pixels. */
-  balls: Ball[];
-  /** Ball-driver FPS, if available. */
-  fps: number;
-  /** Last update timestamp. */
-  lastUpdate: number;
+export interface PoolLayerDefinition extends LayerDefinition<PoolFrame> {
+  /** Lists the layer in the gesture menu, which starts and stops it. */
+  readonly menu?: {
+    readonly label: string;
+    /** Stop the layer after a minute without hands on the table. */
+    readonly autoStop?: boolean;
+  };
 }

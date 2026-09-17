@@ -72,6 +72,17 @@ describe('fitCanvas', () => {
     expect([canvas.width, canvas.height]).toEqual([1600, 901]);
   });
 
+  test('uses the untransformed box of a warped canvas', () => {
+    // A warp makes the bounding rect the quad's bounding box.
+    const canvas = { ...fakeCanvas(1800, 1000), clientWidth: 1600, clientHeight: 1000 };
+    fitCanvas(canvas, 1);
+    expect([canvas.width, canvas.height]).toEqual([1600, 1000]);
+
+    const plain = { ...fakeCanvas(800.4, 450.4), clientWidth: 800, clientHeight: 450 };
+    fitCanvas(plain, 2);
+    expect([plain.width, plain.height]).toEqual([1601, 901]);
+  });
+
   test('does not touch the backing store when the size is unchanged', () => {
     const canvas = fakeCanvas(800, 450);
     fitCanvas(canvas, 1);

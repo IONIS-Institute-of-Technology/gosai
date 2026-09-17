@@ -5,38 +5,34 @@
  * detected ball collides with one, the rabbit "dies" (firework burst, ghost
  * silhouette fades) and respawns after 3 seconds at the left edge.
  *
- * Faithful port of the legacy rabbit/firework/particles drawing code,
- * translated to Canvas2D. Coordinate space is reference (1920x1080).
+ * Port of the legacy rabbit/firework/particles drawing code, translated to
+ * Canvas2D. Coordinate space is reference (1920x1080). Speeds are the legacy
+ * per-frame steps, scaled by the frame time.
  */
 
-import { REF_HEIGHT, REF_WIDTH, type FrameContext, type Layer } from '../shared/types.js';
-import { fillCircle, fillEllipse, strokeLine } from '../shared/canvas-utils.js';
+import { fillCircle, fillEllipse, strokeLine } from '../shared/draw.js';
 import { dist, pick, rand } from '../shared/math.js';
-import type { PoolFeed } from '../shared/feed.js';
+import { frameSteps, stepParticle, wrap, type Particle } from '../shared/motion.js';
+import { REF_HEIGHT, REF_WIDTH, type PoolFrame, type PoolLayer } from '../shared/types.js';
 
 const RABBIT_COUNT = 6;
 const RABBIT_MIN_R = 40;
 const RABBIT_MAX_R = 60;
 const RESPAWN_DELAY_MS = 3000;
-const Y_SPEED_CHOICES = [-2.5, -2.2, -1, 1, 2.2, 2.5];
-
-const BALL_DIAMETER_FOR_COLLISION = 80;
+const Y_SPEED_CHOICES = [-2.5, -2.2, -1, 1, 2.2, 2.5] as const;
+const SPIN_PER_FRAME = 0.025;
+const GHOST_FADE_PER_FRAME = 0.5;
 
 const FIREWORK_PARTICLES = 100;
 const PARTICLE_DRAG = 0.98;
 
-interface Particle {
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
+interface ColoredParticle extends Particle {
   r: number;
   g: number;
   b: number;
-  alpha: number;
 }
 
-interface Rabbit {
+export interface Rabbit {
   x: number;
   y: number;
   r: number;
@@ -46,74 +42,33 @@ interface Rabbit {
   alpha: number;
   alive: boolean;
   deathTime: number;
-  particles: Particle[];
+  particles: ColoredParticle[];
 }
 
-export function createRabbitsLayer(feed: PoolFeed): Layer {
+export function createRabbitsLayer(): PoolLayer {
   let rabbits: Rabbit[] = [];
-
-  function spawn(): Rabbit {
-    return {
-      x: 0,
-      y: rand(0, REF_HEIGHT),
-      r: rand(RABBIT_MIN_R, RABBIT_MAX_R),
-      xSpeed: rand(2, 2.5),
-      ySpeed: pick(Y_SPEED_CHOICES),
-      angle: 0,
-      alpha: 255,
-      alive: true,
-      deathTime: 0,
-      particles: [],
-    };
-  }
-
-  function makeParticles(x: number, y: number): Particle[] {
-    const out: Particle[] = [];
-    for (let i = 0; i < FIREWORK_PARTICLES; i++) {
-      out.push({
-        x,
-        y,
-        vx: rand(-5, 5),
-        vy: rand(-5, 5),
-        r: Math.random() * 255,
-        g: Math.random() * 255,
-        b: Math.random() * 255,
-        alpha: 255,
-      });
-    }
-    return out;
-  }
 
   return {
     start(): void {
-      rabbits = [];
-      for (let i = 0; i < RABBIT_COUNT; i++) {
-        rabbits.push(spawn());
-      }
+      rabbits = Array.from({ length: RABBIT_COUNT }, spawn);
     },
 
-    render(frame: FrameContext): void {
-      const now = frame.timestamp;
+    render({ ctx, timestamp: now, deltaMs, tracking }: PoolFrame): void {
+      const steps = frameSteps(deltaMs);
 
-      // Collision: any ball touching an alive rabbit kills it. We use ball
-      // diameter from the legacy balls layer (80) for the radius sum.
       for (const rabbit of rabbits) {
-        if (!rabbit.alive) continue;
-        for (const ball of feed.balls.balls) {
-          const sumR = rabbit.r / 2 + (ball.diameter || BALL_DIAMETER_FOR_COLLISION) / 2;
-          if (dist({ x: ball.x, y: ball.y }, { x: rabbit.x, y: rabbit.y }) < sumR) {
+        if (rabbit.alive) {
+          // A ball touching an alive rabbit kills it.
+          const hit = tracking.balls.some(
+            (ball) => dist(ball, rabbit) < rabbit.r / 2 + ball.diameter / 2,
+          );
+          if (hit) {
             rabbit.alive = false;
             rabbit.deathTime = now;
             rabbit.particles = makeParticles(rabbit.x, rabbit.y);
             rabbit.alpha = 255;
-            break;
           }
-        }
-      }
-
-      // Respawn dead rabbits after the delay.
-      for (const rabbit of rabbits) {
-        if (!rabbit.alive && now - rabbit.deathTime >= RESPAWN_DELAY_MS) {
+        } else if (now - rabbit.deathTime >= RESPAWN_DELAY_MS) {
           rabbit.x = 0;
           rabbit.y = rand(0, REF_HEIGHT);
           rabbit.alive = true;
@@ -122,10 +77,14 @@ export function createRabbitsLayer(feed: PoolFeed): Layer {
         }
       }
 
-      // Move and draw each rabbit.
       for (const rabbit of rabbits) {
-        moveRabbit(rabbit);
-        drawRabbit(frame.ctx, rabbit);
+        if (rabbit.alive) {
+          drawAliveRabbit(ctx, rabbit);
+        } else {
+          drawFirework(ctx, rabbit);
+          drawGhostRabbit(ctx, rabbit);
+        }
+        moveRabbit(rabbit, steps);
       }
     },
 
@@ -135,36 +94,54 @@ export function createRabbitsLayer(feed: PoolFeed): Layer {
   };
 }
 
+function spawn(): Rabbit {
+  return {
+    x: 0,
+    y: rand(0, REF_HEIGHT),
+    r: rand(RABBIT_MIN_R, RABBIT_MAX_R),
+    xSpeed: rand(2, 2.5),
+    ySpeed: pick(Y_SPEED_CHOICES),
+    angle: 0,
+    alpha: 255,
+    alive: true,
+    deathTime: 0,
+    particles: [],
+  };
+}
+
+function makeParticles(x: number, y: number): ColoredParticle[] {
+  return Array.from({ length: FIREWORK_PARTICLES }, () => ({
+    x,
+    y,
+    vx: rand(-5, 5),
+    vy: rand(-5, 5),
+    r: Math.random() * 255,
+    g: Math.random() * 255,
+    b: Math.random() * 255,
+    alpha: 255,
+  }));
+}
+
 // ---------------------------------------------------------------------------
 // Motion
 // ---------------------------------------------------------------------------
 
-function moveRabbit(rabbit: Rabbit): void {
-  if (rabbit.alive) {
-    rabbit.x += rabbit.xSpeed;
-    rabbit.y += rabbit.ySpeed;
-    if (rabbit.x > REF_WIDTH) rabbit.x = 0;
-    if (rabbit.y > REF_HEIGHT) rabbit.ySpeed = -rabbit.ySpeed;
-    if (rabbit.y < 0) rabbit.ySpeed = -rabbit.ySpeed;
-    if (rabbit.x < 0) rabbit.x = REF_WIDTH;
+/** Advances a rabbit by `steps` legacy frames. Dead rabbits stay put while their ghost fades. */
+export function moveRabbit(rabbit: Rabbit, steps: number): void {
+  if (!rabbit.alive) {
+    rabbit.alpha = Math.max(0, rabbit.alpha - GHOST_FADE_PER_FRAME * steps);
+    for (const p of rabbit.particles) stepParticle(p, steps, PARTICLE_DRAG, PARTICLE_DRAG);
+    return;
   }
-  // Dead rabbits stay put in legacy (speeds were zeroed); we follow that.
+  rabbit.angle += SPIN_PER_FRAME * steps;
+  rabbit.x = wrap(rabbit.x + rabbit.xSpeed * steps, REF_WIDTH);
+  rabbit.y += rabbit.ySpeed * steps;
+  if (rabbit.y > REF_HEIGHT || rabbit.y < 0) rabbit.ySpeed = -rabbit.ySpeed;
 }
 
 // ---------------------------------------------------------------------------
 // Drawing
 // ---------------------------------------------------------------------------
-
-function drawRabbit(ctx: CanvasRenderingContext2D, rabbit: Rabbit): void {
-  if (rabbit.alive) {
-    drawAliveRabbit(ctx, rabbit);
-    rabbit.angle += 0.025;
-  } else {
-    drawFirework(ctx, rabbit);
-    drawGhostRabbit(ctx, rabbit);
-    rabbit.alpha = Math.max(0, rabbit.alpha - 0.5);
-  }
-}
 
 const GREEN = '#adff2f'; // 173, 255, 47
 const DARK_GREEN = '#50c878'; // 80, 200, 120
@@ -293,12 +270,6 @@ function drawFirework(ctx: CanvasRenderingContext2D, r: Rabbit): void {
     if (p.alpha <= 1) continue;
     ctx.fillStyle = `rgba(${Math.round(p.r)},${Math.round(p.g)},${Math.round(p.b)},${(p.alpha / 255).toFixed(3)})`;
     ctx.fillRect(p.x - 1, p.y - 1, 2, 2);
-    // Update.
-    p.x += p.vx;
-    p.y += p.vy;
-    p.vx *= PARTICLE_DRAG;
-    p.vy *= PARTICLE_DRAG;
-    p.alpha *= PARTICLE_DRAG;
   }
   ctx.restore();
 }

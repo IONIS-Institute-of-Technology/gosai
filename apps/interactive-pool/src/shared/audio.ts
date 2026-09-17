@@ -1,85 +1,34 @@
 /**
- * Graceful audio loader. Attempts to fetch a sound file from the app's
- * static assets (the menu sounds ship in `assets/audio/`); if the file is
- * missing or fails to decode the playback helper becomes a no-op.
- *
- * Why `import.meta.url`? When the bundle is dynamic-imported by the app-host
- * from `/v1/apps/<slug>/static/dist/main.js`, `import.meta.url` resolves to
- * that absolute URL. `new URL('../assets/audio/...', import.meta.url)` then
- * yields the correct fully-qualified static URL without us having to know
- * the slug or the server origin.
+ * Short sound effects played through the runtime's AudioContext. A file that
+ * fails to load logs a warning and plays nothing, so a missing sound never
+ * stops the experience.
  */
 
-export interface SoundHandle {
-  /** Play (or restart) the sound. Does nothing if the file failed to load. */
+import type { ExperienceRuntimeContext } from '@gosai/sdk';
+
+export interface Sound {
   play(): void;
-  /** Whether the underlying audio element loaded successfully. */
-  readonly loaded: boolean;
 }
 
-const SILENT: SoundHandle = {
-  play() {},
-  get loaded() {
-    return false;
-  },
-};
+const SILENT: Sound = { play: () => undefined };
 
-/**
- * Resolve a relative asset path to an absolute URL using `import.meta.url`
- * (the URL of the built bundle, i.e. `dist/main.js`). Assets live one level
- * up at `../assets/...`.
- */
-function resolveAssetUrl(relPath: string): string {
+/** Loads an app file, e.g. `assets/audio/click.mp3`. */
+export async function loadSound(rt: ExperienceRuntimeContext, path: string): Promise<Sound> {
   try {
-    return new URL(`../assets/${relPath}`, import.meta.url).href;
-  } catch {
-    return relPath;
-  }
-}
-
-/**
- * Try to load `assets/<relPath>` as a playable HTMLAudioElement. Returns a
- * handle that may or may not actually play, depending on whether the file
- * was found. All failure paths are silent on purpose.
- */
-export function loadSound(relPath: string): SoundHandle {
-  const url = resolveAssetUrl(relPath);
-  let audio: HTMLAudioElement;
-  try {
-    audio = new Audio();
-    audio.preload = 'auto';
-    audio.src = url;
-  } catch {
+    const response = await fetch(rt.assets.url(path), { signal: rt.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const buffer = await rt.audio.decodeAudioData(await response.arrayBuffer());
+    return {
+      play() {
+        if (rt.signal.aborted) return;
+        const source = rt.audio.createBufferSource();
+        source.buffer = buffer;
+        source.connect(rt.audio.destination);
+        source.start();
+      },
+    };
+  } catch (err) {
+    if (!rt.signal.aborted) rt.log.warn(`could not load the sound ${path}`, { err: String(err) });
     return SILENT;
   }
-
-  let loaded = false;
-  let failed = false;
-
-  audio.addEventListener('canplaythrough', () => {
-    loaded = true;
-  });
-  audio.addEventListener('error', () => {
-    failed = true;
-  });
-
-  return {
-    play() {
-      if (failed) return;
-      try {
-        audio.currentTime = 0;
-        // play() returns a promise that may reject if the file isn't ready
-        // or autoplay is blocked. We swallow rejection silently.
-        const p = audio.play();
-        if (p && typeof p.then === 'function') {
-          p.catch(() => undefined);
-        }
-      } catch {
-        // Ignore any sync throw (e.g. element removed).
-      }
-    },
-    get loaded() {
-      return loaded;
-    },
-  };
 }
