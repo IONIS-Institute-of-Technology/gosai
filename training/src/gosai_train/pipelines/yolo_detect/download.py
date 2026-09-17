@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from argparse import Namespace
+from pathlib import Path
 from typing import Any
 
 from ...context import ModelContext
@@ -21,7 +22,7 @@ def pinned_version(entry: dict[str, Any]) -> int:
     return version
 
 
-def downloaded_version(dataset_dir: Any) -> int | None:
+def downloaded_version(dataset_dir: Path) -> int | None:
     """Version recorded by Roboflow in a downloaded dataset's data.yaml, if any."""
     version = (load_yaml(dataset_dir / "data.yaml").get("roboflow") or {}).get("version")
     return int(version) if version is not None else None

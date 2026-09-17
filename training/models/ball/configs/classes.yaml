@@ -3,7 +3,7 @@
 # src/gosai_train/pipelines/yolo_detect/sources.py (classify_name).
 #
 # `prepare` writes every discovered class name and its decision to
-# classes.lock.yaml -- review that file after adding a dataset and promote any
+# runs/classes.lock.yaml. Review that file after adding a dataset and promote any
 # wrong decision here, e.g.:
 #   overrides:
 #     cue: drop
