@@ -190,7 +190,9 @@ Each declared slot shows up in the dashboard's per-app **device assignments**
 panel, where you pick the concrete camera / microphone / speaker and the target
 display (with a fullscreen ⇄ windowed toggle). Assignments persist to
 `~/.gosai/data/<slug>/device-settings.json` and are applied when the app starts
-(camera/microphone changes also hot-apply to a running instance).
+(camera/microphone changes also hot-apply to a running instance). The speaker
+assignment only applies to the Python `speaker` driver: browser audio, such as
+`rt.audio`, plays on the system output.
 
 Calibration is also per app, declared with a top-level `calibration` object: a
 `kind` such as the built-in `camera-projector-surface`, its `options`, and

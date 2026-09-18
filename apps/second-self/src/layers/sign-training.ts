@@ -37,11 +37,6 @@ const CORRECTION_IDLE_MS = 15000;
 const MAX_SENTENCE = 5;
 const NOSE = 0;
 const HIP = 24;
-/**
- * Signs with their own recording in `sign-training/videos/`. Every other
- * reference video is Aria's sign animation in `signs/Aria/`, shared with sign-game.
- */
-const TRAINING_VIDEOS: ReadonlySet<string> = new Set(['hello', 'left', 'ok', 'right']);
 
 interface SampleFrame {
   readonly body: readonly Point2[];
@@ -50,6 +45,11 @@ interface SampleFrame {
 }
 
 type Phase = 'mimic' | 'correction' | 'done';
+
+/** The reference video of a sign: Aria's animation, shared with sign-game. */
+export function signVideoPath(sign: string): string {
+  return `signs/Aria/${sign.replace(/ /g, '_')}.webm`;
+}
 
 /** Fits a sample skeleton onto the user's body, or null while nose and hip can't give a scale. */
 export function fitSample(body: readonly Landmark[], sample: SampleFrame): NoseHipFit | null {
@@ -115,20 +115,13 @@ export function createSignTrainingLayer(deps: LayerDeps): Layer {
   const target = (): string => PERFORMABLE_SIGNS[targetIdx] ?? '';
   const frameIdx = (): number => Math.floor(framePosition);
 
-  function videoUrl(sign: string): string {
-    const file = `${sign.replace(/ /g, '_')}.webm`;
-    return deps.asset(
-      TRAINING_VIDEOS.has(sign) ? `sign-training/videos/${file}` : `signs/Aria/${file}`,
-    );
-  }
-
   function startMimic(now: number): void {
     phase = 'mimic';
     // A hold of the previous target must not count toward this one.
     tracker.reset();
     lastReplay = now;
     // The previous target's video stops with the next pauseUnused().
-    video = media.video(videoUrl(target()));
+    video = media.video(deps.asset(signVideoPath(target())));
     video.currentTime = 0;
   }
 

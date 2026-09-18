@@ -88,9 +88,21 @@ describe('calibration flows', () => {
     expect(readCalibrationLaunch(runtime({ role: 'control', target: 'pool' }).rt)).toEqual({
       role: 'control',
       target: 'pool',
+      managed: true,
     });
-    // A custom flow opened without params calibrates its own app, as a projector.
-    expect(readCalibrationLaunch(runtime().rt)).toEqual({ role: 'projector', target: 'demo' });
+    // GOSAI's projector window names the target but no role.
+    expect(readCalibrationLaunch(runtime({ target: 'demo' }).rt)).toEqual({
+      role: 'projector',
+      target: 'demo',
+      managed: true,
+    });
+    // A custom flow the app started itself calibrates its own app, as a
+    // projector, and nothing waits for its result.
+    expect(readCalibrationLaunch(runtime().rt)).toEqual({
+      role: 'projector',
+      target: 'demo',
+      managed: false,
+    });
   });
 
   test('finishing broadcasts the result on the app events', async () => {

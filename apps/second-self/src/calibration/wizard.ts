@@ -17,15 +17,18 @@
  *    calibrated) skeleton on the reflection with dwell buttons to save the
  *    profile or redo the run.
  *
- * The wizard runs exclusively (the menu stays on). However it ends, the
- * overlays come back; unless the fit was saved, the driver goes back to the
- * saved projection and results still in flight are dropped.
+ * It runs in the calibration experience (src/calibrate.ts). The Back button
+ * at the top leaves at any time before saving. However it ends, unless the
+ * fit was saved, the driver goes back to the saved projection and results
+ * still in flight are dropped.
  */
 
-import type { DriverActionResult } from '@gosai/sdk';
-import type { LayerDeps } from '../shared/deps.js';
+import type { CalibrationResult, DriverActionResult, ExperienceRuntimeContext } from '@gosai/sdk';
+import { CALIBRATION_CANCELLED } from '../shared/calibration.js';
 import { drawText, fillCircle, strokeCircle } from '../shared/draw.js';
+import type { MirrorFeed } from '../shared/feed.js';
 import { drawBody } from '../shared/mirror.js';
+import type { Projection } from '../shared/projection.js';
 import { REF_HEIGHT, REF_WIDTH, type Layer } from '../shared/types.js';
 import {
   CursorPicker,
@@ -33,6 +36,7 @@ import {
   drawProgressRing,
   inRect,
   stepDwell,
+  type Point,
   type Rect,
 } from '../shared/ui.js';
 
@@ -65,8 +69,10 @@ const STEPBACK_MIN_MS = 4000;
 /** How long a solve-failure screen stays up before restarting. */
 const FAIL_SHOW_MS = 8000;
 const VERIFY_DWELL_MS = 1400;
+/** Longer than the other buttons: leaving drops the run. */
+const BACK_DWELL_MS = 1800;
 
-// Targets in reference space, avoiding the menu button at (540, 130).
+// Targets in reference space, avoiding the Back button at the top.
 const ROUND1: ReadonlyArray<readonly [number, number]> = [
   [200, 420],
   [880, 420],
@@ -85,14 +91,24 @@ const GREEN = '#a6d854';
 const DIM = 'rgba(255,255,255,0.65)';
 const RING_GREEN = { color: GREEN, lineWidth: 8 };
 
-type Phase = 'intro' | 'capture' | 'stepback' | 'solving' | 'verify' | 'saving' | 'failed';
+type Phase =
+  'intro' | 'capture' | 'stepback' | 'solving' | 'verify' | 'saving' | 'failed' | 'leaving';
 
 type SolveResult = DriverActionResult<'pose_to_mirror', 'solve_calibration'>;
 
 const SAVE_BUTTON: Rect = { x: 150, y: 1580, w: 340, h: 130 };
 const REDO_BUTTON: Rect = { x: 590, y: 1580, w: 340, h: 130 };
+const BACK_BUTTON: Rect = { x: 390, y: 60, w: 300, h: 120 };
 
-export function createCalibrateLayer(deps: LayerDeps): Layer {
+export interface WizardDeps {
+  readonly rt: ExperienceRuntimeContext;
+  readonly feed: MirrorFeed;
+  readonly projection: Projection;
+  /** Called once per run: with `ok` once the profile is saved, cancelled from Back. */
+  finish(result: CalibrationResult): void;
+}
+
+export function createMirrorWizard(deps: WizardDeps): Layer {
   let phase: Phase = 'intro';
   let round: 1 | 2 = 1;
   let targetIdx = 0;
@@ -129,8 +145,9 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
   let saved = false;
   let failReason = '';
 
-  // Verify-screen dwell state.
+  // Dwell state of the Back button and the verify screen's buttons.
   const cursorPicker = new CursorPicker({ bodyFallback: true });
+  let backDwellMs = 0;
   let saveDwellMs = 0;
   let redoDwellMs = 0;
 
@@ -156,6 +173,7 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
     fit = null;
     failReason = '';
     cursorPicker.reset();
+    backDwellMs = 0;
     saveDwellMs = 0;
     redoDwellMs = 0;
   }
@@ -392,7 +410,7 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
         saving = null;
         saved = true;
         deps.rt.log.info('calibrate: profile saved', { ...profile });
-        void deps.layers.stop('calibrate');
+        deps.finish({ ok: true });
       },
       (err: unknown) => {
         if (saveRun !== run) return;
@@ -401,6 +419,14 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
         phase = 'verify';
       },
     );
+  }
+
+  function leave(): void {
+    // Drop captures and solves still in flight.
+    run += 1;
+    phase = 'leaving';
+    message = '';
+    deps.finish(CALIBRATION_CANCELLED);
   }
 
   // -- rendering --------------------------------------------------------------
@@ -417,6 +443,7 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
     },
 
     render({ ctx, timestamp, deltaMs }): void {
+      const cursor = cursorPicker.pick(deps.feed.mirror.data, timestamp);
       switch (phase) {
         case 'intro':
           renderIntro(ctx, timestamp);
@@ -431,7 +458,7 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
           drawCentered(ctx, ['Computing calibration…'], 700);
           break;
         case 'verify':
-          renderVerify(ctx, timestamp, deltaMs);
+          renderVerify(ctx, cursor, deltaMs);
           break;
         case 'saving':
           drawCentered(ctx, ['Saving…'], 700);
@@ -439,7 +466,11 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
         case 'failed':
           renderFailed(ctx, timestamp);
           break;
+        case 'leaving':
+          drawCentered(ctx, ['Leaving the calibration…'], 700);
+          break;
       }
+      if (phase !== 'saving' && phase !== 'leaving') renderBack(ctx, cursor, deltaMs);
       if (message) {
         drawText(ctx, message, REF_WIDTH / 2, REF_HEIGHT - 120, 30, ORANGE, 'center', 'middle');
       }
@@ -454,9 +485,19 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
           deps.rt.log.warn('calibrate: restoring the projection failed', { err: String(err) });
         });
       }
-      deps.restoreOverlays();
     },
   };
+
+  function renderBack(ctx: CanvasRenderingContext2D, cursor: Point | null, deltaMs: number): void {
+    backDwellMs = stepDwell(backDwellMs, inRect(cursor, BACK_BUTTON), deltaMs);
+    drawHoverButton(ctx, BACK_BUTTON, 'Back', backDwellMs / BACK_DWELL_MS, {
+      color: DIM,
+      lineWidth: 4,
+      radius: 18,
+      fontPx: 40,
+    });
+    if (backDwellMs >= BACK_DWELL_MS) leave();
+  }
 
   function renderIntro(ctx: CanvasRenderingContext2D, now: number): void {
     drawCentered(
@@ -612,7 +653,11 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
     if (progress >= 1) reset();
   }
 
-  function renderVerify(ctx: CanvasRenderingContext2D, now: number, deltaMs: number): void {
+  function renderVerify(
+    ctx: CanvasRenderingContext2D,
+    cursor: Point | null,
+    deltaMs: number,
+  ): void {
     // The fitted projection is applied live: this skeleton should sit on the
     // user's reflection.
     drawBody(ctx, deps.feed.mirror.data.body_pose, {
@@ -637,7 +682,6 @@ export function createCalibrateLayer(deps: LayerDeps): Layer {
       );
     }
 
-    const cursor = cursorPicker.pick(deps.feed.mirror.data, now);
     saveDwellMs = stepDwell(saveDwellMs, inRect(cursor, SAVE_BUTTON), deltaMs);
     redoDwellMs = stepDwell(redoDwellMs, inRect(cursor, REDO_BUTTON), deltaMs);
     const buttonStyle = { lineWidth: 4, radius: 18, fontPx: 44 };

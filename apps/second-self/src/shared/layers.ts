@@ -18,10 +18,7 @@ export interface LayerDef extends LayerDefinition<FrameContext> {
   readonly label: string;
   /** Whether the layer appears in the launcher menu. */
   readonly inMenu: boolean;
-  /**
-   * Passive overlays that run at startup and come back after the calibration
-   * wizard. The menu shows its hint while only these run.
-   */
+  /** Passive overlays that run at startup. The menu shows its hint while only these run. */
   readonly overlay?: boolean;
   readonly options?: readonly MenuOption[];
 }

@@ -14,6 +14,7 @@ import {
   clearQuadWarp,
   type CalibrationQuad,
   type CalibrationSize,
+  type DriverTypes,
   type ExperienceRuntimeContext,
 } from '@gosai/sdk';
 import type { CalibrationTarget } from './calibrate.js';
@@ -32,10 +33,6 @@ import { frameQuadInDisplay } from './wizard.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const MARKER_IMAGE_SIZE = 200;
-
-interface MarkerImage {
-  readonly png_base64: string;
-}
 
 interface View {
   readonly root: HTMLDivElement;
@@ -88,7 +85,7 @@ class ProjectorWindow {
   private async drawMarkers(): Promise<void> {
     for (const slot of this.layout) {
       try {
-        const marker = await this.rt.drivers.execute<MarkerImage>('calibration', 'render_marker', {
+        const marker = await this.rt.drivers.execute('calibration', 'render_marker', {
           id: slot.id,
           size: MARKER_IMAGE_SIZE,
         });
@@ -148,12 +145,9 @@ class ProjectorWindow {
     }
   }
 
-  private previewFrame(payload: unknown): void {
+  private previewFrame(frame: DriverTypes.camera.ColorPayload): void {
     if (this.step.step !== 'preview') return;
-    const frame = payload as { jpeg_base64?: unknown; width?: unknown; height?: unknown } | null;
-    if (typeof frame?.jpeg_base64 !== 'string') return;
     this.view.preview.src = `data:image/jpeg;base64,${frame.jpeg_base64}`;
-    if (typeof frame.width !== 'number' || typeof frame.height !== 'number') return;
     if (frame.width === this.frameSize?.width && frame.height === this.frameSize.height) return;
     this.frameSize = { width: frame.width, height: frame.height };
     this.warpPreview();

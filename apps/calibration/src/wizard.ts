@@ -15,6 +15,7 @@ import {
   type CalibrationSize,
   type CameraProjectorSurfaceCalibration,
   type CameraProjectorSurfaceStep,
+  type DriverTypes,
 } from '@gosai/sdk';
 
 export type WizardStep = CameraProjectorSurfaceStep | 'done' | 'cancelled';
@@ -134,20 +135,6 @@ export function resetCorners(state: WizardState): WizardState {
   return state.step === 'surface-corners' ? { ...state, corners: [] } : state;
 }
 
-/** What the `calibration` driver's `compute` action returns. */
-export interface ComputeResult {
-  readonly matrix: readonly number[];
-  readonly inverse: readonly number[];
-  readonly surface_matrix: readonly number[] | null;
-  readonly surface_inverse: readonly number[] | null;
-  readonly surface_size: CalibrationSize;
-  readonly frame_size: CalibrationSize | null;
-  readonly markers: number;
-  readonly inliers: number;
-  readonly reprojection_error_mean: number;
-  readonly reprojection_error_max: number;
-}
-
 /**
  * Maps a quad through a homography. `null` when a corner maps to infinity,
  * which no display or CSS transform can show.
@@ -177,11 +164,14 @@ export function frameQuadInDisplay(
 
 /**
  * The profile data for a compute result. The surface corners are mapped to
- * the display here rather than taken from the driver, which reports a corner
- * at infinity as (0, 0).
+ * the display here, from the corners the user placed, and a corner at
+ * infinity fails with an error the wizard can show.
  */
 export function toCalibration(
-  result: ComputeResult,
+  result: Pick<
+    DriverTypes.calibration.ComputeResult,
+    'matrix' | 'inverse' | 'surface_matrix' | 'surface_inverse' | 'surface_size' | 'frame_size'
+  >,
   corners: readonly CalibrationPoint[],
 ): { ok: true; calibration: CameraProjectorSurfaceCalibration } | { ok: false; error: string } {
   const frame = result.frame_size;

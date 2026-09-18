@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "prebuild": "rm -rf dist",
-    "build": "bun build src/main.ts --target=browser --format=esm --outdir dist --external @gosai/sdk",
+    "build": "bun build src/main.ts src/calibrate.ts --target=browser --format=esm --outdir dist --external @gosai/sdk",
     "dev": "bun run build --watch",
     "typecheck": "tsc && tsc -p test",
     "test": "bun test --conditions @gosai/source"

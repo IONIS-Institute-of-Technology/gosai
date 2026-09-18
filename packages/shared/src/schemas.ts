@@ -143,7 +143,12 @@ const requirementsSchema = z.strictObject({
   display: z.boolean().optional(),
   camera: z.boolean().optional(),
   microphone: z.boolean().optional(),
-  speaker: z.boolean().optional(),
+  speaker: z
+    .boolean()
+    .optional()
+    .describe(
+      'Shows a speaker picker, which assigns the output device of the Python speaker driver. Browser audio, such as rt.audio, plays on the system output.',
+    ),
 }) satisfies z.ZodType<AppRequirements>;
 
 // ── Calibration ────────────────────────────────────────────────────────────

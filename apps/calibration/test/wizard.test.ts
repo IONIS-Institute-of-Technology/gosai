@@ -17,7 +17,6 @@ import {
   saveFailed,
   saveSucceeded,
   toCalibration,
-  type ComputeResult,
   type WizardState,
 } from '../src/wizard.js';
 
@@ -153,18 +152,14 @@ describe('points at infinity', () => {
     expect(mapQuad(IDENTITY, CORNERS.slice(0, 3))).toBeNull();
   });
 
-  const result: ComputeResult = {
+  const result = {
     matrix: IDENTITY,
     inverse: IDENTITY,
     surface_matrix: IDENTITY,
     surface_inverse: IDENTITY,
     surface_size: { width: 1920, height: 1080 },
     frame_size: { width: 100, height: 100 },
-    markers: 9,
-    inliers: 36,
-    reprojection_error_mean: 0.5,
-    reprojection_error_max: 1,
-  };
+  } satisfies Parameters<typeof toCalibration>[0];
 
   test('maps the surface corners itself rather than trusting the driver', () => {
     const converted = toCalibration(result, CORNERS);

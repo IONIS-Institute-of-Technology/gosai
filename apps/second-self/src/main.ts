@@ -10,6 +10,8 @@
  * - Keeps the overlays (menu, hands, body, face) running and lets the gesture
  *   menu launch the rest.
  * - Suspends every layer while the display sleeps.
+ * - Switches to the calibration experience (src/calibrate.ts) from the menu,
+ *   and as it starts on a mirror rig without a profile.
  */
 
 import {
@@ -21,9 +23,10 @@ import {
   type FullscreenCanvas,
 } from '@gosai/sdk';
 
-import { DEFAULT_CONFIG, loadConfig, loadMirrorProfile, mergeConfig } from './shared/config.js';
+import { loadMirrorProfile, openCalibration, shouldCalibrateFirst } from './shared/calibration.js';
+import { DEFAULT_CONFIG, loadConfig, mergeConfig } from './shared/config.js';
 import type { LayerDeps } from './shared/deps.js';
-import { createMirrorFeed, type MirrorFeed, type Snapshot } from './shared/feed.js';
+import { createMirrorFeed, keepLatest, type MirrorFeed } from './shared/feed.js';
 import { MenuOptions, type LayerDef, type Layers } from './shared/layers.js';
 import { Projection } from './shared/projection.js';
 import { SIGN_ACTIONS } from './shared/sign.js';
@@ -35,7 +38,6 @@ import { cssViewport } from './shared/ui.js';
 import { createAriaLayer } from './layers/aria.js';
 import { createBodyLayer } from './layers/body.js';
 import { createBounceLayer } from './layers/bounce.js';
-import { createCalibrateLayer } from './layers/calibrate.js';
 import { createClockLayer } from './layers/clock.js';
 import { createDanceLayer } from './layers/dance.js';
 import { createFaceLayer } from './layers/face.js';
@@ -63,7 +65,12 @@ const LAYERS: readonly LayerSpec[] = [
     inMenu: false,
     overlay: true,
     persistent: true,
-    factory: createMenuLayer,
+    // Always offers the mirror calibration: a running kiosk has no dashboard,
+    // so the menu is its way into reflection mode.
+    factory: (deps) =>
+      createMenuLayer(deps, [
+        { id: 'calibrate', label: 'Calibrate', run: () => openCalibration(deps.rt) },
+      ]),
   },
   {
     slug: 'hands',
@@ -88,18 +95,6 @@ const LAYERS: readonly LayerSpec[] = [
     inMenu: true,
     overlay: true,
     factory: createFaceLayer,
-  },
-
-  // The mirror calibration wizard. Always in the menu: a kiosk has no
-  // dashboard, so the wizard is the way into reflection mode. Exclusive so the
-  // uncalibrated skeleton overlays don't get in the way.
-  {
-    slug: 'calibrate',
-    label: 'Calibrate',
-    zIndex: 90,
-    inMenu: true,
-    exclusive: true,
-    factory: createCalibrateLayer,
   },
 
   {
@@ -228,6 +223,11 @@ export default defineExperience<State>({
       mode: config.projection.mode,
       calibrated: profile !== null,
     });
+    if (await shouldCalibrateFirst(rt, config, profile)) {
+      rt.log.info('second-self: no mirror calibration profile, starting the calibration');
+      openCalibration(rt);
+      return;
+    }
 
     subscribeDrivers(rt, state.feed);
     const projection = new Projection(rt, config, profile);
@@ -261,12 +261,6 @@ export default defineExperience<State>({
             : rt.drivers.execute('pose_to_mirror', 'set_mirror_config', { face_mesh: enabled }),
         ),
       asset: (path) => rt.assets.url(`assets/${path}`),
-      restoreOverlays: () => {
-        const manager = deps.layers;
-        if (rt.signal.aborted) return;
-        if (manager.running().some((slug) => manager.definition(slug)?.exclusive)) return;
-        for (const spec of LAYERS) if (spec.overlay) void manager.start(spec.slug);
-      },
     };
     layers = new LayerManager<FrameContext, LayerDef>(
       LAYERS.map(({ factory, ...spec }) => ({ ...spec, create: () => factory(deps) })),
@@ -279,20 +273,10 @@ export default defineExperience<State>({
     rt.settings.onChange((values) => {
       const next = mergeConfig(DEFAULT_CONFIG, values);
       sleep.configure(next.sleep);
-      // The wizard owns the driver's projection while it runs.
-      if (projection.configure(next) && !layers?.isRunning('calibrate')) {
-        warnOnFailure(rt, 'set_mirror_config', projection.apply());
-      }
+      if (projection.configure(next)) warnOnFailure(rt, 'set_mirror_config', projection.apply());
     });
 
     for (const spec of LAYERS) if (spec.overlay) void layers.start(spec.slug);
-
-    // A reflection rig without a fitted profile can't line the skeleton up
-    // with the reflection, so walk straight into the calibration wizard.
-    if (config.projection.mode === 'reflection' && profile === null) {
-      rt.log.info('second-self: no mirror calibration profile, starting the wizard');
-      void layers.start('calibrate');
-    }
   },
 
   render(_rt, state, frame: FrameInfo): void {
@@ -333,17 +317,11 @@ export default defineExperience<State>({
 });
 
 function subscribeDrivers(rt: ExperienceRuntimeContext, feed: MirrorFeed): void {
-  const keep =
-    <T>(snapshot: Snapshot<T>) =>
-    (data: T): void => {
-      snapshot.data = data;
-      snapshot.lastUpdate = performance.now();
-    };
-  rt.drivers.on('pose_to_mirror', 'mirrored_data', keep(feed.mirror));
-  // Camera-space landmarks for the avatar, sleep detection and calibration.
-  rt.drivers.on('pose', 'raw_data', keep(feed.raw));
-  rt.drivers.on('frequency_analysis', 'frequency', keep(feed.frequency));
-  rt.drivers.on('slr', 'new_sign', keep(feed.sign));
+  rt.drivers.on('pose_to_mirror', 'mirrored_data', keepLatest(feed.mirror));
+  // Camera-space landmarks for the avatar and sleep detection.
+  rt.drivers.on('pose', 'raw_data', keepLatest(feed.raw));
+  rt.drivers.on('frequency_analysis', 'frequency', keepLatest(feed.frequency));
+  rt.drivers.on('slr', 'new_sign', keepLatest(feed.sign));
 }
 
 function warnOnFailure(

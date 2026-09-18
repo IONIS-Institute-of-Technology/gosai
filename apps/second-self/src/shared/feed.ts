@@ -25,6 +25,14 @@ export interface MirrorFeed {
   readonly sign: Snapshot<SignData>;
 }
 
+/** A driver listener that keeps each payload in `snapshot`. */
+export function keepLatest<T>(snapshot: Snapshot<T>): (data: T) => void {
+  return (data) => {
+    snapshot.data = data;
+    snapshot.lastUpdate = performance.now();
+  };
+}
+
 export function createMirrorFeed(): MirrorFeed {
   return {
     mirror: {

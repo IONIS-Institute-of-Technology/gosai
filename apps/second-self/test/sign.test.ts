@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { fitNoseHip } from '../src/shared/align.js';
 import type { MirrorFeed } from '../src/shared/feed.js';
 import {
@@ -7,7 +9,7 @@ import {
   SIGN_COUNT_THRESHOLD,
   SignTracker,
 } from '../src/shared/sign.js';
-import { fitSample, meanDistance } from '../src/layers/sign-training.js';
+import { fitSample, meanDistance, signVideoPath } from '../src/layers/sign-training.js';
 
 function signFeed(): Pick<MirrorFeed, 'sign'> & { emit(sign: string, probability?: number): void } {
   let clock = 0;
@@ -103,5 +105,15 @@ describe('nose-hip fit', () => {
     expect(Number.isFinite(distance)).toBe(true);
     expect(distance).toBeCloseTo(0);
     expect(meanDistance(fit!, sample.body, [], [0, 24])).toBe(Number.POSITIVE_INFINITY);
+  });
+});
+
+describe('sign-training videos', () => {
+  test("every performable sign has Aria's clip", () => {
+    const assets = join(import.meta.dir, '..', 'assets');
+    const missing = PERFORMABLE_SIGNS.filter(
+      (sign) => !existsSync(join(assets, signVideoPath(sign))),
+    );
+    expect(missing).toEqual([]);
   });
 });

@@ -2,9 +2,9 @@
  * Gesture-driven launcher menu.
  *
  * An index fingertip is the cursor. Dwelling on the central button opens the
- * launcher; dwelling on a row toggles a layer, or fires or toggles one of its
- * options. Running layers are highlighted, and the options of a running layer
- * show beneath it.
+ * launcher; dwelling on a row toggles a layer, fires or toggles one of its
+ * options, or runs one of the actions listed after the layers. Running layers
+ * are highlighted, and the options of a running layer show beneath it.
  */
 
 import type { LayerDeps } from '../shared/deps.js';
@@ -40,6 +40,13 @@ const LIST_TOP = BUTTON_Y + BUTTON_R + 40;
 const ORANGE = '#ff8100';
 const WHITE = '#ffffff';
 
+/** A menu row that runs something other than a layer, such as the calibration. */
+export interface MenuAction {
+  readonly id: string;
+  readonly label: string;
+  run(): void;
+}
+
 interface Row {
   readonly id: string;
   readonly label: string;
@@ -50,7 +57,7 @@ interface Row {
   fire(): void;
 }
 
-export function createMenuLayer(deps: LayerDeps): Layer {
+export function createMenuLayer(deps: LayerDeps, actions: readonly MenuAction[] = []): Layer {
   const cursorPicker = new CursorPicker();
   /** Per-row dwell progress in milliseconds. */
   const dwell = new Map<string, number>();
@@ -86,6 +93,16 @@ export function createMenuLayer(deps: LayerDeps): Layer {
       for (const option of def.options ?? []) {
         rows.push(optionRow(deps, def.slug, option));
       }
+    }
+    for (const action of actions) {
+      rows.push({
+        id: `action:${action.id}`,
+        label: action.label,
+        active: false,
+        indent: false,
+        closesMenu: true,
+        fire: () => action.run(),
+      });
     }
     return rows;
   }

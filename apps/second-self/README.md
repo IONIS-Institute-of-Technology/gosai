@@ -31,12 +31,15 @@ entry, like any third-party app.
 | `sign-game`      | Sign-language visual novel (script-driven, choices made by signing)      |
 | `sign-training`  | Guided sign tutor: mimic a reference video, then trace a correction pose |
 | `aria`           | VRM avatar puppeted by your pose/hands/face (three.js + Kalidokit)       |
-| `calibrate`      | Guided mirror-calibration wizard; saving switches to reflection mode     |
 
 The `LayerManager` enforces per-layer `exclusive` / `allowed` / `required`
 relationships (ported from the legacy `processing.py` app-manager rules); the
 menu is `persistent`. Per-layer menu options (the old `sub-menu.json` toggles)
 live in `src/shared/layers.ts`.
+
+The mirror calibration is a second experience, `calibrate`, rather than a
+layer: see [Setting up a physical mirror rig](#setting-up-a-physical-mirror-rig).
+The menu's last row, **Calibrate**, switches to it.
 
 ## Drivers used
 
@@ -65,7 +68,7 @@ The drivers only send the 478-point face mesh while a layer needs it: the raw
 ```
 webcam ─▶ pose ─┬─▶ pose_to_mirror ─(mirrored_data)─┐
                 ├─▶ slr ─────────────(new_sign)──────┤
-                └────────────────────(raw_data)──────┤  (aria, sleep, calibrate)
+                └────────────────────(raw_data)──────┤  (aria, sleep)
 mic ────────────▶ frequency_analysis (frequency)─────┤
                                                       ▼
                                             main.ts compositor + feed
@@ -81,25 +84,28 @@ mic ────────────▶ frequency_analysis (frequency)──
   to the drivers once into a shared `MirrorFeed`, applies the mirror projection
   and the SLR action set on start, runs the layers and suspends them while the
   display sleeps.
+- `src/calibrate.ts`: the calibration experience. `src/calibration/` holds the
+  mirror wizard and the control window GOSAI opens next to it.
 - `src/shared/`: `types.ts` (driver payload types come from the SDK),
   `feed.ts`, `layers.ts` (layer definitions and menu options), `deps.ts`,
-  `config.ts` (settings), `projection.ts` (mirror projection and calibration
-  profile), `draw.ts`, `ui.ts` (cursor, dwell buttons, progress rings),
+  `config.ts` (settings), `projection.ts` (mirror projection),
+  `calibration.ts` (the calibration profile, and entering and leaving the
+  calibration), `draw.ts`, `ui.ts` (cursor, dwell buttons, progress rings),
   `mirror.ts` (skeleton topology and drawing), `align.ts`, `synth.ts`,
   `music.ts`, `particles.ts`, `media.ts` (per-layer images and videos),
   `sign.ts`, `sleep.ts`.
-- `src/layers/`: one file per experience.
+- `src/layers/`: one file per layer.
 - `test/`: unit tests for the pure parts.
 - `assets/` — copied from the legacy app (dance choreography + animated webp,
   music scores, sign-game backgrounds/characters/font/script, Aria's sign videos
-  in `signs/` shared by sign-game and sign-training, sign-training's own
-  reference videos + `slr_samples`, the `aria` VRM model).
+  in `signs/` shared by sign-game and sign-training, sign-training's
+  `slr_samples`, the `aria` VRM model).
 
 ## Build
 
 ```bash
 bun install
-bun run build         # one-shot bundle into dist/main.js
+bun run build         # one-shot bundle into dist/main.js and dist/calibrate.js
 bun run dev           # watch mode (a dev watcher is normally already running)
 bun run typecheck     # tsc --noEmit
 bun run test          # bun test
@@ -110,8 +116,7 @@ The app is registered in the repo root `build:apps` script.
 ## Configuration
 
 Configuration is intentionally minimal: two projection fields and the sleep
-settings. Everything else is automatic or produced by the in-app calibration
-wizard:
+settings. Everything else is automatic or produced by the mirror calibration:
 
 | Field                   | Values                  | Meaning                                                                        |
 | ----------------------- | ----------------------- | ------------------------------------------------------------------------------ |
@@ -157,19 +162,29 @@ Everything else adapts by itself:
    upright. Mount it as close to the display as practical, roughly centered,
    tilted slightly down is fine — the tilt is calibrated away.
 2. **Calibrate on the mirror**: open the gesture menu and select **Calibrate**
-   (always available — no dashboard needed, so it works in kiosk mode). You
-   point your index finger so its _reflection_ covers each target dot and hold
-   still (~8 dots, one round near + one round a step back, ~90 seconds total).
-   The `pose_to_mirror` driver fits the camera tilt, the distance scale and
-   the mm→pixel affine from the samples (`solve_calibration`), shows the
-   residual error, and overlays the now-calibrated skeleton on your reflection
-   for a dwell-to-confirm **Save / Redo**.
+   (always available, no dashboard needed, so it works in kiosk mode), or use
+   the app's **Calibrate** button in the dashboard, or launch a kiosk with
+   `--kiosk-calibrate`. You point your index finger so its _reflection_ covers
+   each target dot and hold still (~8 dots, one round near + one round a step
+   back, ~90 seconds total). The `pose_to_mirror` driver fits the camera tilt,
+   the distance scale and the mm→pixel affine from the samples
+   (`solve_calibration`), shows the residual error, and overlays the
+   now-calibrated skeleton on your reflection for a dwell-to-confirm
+   **Save / Redo**. Dwelling on **Back** at the top leaves without saving.
 3. **Saving switches the app to reflection mode** automatically and persists
-   both the mode and the fitted profile (`mirror_calibration` in app storage);
-   the profile is pushed to the driver on every start. Leaving the wizard
-   without saving puts the saved projection back. An app already in
-   reflection mode with no profile walks straight into the wizard on launch.
-   Re-run the wizard whenever the camera or display moves.
+   both the mode and the fitted profile, as the app's `mirror-reflection`
+   calibration profile; the profile is pushed to the driver on every start.
+   Leaving without saving puts the saved projection back. From the menu, the
+   calibration returns to the main experience either way; from the dashboard or
+   a kiosk, GOSAI closes its windows. An app already in reflection mode with no
+   profile walks straight into the calibration on launch, except right after
+   someone left it. Re-run the calibration whenever the camera or display
+   moves.
+
+The calibration is the `calibrate` experience, declared as the manifest's
+`calibration.experience`. Installs calibrated before it kept the profile under
+`mirror_calibration` in app storage; the first start converts it into the
+calibration profile.
 
 No millimetres, offsets, FOVs or tilt angles are ever entered by hand.
 

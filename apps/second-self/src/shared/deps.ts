@@ -27,9 +27,4 @@ export interface LayerDeps {
   setFaceMesh(stream: 'raw' | 'mirrored', enabled: boolean): void;
   /** URL of a file under the app's `assets/` directory. */
   asset(path: string): string;
-  /**
-   * Starts the overlay layers again unless an exclusive layer is running or
-   * the experience is stopping.
-   */
-  restoreOverlays(): void;
 }
