@@ -85,6 +85,8 @@ module.exports = {
       filter: [
         '**/*',
         '!.venv/**',
+        // Keep in sync with the files hashPythonTree skips (src/main/python-runtime.ts).
+        '!tests/**',
         '!**/__pycache__/**',
         '!**/*.pyc',
         '!**/.pytest_cache/**',
