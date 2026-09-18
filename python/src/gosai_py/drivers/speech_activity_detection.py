@@ -114,6 +114,7 @@ class SpeechActivityDriver(BaseDriver):
     events: ClassVar[Mapping[str, Event]] = {
         "activity": Event(ActivityPayload, "Speech probability of one 512-sample window."),
     }
+    stream_events = ("activity",)
     dependencies = ("microphone",)
     subscribed = (("microphone", "audio_stream"),)
     # Silero keeps state across chunks and needs contiguous audio.

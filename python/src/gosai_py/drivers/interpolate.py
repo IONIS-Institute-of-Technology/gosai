@@ -55,8 +55,12 @@ class InterpolateDriver(BaseDriver):
     name = "interpolate"
     description = "Smoothly interpolate any numeric stream over time."
     events: ClassVar[Mapping[str, Event]] = {
-        "interpolated_data": Event(InterpolatedPayload, "One step of a stream's interpolation."),
+        "interpolated_data": Event(
+            InterpolatedPayload,
+            "One step of a stream's interpolation. A slow reader gets the newest step of any stream.",
+        ),
     }
+    stream_events = ("interpolated_data",)
     loop_interval_s = None
 
     def __init__(self, context: DriverContext) -> None:

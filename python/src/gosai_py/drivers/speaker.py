@@ -2,7 +2,9 @@
 
 Plays audio through `sounddevice`. Each instance has its own output stream
 and playback buffer: `play` appends samples, the output callback copies what
-it needs and fills the rest of the block with silence.
+it needs and fills the rest of the block with silence. The callback only
+counts underruns; a worker thread reports them as `underrun`, at most once a
+second, so a starved stream can't flood the bridge from the audio thread.
 
 The driver is exclusive, so every app gets its own instance. A shared
 instance would let one app's `clear` or `set_samplerate` cut another app's
@@ -18,11 +20,12 @@ from __future__ import annotations
 import math
 import threading
 from collections import deque
-from collections.abc import Mapping
-from typing import Any, ClassVar
+from collections.abc import Callable, Mapping
+from typing import Annotated, Any, ClassVar
 
 import msgspec
 import numpy as np
+from msgspec import Meta
 
 from gosai_py import devices
 from gosai_py.clock import now_ms
@@ -33,6 +36,8 @@ from gosai_py.payloads import AudioSamples, EpochMs, mono_samples
 DEFAULT_SAMPLERATE = 44_100
 BLOCKSIZE = 1024
 CHANNELS = 1
+# Shortest time between two `underrun` events.
+UNDERRUN_INTERVAL_S = 1.0
 
 
 class SpeakerConfig(msgspec.Struct, kw_only=True):
@@ -41,6 +46,7 @@ class SpeakerConfig(msgspec.Struct, kw_only=True):
 
 
 class UnderrunPayload(msgspec.Struct, kw_only=True):
+    count: Annotated[int, Meta(description="Underruns since the previous event.")]
     ts: EpochMs
 
 
@@ -109,12 +115,70 @@ class PlaybackBuffer:
         return filled
 
 
+class UnderrunCounter:
+    """Counts underruns on the audio thread and reports them from a worker thread.
+
+    `add` only bumps the count. The worker reports the first underrun at
+    once, then waits `interval_s` before it reports the ones that came since.
+    """
+
+    def __init__(
+        self,
+        report: Callable[[int], None],
+        *,
+        name: str,
+        interval_s: float,
+        on_error: Callable[[BaseException], None],
+    ) -> None:
+        self._report = report
+        self._interval_s = interval_s
+        self._on_error = on_error
+        self._cond = threading.Condition()
+        self._count = 0
+        self._closed = False
+        self._thread = threading.Thread(target=self._run, name=name, daemon=True)
+        self._thread.start()
+
+    def add(self) -> None:
+        with self._cond:
+            self._count += 1
+            self._cond.notify()
+
+    def close(self) -> None:
+        """Stop the worker. Underruns it hasn't reported yet are dropped."""
+        with self._cond:
+            self._closed = True
+            self._cond.notify()
+
+    def join(self, timeout: float | None = None) -> bool:
+        self._thread.join(timeout)
+        return not self._thread.is_alive()
+
+    def _run(self) -> None:
+        while True:
+            with self._cond:
+                self._cond.wait_for(lambda: self._count > 0 or self._closed)
+                if self._closed:
+                    return
+                count, self._count = self._count, 0
+            try:
+                self._report(count)
+            except Exception as exc:
+                self._on_error(exc)
+            with self._cond:
+                if self._cond.wait_for(lambda: self._closed, self._interval_s):
+                    return
+
+
 class SpeakerDriver(BaseDriver):
     name = "speaker"
     description = "Audio output via sounddevice."
     events: ClassVar[Mapping[str, Event]] = {
         "settings": Event(AudioSettingsPayload, "Stream settings after each (re)open."),
-        "underrun": Event(UnderrunPayload, "The output device ran out of data."),
+        "underrun": Event(
+            UnderrunPayload,
+            "The output device ran out of data. At most once a second, with a count.",
+        ),
     }
     config_type = SpeakerConfig
     loop_interval_s = None
@@ -125,6 +189,7 @@ class SpeakerDriver(BaseDriver):
         self._samplerate = DEFAULT_SAMPLERATE
         self._buffer = PlaybackBuffer()
         self._stream: Any = None
+        self._underruns: UnderrunCounter | None = None
 
     def configure(self, config: SpeakerConfig) -> None:
         self._device = config.device
@@ -189,11 +254,17 @@ class SpeakerDriver(BaseDriver):
 
     def _open_stream(self) -> None:
         sd = devices.sounddevice()
+        underruns = UnderrunCounter(
+            lambda count: self.emit("underrun", {"count": count, "ts": now_ms()}),
+            name=f"driver:{self.name}:underruns",
+            interval_s=UNDERRUN_INTERVAL_S,
+            on_error=lambda exc: self.log("error", f"underrun report failed: {exc!r}"),
+        )
 
         def callback(outdata: np.ndarray, _frames: int, _time: Any, status: Any) -> None:
             self._buffer.read_into(outdata)
             if status.output_underflow:
-                self.emit("underrun", {"ts": now_ms()})
+                underruns.add()
 
         try:
             stream = sd.OutputStream(
@@ -206,9 +277,11 @@ class SpeakerDriver(BaseDriver):
             )
             stream.start()
         except Exception as exc:
+            underruns.close()
+            underruns.join(1.0)
             raise RuntimeError(f"cannot open speaker device={self._device}: {exc}") from exc
 
-        self._stream = stream
+        self._stream, self._underruns = stream, underruns
         self.emit(
             "settings",
             {
@@ -222,6 +295,10 @@ class SpeakerDriver(BaseDriver):
 
     def _close_stream(self) -> None:
         stream, self._stream = self._stream, None
+        underruns, self._underruns = self._underruns, None
         if stream is not None:
             stream.stop()
             stream.close()
+        if underruns is not None:
+            underruns.close()
+            underruns.join(1.0)

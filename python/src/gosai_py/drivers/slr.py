@@ -124,6 +124,7 @@ class SLRDriver(BaseDriver):
     events: ClassVar[Mapping[str, Event]] = {
         "new_sign": Event(SignPayload, "Most likely sign over the last 30 pose frames."),
     }
+    stream_events = ("new_sign",)
     dependencies = ("pose",)
     subscribed = (("pose", "raw_data"),)
     # Each prediction covers a 30-frame sequence, so frames are queued, not skipped.

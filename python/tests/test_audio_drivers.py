@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 from collections.abc import Iterator
+from itertools import pairwise
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
@@ -14,6 +16,7 @@ import pytest
 from conftest import BridgeFactory
 from fakes import FakeSoundDevice, RecordingContext, check_events, check_result, wait_until
 from gosai_py import devices
+from gosai_py.drivers import speaker
 from gosai_py.drivers.frequency_analysis import FrequencyAnalysisDriver
 from gosai_py.drivers.microphone import MicrophoneDriver
 from gosai_py.drivers.speaker import SpeakerDriver
@@ -120,7 +123,44 @@ def test_speaker_plays_queued_samples_across_blocks(sd: FakeSoundDevice) -> None
         assert check_result(SpeakerDriver, "clear", driver.execute("clear", None)) is None
         callback(out, 1024, None, SimpleNamespace(output_underflow=False))
         assert not out.any()
-        assert context.emitted("underrun")
+        wait_until(lambda: bool(context.emitted("underrun")))
+        assert context.emitted("underrun")[0]["count"] == 1
+        check_events(SpeakerDriver, context)
+    finally:
+        assert driver._bridge_stop(5.0)
+
+
+def test_speaker_reports_underruns_from_a_worker_at_most_once_per_interval(
+    sd: FakeSoundDevice, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert speaker.UNDERRUN_INTERVAL_S == 1.0
+    monkeypatch.setattr(speaker, "UNDERRUN_INTERVAL_S", 0.2)
+    driver, context = _speaker(sd)
+    reports: list[tuple[str, float, int]] = []
+    original_emit = context.emit
+
+    def emit(event: str, data: Any) -> None:
+        if event == "underrun":
+            reports.append((threading.current_thread().name, time.monotonic(), data["count"]))
+        original_emit(event, data)
+
+    context.emit = emit  # type: ignore[method-assign]
+    try:
+        callback = sd.streams[-1].callback
+        out = np.zeros((1024, 1), dtype=np.float32)
+        starved = SimpleNamespace(output_underflow=True)
+        for _ in range(5):
+            callback(out, 1024, None, starved)
+        wait_until(lambda: sum(count for *_, count in reports) == 5)
+        for _ in range(3):
+            callback(out, 1024, None, starved)
+        wait_until(lambda: sum(count for *_, count in reports) == 8)
+
+        # The audio callback never emits: every report comes from the worker,
+        # and no two come closer than the interval.
+        assert {name for name, *_ in reports} == {"driver:speaker:underruns"}
+        times = [at for _, at, _ in reports]
+        assert all(later - earlier >= 0.18 for earlier, later in pairwise(times))
         check_events(SpeakerDriver, context)
     finally:
         assert driver._bridge_stop(5.0)

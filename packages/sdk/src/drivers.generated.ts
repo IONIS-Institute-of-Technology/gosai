@@ -639,6 +639,8 @@ export declare namespace DriverTypes {
     }
 
     export interface UnderrunPayload {
+      /** Underruns since the previous event. */
+      count: number;
       /** Milliseconds since the Unix epoch. */
       ts: number;
     }
@@ -949,7 +951,7 @@ export interface BuiltinDrivers {
   interpolate: {
     config: undefined;
     events: {
-      /** One step of a stream's interpolation. */
+      /** One step of a stream's interpolation. A slow reader gets the newest step of any stream. */
       interpolated_data: DriverTypes.interpolate.InterpolatedPayload;
     };
     actions: {
@@ -1070,7 +1072,7 @@ export interface BuiltinDrivers {
     events: {
       /** Stream settings after each (re)open. */
       settings: DriverTypes.speaker.AudioSettingsPayload;
-      /** The output device ran out of data. */
+      /** The output device ran out of data. At most once a second, with a count. */
       underrun: DriverTypes.speaker.UnderrunPayload;
     };
     actions: {

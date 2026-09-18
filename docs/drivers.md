@@ -599,9 +599,9 @@ Types: `DriverTypes.interpolate`.
 
 ### Events
 
-| Event               | Payload               | Delivery | Description                           |
-| ------------------- | --------------------- | -------- | ------------------------------------- |
-| `interpolated_data` | `InterpolatedPayload` | ordered  | One step of a stream's interpolation. |
+| Event               | Payload               | Delivery | Description                                                                             |
+| ------------------- | --------------------- | -------- | --------------------------------------------------------------------------------------- |
+| `interpolated_data` | `InterpolatedPayload` | latest   | One step of a stream's interpolation. A slow reader gets the newest step of any stream. |
 
 ### Actions
 
@@ -924,7 +924,7 @@ Types: `DriverTypes.slr`.
 
 | Event      | Payload       | Delivery | Description                                    |
 | ---------- | ------------- | -------- | ---------------------------------------------- |
-| `new_sign` | `SignPayload` | ordered  | Most likely sign over the last 30 pose frames. |
+| `new_sign` | `SignPayload` | latest   | Most likely sign over the last 30 pose frames. |
 
 ### Actions
 
@@ -953,10 +953,10 @@ Config: `SpeakerConfig`
 
 ### Events
 
-| Event      | Payload                | Delivery | Description                          |
-| ---------- | ---------------------- | -------- | ------------------------------------ |
-| `settings` | `AudioSettingsPayload` | ordered  | Stream settings after each (re)open. |
-| `underrun` | `UnderrunPayload`      | ordered  | The output device ran out of data.   |
+| Event      | Payload                | Delivery | Description                                                             |
+| ---------- | ---------------------- | -------- | ----------------------------------------------------------------------- |
+| `settings` | `AudioSettingsPayload` | ordered  | Stream settings after each (re)open.                                    |
+| `underrun` | `UnderrunPayload`      | ordered  | The output device ran out of data. At most once a second, with a count. |
 
 ### Actions
 
@@ -986,6 +986,8 @@ export interface AudioSettingsPayload {
 }
 
 export interface UnderrunPayload {
+  /** Underruns since the previous event. */
+  count: number;
   /** Milliseconds since the Unix epoch. */
   ts: number;
 }
@@ -1028,7 +1030,7 @@ Types: `DriverTypes.speech_activity_detection`.
 
 | Event      | Payload           | Delivery | Description                                  |
 | ---------- | ----------------- | -------- | -------------------------------------------- |
-| `activity` | `ActivityPayload` | ordered  | Speech probability of one 512-sample window. |
+| `activity` | `ActivityPayload` | latest   | Speech probability of one 512-sample window. |
 
 ### Actions
 

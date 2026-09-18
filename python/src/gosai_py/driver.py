@@ -205,6 +205,13 @@ class BaseDriver:
       such as audio blocks or frame sequences.
     - `loop_interval_s`: how often `loop()` is called (0 == as fast as possible,
       `None` == no loop, callback-only).
+
+    Which delivery an event gets: an event that carries a new state every
+    frame or audio window, replaced by the next one, goes in `stream_events`.
+    A discrete event, such as a settings change or a transcription, is queued:
+    ordered, or in `buffered_events` when every value matters and it comes at
+    a steady high rate, like raw audio blocks. A discrete event that can fire
+    in bursts is rate-limited where it is emitted, as `speaker.underrun` is.
     """
 
     name: ClassVar[str] = ""
