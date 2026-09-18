@@ -1,42 +1,13 @@
 import { describe, expect, test } from 'bun:test';
-import type { ExperienceRuntimeContext } from '@gosai/sdk';
 import { DEFAULT_CONFIG, mergeConfig, type MirrorProfile } from '../src/shared/config.js';
 import { MenuOptions } from '../src/shared/layers.js';
 import { Projection } from '../src/shared/projection.js';
-
-interface Recorded {
-  readonly rt: ExperienceRuntimeContext;
-  readonly executed: Array<{ driver: string; action: string; params: unknown }>;
-  readonly stored: Map<string, unknown>;
-  readonly settings: Array<Record<string, unknown>>;
-}
+import { FakeRuntime, type FakeRuntimeOptions } from './fakes.js';
 
 const DRIVER_SETTINGS = { mode: 'direct', tilt_deg: 17, scale: 1, affine: null, face_mesh: true };
 
-function fakeRuntime(
-  driver: Record<string, unknown> = { ...DRIVER_SETTINGS },
-  hooks: { onStorage?: () => void } = {},
-): Recorded {
-  const executed: Recorded['executed'] = [];
-  const stored = new Map<string, unknown>();
-  const settings: Recorded['settings'] = [];
-  const rt = {
-    drivers: {
-      execute: async (name: string, action: string, params?: unknown) => {
-        executed.push({ driver: name, action, params });
-        Object.assign(driver, params ?? {});
-        return { ...driver };
-      },
-    },
-    storage: {
-      set: async (key: string, value: unknown) => {
-        stored.set(key, value);
-        hooks.onStorage?.();
-      },
-    },
-    settings: { set: async (values: Record<string, unknown>) => void settings.push(values) },
-  };
-  return { rt: rt as unknown as ExperienceRuntimeContext, executed, stored, settings };
+function fakeRuntime(options: FakeRuntimeOptions = {}): FakeRuntime {
+  return new FakeRuntime({ driver: { ...DRIVER_SETTINGS }, ...options });
 }
 
 const PROFILE: MirrorProfile = { tilt_deg: 9, scale: 1.2, affine: [1, 2, 3, 4] };
@@ -66,7 +37,7 @@ describe('Projection', () => {
   test('restore without a profile uses the snapshot taken when the wizard started', async () => {
     // The startup apply never completed, but the driver holds a fit.
     const driver = { ...DRIVER_SETTINGS, tilt_deg: 12, scale: 1.3, affine: [5, 6, 7, 8] };
-    const { rt, executed } = fakeRuntime(driver);
+    const { rt, executed } = fakeRuntime({ driver });
     const projection = new Projection(rt, DEFAULT_CONFIG, null);
     await projection.snapshot();
     expect(executed.at(-1)).toEqual({
@@ -108,10 +79,11 @@ describe('Projection', () => {
   });
 
   test('saving a calibration stores it, switches to reflection and applies it', async () => {
-    const { rt, executed, stored, settings } = fakeRuntime();
+    const fake = fakeRuntime();
+    const { rt, executed, settings } = fake;
     const projection = new Projection(rt, DEFAULT_CONFIG, null);
     await projection.saveCalibration(PROFILE);
-    expect(stored.get('mirror_calibration')).toEqual(PROFILE);
+    expect(fake.profile).toMatchObject({ kind: 'mirror-reflection', data: PROFILE });
     expect(settings).toEqual([{ 'projection.mode': 'reflection' }]);
     expect(projection.config.projection.mode).toBe('reflection');
     expect(DEFAULT_CONFIG.projection.mode).toBe('direct');
@@ -124,12 +96,14 @@ describe('Projection', () => {
 
   test('an aborted save skips the steps that had not started', async () => {
     const controller = new AbortController();
-    const { rt, executed, stored, settings } = fakeRuntime(undefined, {
-      onStorage: () => controller.abort(),
-    });
+    const fake = fakeRuntime();
+    const { rt, executed, settings } = fake;
     const projection = new Projection(rt, DEFAULT_CONFIG, null);
-    expect(await projection.saveCalibration(PROFILE, controller.signal)).toBe(false);
-    expect(stored.has('mirror_calibration')).toBe(true);
+    const saving = projection.saveCalibration(PROFILE, controller.signal);
+    // Leaving while the profile saves.
+    controller.abort();
+    expect(await saving).toBe(false);
+    expect(fake.profile?.data).toEqual(PROFILE);
     expect(settings).toEqual([]);
     expect(executed).toEqual([]);
     expect(projection.config.projection.mode).toBe('direct');
@@ -140,7 +114,7 @@ describe('Projection', () => {
     expect(
       await new Projection(fresh.rt, DEFAULT_CONFIG, null).saveCalibration(PROFILE, aborted.signal),
     ).toBe(false);
-    expect(fresh.stored.size).toBe(0);
+    expect(fresh.profile).toBeNull();
   });
 });
 

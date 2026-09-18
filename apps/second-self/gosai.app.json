@@ -15,21 +15,30 @@
       "description": "Composited augmented-mirror experience: persistent skeleton overlays plus a gesture menu that launches every Second Self module.",
       "entry": "dist/main.js",
       "drivers": ["pose", "pose_to_mirror", "frequency_analysis", "slr"]
+    },
+    {
+      "slug": "calibrate",
+      "name": "Mirror Calibration",
+      "description": "Fits the mirror projection to the rig: point at dots on the mirror, then check the skeleton on your reflection. Saving switches the app to reflection mode.",
+      "entry": "dist/calibrate.js",
+      "drivers": ["pose", "pose_to_mirror"],
+      "exclusive": true
     }
   ],
+  "calibration": { "kind": "mirror-reflection", "experience": "calibrate" },
   "startup": ["main"],
   "settings": {
     "storageKey": "config",
     "groups": [
       {
         "label": "Projection",
-        "description": "How the webcam frame maps into the experience. Reflection mode is calibrated on the mirror itself via the in-app wizard (menu > Calibrate).",
+        "description": "How the webcam frame maps into the experience. Reflection mode is calibrated on the mirror itself: menu > Calibrate, or the Calibrate button.",
         "fields": [
           {
             "key": "projection.mode",
             "label": "Mode",
             "type": "select",
-            "description": "Direct = webcam selfie overlay. Reflection = physical mirror rig (run the in-app calibration).",
+            "description": "Direct = webcam selfie overlay. Reflection = physical mirror rig (run the calibration).",
             "default": "direct",
             "options": [
               { "value": "direct", "label": "Direct (webcam)" },

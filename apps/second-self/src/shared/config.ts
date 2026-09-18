@@ -6,16 +6,14 @@
  * selfie flip and the display sleep tuning. The runtime reads them through
  * `rt.settings`; the defaults and bounds below come from the same schema.
  *
- * The physical mirror projection isn't typed in by hand. The in-app
- * calibration wizard fits it and stores a {@link MirrorProfile} under
- * {@link MIRROR_PROFILE_STORAGE_KEY}.
+ * The physical mirror projection isn't typed in by hand. The calibration
+ * experience fits it and saves a {@link MirrorProfile} as the app's
+ * calibration profile (see calibration.ts).
  */
 
 import type { DriverTypes, ExperienceRuntimeContext } from '@gosai/sdk';
 import manifest from '../../gosai.app.json';
 import { REF_HEIGHT, REF_WIDTH } from './types.js';
-
-export const MIRROR_PROFILE_STORAGE_KEY = 'mirror_calibration';
 
 type ProjectionMode = 'direct' | 'reflection';
 
@@ -44,7 +42,7 @@ export interface SecondSelfConfig {
   readonly sleep: SleepConfig;
 }
 
-/** Fitted mirror calibration, produced by the wizard and applied in reflection mode. */
+/** Fitted mirror calibration, produced by the calibration and applied in reflection mode. */
 export interface MirrorProfile {
   /** Camera tilt in degrees. */
   readonly tilt_deg: number;
@@ -134,18 +132,6 @@ export function mergeConfig(base: SecondSelfConfig, override: unknown): SecondSe
   };
 }
 
-/** Reads the stored mirror calibration profile, if there is a valid one. */
-export async function loadMirrorProfile(
-  rt: ExperienceRuntimeContext,
-): Promise<MirrorProfile | null> {
-  try {
-    return parseMirrorProfile(await rt.storage.get(MIRROR_PROFILE_STORAGE_KEY));
-  } catch (err) {
-    rt.log.warn('second-self: failed to read mirror profile', { err: String(err) });
-    return null;
-  }
-}
-
 /**
  * The `set_mirror_config` update for the projection settings plus the fitted
  * profile. Without a profile the driver drops any fitted affine.
@@ -165,7 +151,8 @@ export function toMirrorDriverConfig(
   };
 }
 
-function parseMirrorProfile(value: unknown): MirrorProfile | null {
+/** A valid {@link MirrorProfile}, or `null`. */
+export function parseMirrorProfile(value: unknown): MirrorProfile | null {
   if (!isObject(value)) return null;
   const { affine, tilt_deg, scale, residual_px_mean, updatedAt } = value;
   if (

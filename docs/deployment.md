@@ -200,8 +200,8 @@ start, and uninstalling an app keeps its data.
 
 Apps that declare a built-in `calibration` kind in their manifest (e.g.
 `interactive-pool`) are packaged together with the built-in calibration app.
-Apps with their own flow (`calibration.experience`) run it themselves. On the
-kiosk:
+Apps with their own flow (`calibration.experience`, e.g. `second-self`) run it
+themselves. On the kiosk:
 
 - **First boot:** if the app has `calibration.required: true` and isn't
   calibrated yet, the kiosk opens the calibration flow (fullscreen projector

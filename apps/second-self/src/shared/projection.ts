@@ -6,12 +6,8 @@
  */
 
 import type { DriverTypes, ExperienceRuntimeContext } from '@gosai/sdk';
-import {
-  MIRROR_PROFILE_STORAGE_KEY,
-  toMirrorDriverConfig,
-  type MirrorProfile,
-  type SecondSelfConfig,
-} from './config.js';
+import { saveMirrorProfile } from './calibration.js';
+import { toMirrorDriverConfig, type MirrorProfile, type SecondSelfConfig } from './config.js';
 
 type MirrorSettings = DriverTypes.pose_to_mirror.MirrorSettings;
 
@@ -84,7 +80,7 @@ export class Projection {
    */
   async saveCalibration(profile: MirrorProfile, signal?: AbortSignal): Promise<boolean> {
     if (signal?.aborted) return false;
-    await this.rt.storage.set(MIRROR_PROFILE_STORAGE_KEY, profile);
+    await saveMirrorProfile(this.rt, profile);
     this.savedProfile = profile;
     if (this.currentConfig.projection.mode !== 'reflection') {
       if (signal?.aborted) return false;
