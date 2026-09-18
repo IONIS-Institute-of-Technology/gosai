@@ -59,7 +59,7 @@ A starter app lives in [`templates/basic`](https://github.com/IONIS-Institute-of
     "display": true, // opens a window
     "camera": true, // this app gets its own camera
     "microphone": false, // this app gets its own microphone
-    "speaker": false, // shared between apps
+    "speaker": false, // output device of the Python speaker driver, not of rt.audio
   },
   "calibration": {
     "kind": "camera-projector-surface", // a built-in kind, or your own with "experience"
@@ -115,7 +115,10 @@ release it leads to: `0.2.0-rc.0` satisfies `^0.2.0`.
 
 `requirements` drives the per-app device pickers in the dashboard. Device
 choices are applied to your drivers automatically: `rt.drivers.on('camera', ...)`
-always reaches the camera assigned to your app.
+always reaches the camera assigned to your app. The speaker picker only assigns
+the output of the Python `speaker` driver. Browser audio, such as `rt.audio`,
+plays on the system output, so an app that only plays sound in the page doesn't
+need `speaker`.
 
 ## Experiences
 

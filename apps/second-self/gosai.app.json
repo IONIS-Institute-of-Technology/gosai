@@ -7,7 +7,7 @@
   "description": "Augmented-mirror experience pack. A single composited surface projects interactive overlays onto a portrait mirror: skeleton overlays (hands, body, face), a gesture-driven launcher menu, motion games (poke-it, bounce, dance), audio experiences (theremine, music training) and sign-language modules (sign game, sign training). Driven by webcam pose estimation mirrored onto the display.",
   "author": "GOSAI",
   "default": "main",
-  "requirements": { "display": true, "camera": true, "microphone": true, "speaker": true },
+  "requirements": { "display": true, "camera": true, "microphone": true },
   "experiences": [
     {
       "slug": "main",
