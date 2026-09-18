@@ -92,8 +92,8 @@ mic ────────────▶ frequency_analysis (frequency)──
 - `test/`: unit tests for the pure parts.
 - `assets/` — copied from the legacy app (dance choreography + animated webp,
   music scores, sign-game backgrounds/characters/font/script, Aria's sign videos
-  in `signs/` shared by sign-game and sign-training, sign-training's own
-  reference videos + `slr_samples`, the `aria` VRM model).
+  in `signs/` shared by sign-game and sign-training, sign-training's
+  `slr_samples`, the `aria` VRM model).
 
 ## Build
 
