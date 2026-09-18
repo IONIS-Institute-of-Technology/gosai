@@ -34,11 +34,10 @@ Breaking:
   `speech_to_text.transcribe` returns
   `DriverTypes.speech_to_text.TranscriptionPayload` instead of
   `TranscribeResult`.
-- `speech_activity_detection.activity`, `slr.new_sign` and
-  `interpolate.interpolated_data` keep only the latest value, like the other
-  events sent every frame or audio window: an app that reads slower than the
-  driver emits gets the newest value and misses the ones before it. For
-  `interpolated_data` that holds across all its streams.
+- `speech_activity_detection.activity` and `slr.new_sign` keep only the
+  latest value, like the other events sent every frame or audio window: an app
+  that reads slower than the driver emits gets the newest value and misses the
+  ones before it.
 - `speaker.underrun` comes at most once a second, with `count`, the number of
   underruns since the previous event. It used to come once per starved audio
   block.

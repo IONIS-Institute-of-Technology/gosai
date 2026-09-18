@@ -951,7 +951,7 @@ export interface BuiltinDrivers {
   interpolate: {
     config: undefined;
     events: {
-      /** One step of a stream's interpolation. A slow reader gets the newest step of any stream. */
+      /** One step of a stream's interpolation. */
       interpolated_data: DriverTypes.interpolate.InterpolatedPayload;
     };
     actions: {

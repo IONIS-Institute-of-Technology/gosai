@@ -230,7 +230,7 @@ def test_event_delivery_matches_the_bridge() -> None:
     assert microphone_events["audio_stream"]["queue_size"] == 64
 
 
-def test_per_frame_and_per_window_events_keep_only_the_latest_value() -> None:
+def test_event_delivery_follows_the_rule() -> None:
     from gosai_py.drivers.interpolate import InterpolateDriver
     from gosai_py.drivers.slr import SLRDriver
     from gosai_py.drivers.speaker import SpeakerDriver
@@ -241,9 +241,10 @@ def test_per_frame_and_per_window_events_keep_only_the_latest_value() -> None:
 
     assert delivery(SpeechActivityDriver, "activity") == "latest"
     assert delivery(SLRDriver, "new_sign") == "latest"
-    assert delivery(InterpolateDriver, "interpolated_data") == "latest"
     # Discrete events stay queued; the speaker rate-limits underruns itself.
     assert delivery(SpeakerDriver, "underrun") == "ordered"
+    # Several named streams share this event, and each stream's last step matters.
+    assert delivery(InterpolateDriver, "interpolated_data") == "ordered"
 
 
 def test_documented_input_conversions() -> None:

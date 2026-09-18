@@ -599,9 +599,9 @@ Types: `DriverTypes.interpolate`.
 
 ### Events
 
-| Event               | Payload               | Delivery | Description                                                                             |
-| ------------------- | --------------------- | -------- | --------------------------------------------------------------------------------------- |
-| `interpolated_data` | `InterpolatedPayload` | latest   | One step of a stream's interpolation. A slow reader gets the newest step of any stream. |
+| Event               | Payload               | Delivery | Description                           |
+| ------------------- | --------------------- | -------- | ------------------------------------- |
+| `interpolated_data` | `InterpolatedPayload` | ordered  | One step of a stream's interpolation. |
 
 ### Actions
 
