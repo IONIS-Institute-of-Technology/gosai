@@ -120,7 +120,6 @@ describe('network.connect sources', () => {
 
   test('the policy appends valid sources and drops invalid ones', () => {
     const csp = appContentSecurityPolicy({
-      port: 7777,
       connect: ['ws://relay.local:8080', "ws://x; script-src 'unsafe-inline'"],
     });
     const connect = csp.split('; ').find((d) => d.startsWith('connect-src'));

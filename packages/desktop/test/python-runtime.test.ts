@@ -12,8 +12,8 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { bridgeExecutable } from '@gosai/shared/python-bridge';
 import {
-  bridgeExecutable,
   cleanStaleRuntimes,
   COMPLETE_MARKER,
   hashPythonTree,

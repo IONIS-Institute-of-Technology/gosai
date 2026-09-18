@@ -6,6 +6,7 @@
 import { existsSync } from 'node:fs';
 import { verifyToken, type TokenScope } from '@gosai/shared/auth';
 import { ServerEvents } from '@gosai/shared/events';
+import { bridgeExecutable } from '@gosai/shared/python-bridge';
 import { grantFor } from './access/capabilities.js';
 import { readBearerToken, RequestGuard } from './access/request-guard.js';
 import { migrateLegacyAppData } from './apps/data-migration.js';
@@ -20,7 +21,6 @@ import { ConfigStore } from './config/config.js';
 import type { PythonToolchain } from './apps/python-env.js';
 import { pythonAppBridges } from './drivers/app-drivers.js';
 import { driverConfigFor } from './drivers/camera-config.js';
-import { bridgeExecutable } from './drivers/bridge.js';
 import { DriverHub } from './drivers/hub.js';
 import { createHttpRoutes } from './http/routes.js';
 import { EventBus } from './ipc/bus.js';
@@ -170,7 +170,6 @@ export async function createServer(options: ServerOptions): Promise<GosaiServer>
     apps,
     guard,
     authenticate,
-    port: () => boundPort,
     ...(options.sdkDir ? { sdkDir: options.sdkDir } : {}),
   });
 
