@@ -164,8 +164,8 @@ export function frameQuadInDisplay(
 
 /**
  * The profile data for a compute result. The surface corners are mapped to
- * the display here rather than taken from the driver, which reports a corner
- * at infinity as (0, 0).
+ * the display here, from the corners the user placed, and a corner at
+ * infinity fails with an error the wizard can show.
  */
 export function toCalibration(
   result: Pick<
