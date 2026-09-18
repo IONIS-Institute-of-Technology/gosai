@@ -46,7 +46,6 @@ import {
   saveFailed,
   saveSucceeded,
   toCalibration,
-  type ComputeResult,
   type WizardState,
   type WizardStep,
 } from './wizard.js';
@@ -125,19 +124,15 @@ class ControlWindow {
     const signal = rt.signal;
 
     rt.drivers.on('camera', 'color', (payload) => {
-      const jpeg = (payload as { jpeg_base64?: unknown } | null)?.jpeg_base64;
-      if (typeof jpeg !== 'string') return;
       const img = new Image();
       img.onload = () => {
         this.frame = img;
         this.draw();
       };
-      img.src = `data:image/jpeg;base64,${jpeg}`;
+      img.src = `data:image/jpeg;base64,${payload.jpeg_base64}`;
     });
     rt.drivers.on('calibration', 'detection', (payload) => {
-      const detected = (payload as { detected?: unknown } | null)?.detected;
-      if (typeof detected !== 'number') return;
-      this.detectedMarkers = detected;
+      this.detectedMarkers = payload.detected;
       this.updateStatus();
     });
 
@@ -196,7 +191,7 @@ class ControlWindow {
     const { rt, wizard } = this;
     const frame = this.frame;
     try {
-      const result = await rt.drivers.execute<ComputeResult>('calibration', 'compute', {
+      const result = await rt.drivers.execute('calibration', 'compute', {
         focus_quad: wizard.corners,
         frame_size: frame ? { width: frame.naturalWidth, height: frame.naturalHeight } : undefined,
         surface_size: this.target.options.surfaceSize,
