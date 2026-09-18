@@ -73,7 +73,10 @@ def test_schema_shape() -> None:
             "TickPayload": {
                 "title": "TickPayload",
                 "type": "object",
-                "properties": {"count": {"type": "integer"}, "now": {"type": "number"}},
+                "properties": {
+                    "count": {"type": "integer"},
+                    "now": {"description": "Milliseconds since the Unix epoch.", "type": "number"},
+                },
                 "required": ["count", "now"],
             },
         },

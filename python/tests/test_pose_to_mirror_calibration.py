@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from fakes import RecordingContext, check_events, check_result
+from gosai_py.clock import now_ms
 from gosai_py.drivers.pose_to_mirror import RIGHT_INDEX, MirrorSettings, PoseToMirrorDriver
 from gosai_py.geometry import mirror
 from gosai_py.geometry.mirror import LEFT_SHOULDER, NOSE, RIGHT_SHOULDER
@@ -78,7 +79,7 @@ def _make_raw(
         "body_world_pose": body_world,
         "frame_width": FRAME_W,
         "frame_height": FRAME_H,
-        "ts": time.time(),
+        "ts": now_ms(),
     }
 
 
@@ -239,7 +240,7 @@ def _make_standing_raw(distance_mm: float, tilt_deg: float) -> dict[str, Any]:
         "body_world_pose": body_world,
         "frame_width": FRAME_W,
         "frame_height": FRAME_H,
-        "ts": time.time(),
+        "ts": now_ms(),
     }
 
 

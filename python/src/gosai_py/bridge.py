@@ -58,6 +58,7 @@ from typing import Any
 import msgspec
 
 from gosai_py.app_drivers import app_driver_classes
+from gosai_py.clock import now_ms
 from gosai_py.driver import BaseDriver, DriverContext
 from gosai_py.drivers import builtin_driver_classes, driver_classes_in
 from gosai_py.schemas import describe_driver
@@ -82,10 +83,6 @@ CLOSE_BUDGET_S = 8.0
 CLOSE_REQUESTS_BUDGET_S = 2.0
 # Part of the budget kept for flushing output after drivers stop.
 CLOSE_FLUSH_RESERVE_S = 0.5
-
-
-def now_ms() -> float:
-    return time.time() * 1000.0
 
 
 def public_payload(value: Any) -> Any:

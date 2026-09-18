@@ -24,14 +24,16 @@ import threading
 import time
 from collections.abc import Iterator, Mapping
 from contextlib import ExitStack, contextmanager
-from typing import Any, ClassVar, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
 import cv2
 import msgspec
+from msgspec import Meta
 
+from gosai_py.clock import now_ms
 from gosai_py.devices import open_capture
 from gosai_py.driver import BaseDriver, DriverContext, Event, action
-from gosai_py.payloads import FpsPayload, PositiveInt
+from gosai_py.payloads import CaptureMs, FpsPayload, PositiveInt
 from gosai_py.serialization import frame_to_jpeg_base64
 
 # Resolutions offered to the UI. The probe keeps only the ones the device
@@ -68,11 +70,19 @@ class CameraConfig(msgspec.Struct, kw_only=True):
 class FramePayload(msgspec.Struct, kw_only=True):
     width: int
     height: int
-    # Capture time in seconds since the epoch; `ts` repeats it.
-    ts: float
-    capture_ts: float
-    # `time.perf_counter()` at capture, comparable within the bridge process.
-    capture_perf: float
+    ts: Annotated[
+        float, Meta(description="Milliseconds since the Unix epoch, equal to `capture_ts`.")
+    ]
+    capture_ts: CaptureMs
+    capture_perf: Annotated[
+        float,
+        Meta(
+            description=(
+                "`time.perf_counter()` at capture in milliseconds, comparable only within"
+                " the bridge process."
+            )
+        ),
+    ]
     codec: str
 
 
@@ -436,7 +446,7 @@ class CameraDriver(BaseDriver):
                 continue
             frame = _rotate_frame(frame, rotation)
             h, w = frame.shape[:2]
-            capture_ts = time.time()
+            capture_ts = now_ms()
             with self._frame_cond:
                 self._latest_frame = frame
                 self._latest_meta = {
@@ -444,7 +454,7 @@ class CameraDriver(BaseDriver):
                     "height": int(h),
                     "ts": capture_ts,
                     "capture_ts": capture_ts,
-                    "capture_perf": time.perf_counter(),
+                    "capture_perf": time.perf_counter() * 1000.0,
                     "codec": codec,
                 }
                 self._latest_frame_id += 1

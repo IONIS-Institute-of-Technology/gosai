@@ -9,6 +9,12 @@ import numpy as np
 from msgspec import Meta
 
 PositiveInt = Annotated[int, Meta(gt=0)]
+# Timestamps from `gosai_py.clock.now_ms()`.
+EpochMs = Annotated[float, Meta(description="Milliseconds since the Unix epoch.")]
+CaptureMs = Annotated[
+    float,
+    Meta(description="When the camera captured the frame, in milliseconds since the Unix epoch."),
+]
 # A 3x3 matrix flattened row by row.
 Matrix3x3 = Annotated[list[float], Meta(min_length=9, max_length=9)]
 # Audio samples in [-1, 1]: a mono list, or rows of channels (the first is used).

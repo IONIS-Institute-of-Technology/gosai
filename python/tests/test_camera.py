@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Iterator
 
 import numpy as np
@@ -40,6 +41,8 @@ def test_publishes_frames_at_the_negotiated_size(
 
     frame = context.emitted("frame")[-1]
     assert frame["_frame"].shape == (720, 1280, 3)
+    assert frame["ts"] == frame["capture_ts"]
+    assert abs(frame["capture_ts"] - time.time() * 1000.0) < 5_000.0
     assert context.emitted("frame_size")[0] == {
         "width": 1280,
         "height": 720,

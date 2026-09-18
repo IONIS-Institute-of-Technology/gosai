@@ -14,7 +14,6 @@ the model state and the buffer.
 from __future__ import annotations
 
 import threading
-import time
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
@@ -22,8 +21,9 @@ import msgspec
 import numpy as np
 import onnxruntime as ort
 
+from gosai_py.clock import now_ms
 from gosai_py.driver import BaseDriver, DriverContext, Event, action
-from gosai_py.payloads import AudioSamples, Ok, mono_samples
+from gosai_py.payloads import AudioSamples, EpochMs, Ok, mono_samples
 from gosai_py.runtime import RuntimeInfo
 from gosai_py.runtime.models import Model, resolve_model
 
@@ -95,7 +95,7 @@ class SileroVad:
 class ActivityPayload(msgspec.Struct, kw_only=True):
     confidence: float
     is_speech: bool
-    ts: float
+    ts: EpochMs
 
 
 class PredictParams(msgspec.Struct, kw_only=True):
@@ -193,7 +193,7 @@ class SpeechActivityDriver(BaseDriver):
             self._emit_score(score)
 
     def _emit_score(self, score: float) -> dict[str, Any]:
-        payload = {"confidence": score, "is_speech": score > SPEECH_THRESHOLD, "ts": time.time()}
+        payload = {"confidence": score, "is_speech": score > SPEECH_THRESHOLD, "ts": now_ms()}
         self.emit("activity", payload)
         return payload
 

@@ -9,7 +9,9 @@ export declare namespace DriverTypes {
     export interface BallsPayload {
       balls: Ball[];
       count: number;
+      /** Milliseconds since the Unix epoch. */
       ts: number;
+      /** When the camera captured the frame, in milliseconds since the Unix epoch. */
       capture_ts: number;
       frame_age_ms: number;
       latency_ms: number;
@@ -72,6 +74,7 @@ export declare namespace DriverTypes {
       detected: number;
       ids: number[];
       corners: number[][][];
+      /** Milliseconds since the Unix epoch. */
       ts: number;
     }
 
@@ -81,6 +84,7 @@ export declare namespace DriverTypes {
       inverse: number[];
       surface_matrix: number[] | null;
       surface_inverse: number[] | null;
+      /** Milliseconds since the Unix epoch. */
       ts: number;
     }
 
@@ -192,7 +196,10 @@ export declare namespace DriverTypes {
       width: number | null;
       /** @default null */
       height: number | null;
-      /** @default null */
+      /**
+       * The frame's `ts`, in milliseconds since the Unix epoch.
+       * @default null
+       */
       ts: number | null;
     }
 
@@ -228,8 +235,11 @@ export declare namespace DriverTypes {
     export interface FramePayload {
       width: number;
       height: number;
+      /** Milliseconds since the Unix epoch, equal to `capture_ts`. */
       ts: number;
+      /** When the camera captured the frame, in milliseconds since the Unix epoch. */
       capture_ts: number;
+      /** `time.perf_counter()` at capture in milliseconds, comparable only within the bridge process. */
       capture_perf: number;
       codec: string;
     }
@@ -237,8 +247,11 @@ export declare namespace DriverTypes {
     export interface ColorPayload {
       width: number;
       height: number;
+      /** Milliseconds since the Unix epoch, equal to `capture_ts`. */
       ts: number;
+      /** When the camera captured the frame, in milliseconds since the Unix epoch. */
       capture_ts: number;
+      /** `time.perf_counter()` at capture in milliseconds, comparable only within the bridge process. */
       capture_perf: number;
       codec: string;
       jpeg_base64: string;
@@ -343,7 +356,9 @@ export declare namespace DriverTypes {
     export interface HandPosePayload {
       hands_landmarks: number[][][];
       hands_handedness: [number, string, number][];
+      /** Milliseconds since the Unix epoch. */
       ts: number;
+      /** When the camera captured the frame, in milliseconds since the Unix epoch. */
       capture_ts: number;
       inference_ms: number;
       frame_age_ms: number;
@@ -383,6 +398,7 @@ export declare namespace DriverTypes {
     /** One `[label, confidence]` pair per hand, in `hand_pose` order. */
     export interface SignPayload {
       sign: [string, number][];
+      /** Milliseconds since the Unix epoch. */
       ts: number;
     }
   }
@@ -391,6 +407,7 @@ export declare namespace DriverTypes {
   export namespace heartbeat {
     export interface TickPayload {
       count: number;
+      /** Milliseconds since the Unix epoch. */
       now: number;
     }
 
@@ -450,6 +467,7 @@ export declare namespace DriverTypes {
       samplerate: number;
       channels: number;
       blocksize: number;
+      /** When the block reached the driver, in milliseconds since the Unix epoch. */
       ts: number;
     }
 
@@ -506,6 +524,7 @@ export declare namespace DriverTypes {
       body_world_pose: number[][];
       frame_width: number;
       frame_height: number;
+      /** Milliseconds since the Unix epoch. */
       ts: number;
       inference_ms: number;
     }
@@ -535,6 +554,7 @@ export declare namespace DriverTypes {
       left_hand_pose: number[][];
       face_mesh: number[][];
       body_world_pose: number[][];
+      /** Milliseconds since the Unix epoch. */
       ts: number;
     }
 
@@ -667,6 +687,7 @@ export declare namespace DriverTypes {
     }
 
     export interface UnderrunPayload {
+      /** Milliseconds since the Unix epoch. */
       ts: number;
     }
 
@@ -710,6 +731,7 @@ export declare namespace DriverTypes {
     export interface ActivityPayload {
       confidence: number;
       is_speech: boolean;
+      /** Milliseconds since the Unix epoch. */
       ts: number;
     }
 
@@ -723,6 +745,7 @@ export declare namespace DriverTypes {
     export interface PredictResult {
       confidence: number;
       is_speech: boolean;
+      /** Milliseconds since the Unix epoch. */
       ts: number;
       /** @default true */
       ok: boolean;
@@ -741,6 +764,7 @@ export declare namespace DriverTypes {
       transcription: string;
       audio_duration_s: number;
       transcription_duration_s: number;
+      /** Milliseconds since the Unix epoch. */
       ts: number;
     }
 
@@ -755,6 +779,7 @@ export declare namespace DriverTypes {
       transcription: string;
       audio_duration_s: number;
       transcription_duration_s: number;
+      /** Milliseconds since the Unix epoch. */
       ts: number;
       /** @default true */
       ok: boolean;

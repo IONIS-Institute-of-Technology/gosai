@@ -22,6 +22,10 @@ Breaking:
 - `gosai.app.schema.json` drops the placeholder `python.module` and
   per-experience `python` fields, and `python` requires `drivers`. GOSAI still
   loads manifests with the old fields and ignores them with a warning.
+- Timestamps in built-in driver payloads are milliseconds since the Unix epoch,
+  like `Date.now()`. They were seconds. This covers every `ts` and
+  `capture_ts`, `heartbeat.tick`'s `now`, and `camera.frame`'s `capture_perf`,
+  which stays a clock of the bridge process but now counts milliseconds too.
 
 Added:
 

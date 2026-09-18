@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import time
 from collections.abc import Mapping
 from typing import Any
 
 import cv2
 import numpy as np
 from numpy.typing import NDArray
+
+from gosai_py.clock import now_ms
 
 
 def clamp_window(value: float) -> float:
@@ -17,15 +18,16 @@ def clamp_window(value: float) -> float:
 
 
 def capture_timing(payload: Mapping[str, Any]) -> tuple[float, float]:
-    """The frame's capture time in seconds and its age in milliseconds."""
+    """The frame's capture time and its age, both in milliseconds."""
     raw = payload.get("capture_ts")
-    now = time.time()
+    now = now_ms()
     capture_ts = float(raw) if isinstance(raw, int | float) else now
-    return capture_ts, (now - capture_ts) * 1000.0
+    return capture_ts, now - capture_ts
 
 
 def latency_ms(capture_ts: float) -> float:
-    return (time.time() - capture_ts) * 1000.0
+    """Milliseconds since `capture_ts`, itself in milliseconds since the epoch."""
+    return now_ms() - capture_ts
 
 
 def flip_and_crop(frame: NDArray[Any], flip: bool, window: float) -> tuple[NDArray[Any], int]:

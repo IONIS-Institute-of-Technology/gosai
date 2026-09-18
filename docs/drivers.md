@@ -61,7 +61,9 @@ Types: `DriverTypes.ball`.
 export interface BallsPayload {
   balls: Ball[];
   count: number;
+  /** Milliseconds since the Unix epoch. */
   ts: number;
+  /** When the camera captured the frame, in milliseconds since the Unix epoch. */
   capture_ts: number;
   frame_age_ms: number;
   latency_ms: number;
@@ -154,6 +156,7 @@ export interface DetectionPayload {
   detected: number;
   ids: number[];
   corners: number[][][];
+  /** Milliseconds since the Unix epoch. */
   ts: number;
 }
 
@@ -163,6 +166,7 @@ export interface HomographyPayload {
   inverse: number[];
   surface_matrix: number[] | null;
   surface_inverse: number[] | null;
+  /** Milliseconds since the Unix epoch. */
   ts: number;
 }
 
@@ -274,7 +278,10 @@ export interface LatestFrame {
   width: number | null;
   /** @default null */
   height: number | null;
-  /** @default null */
+  /**
+   * The frame's `ts`, in milliseconds since the Unix epoch.
+   * @default null
+   */
   ts: number | null;
 }
 
@@ -341,8 +348,11 @@ export interface CameraConfig {
 export interface FramePayload {
   width: number;
   height: number;
+  /** Milliseconds since the Unix epoch, equal to `capture_ts`. */
   ts: number;
+  /** When the camera captured the frame, in milliseconds since the Unix epoch. */
   capture_ts: number;
+  /** `time.perf_counter()` at capture in milliseconds, comparable only within the bridge process. */
   capture_perf: number;
   codec: string;
 }
@@ -350,8 +360,11 @@ export interface FramePayload {
 export interface ColorPayload {
   width: number;
   height: number;
+  /** Milliseconds since the Unix epoch, equal to `capture_ts`. */
   ts: number;
+  /** When the camera captured the frame, in milliseconds since the Unix epoch. */
   capture_ts: number;
+  /** `time.perf_counter()` at capture in milliseconds, comparable only within the bridge process. */
   capture_perf: number;
   codec: string;
   jpeg_base64: string;
@@ -503,7 +516,9 @@ Types: `DriverTypes.hand_pose`.
 export interface HandPosePayload {
   hands_landmarks: number[][][];
   hands_handedness: [number, string, number][];
+  /** Milliseconds since the Unix epoch. */
   ts: number;
+  /** When the camera captured the frame, in milliseconds since the Unix epoch. */
   capture_ts: number;
   inference_ms: number;
   frame_age_ms: number;
@@ -562,6 +577,7 @@ None.
 /** One `[label, confidence]` pair per hand, in `hand_pose` order. */
 export interface SignPayload {
   sign: [string, number][];
+  /** Milliseconds since the Unix epoch. */
   ts: number;
 }
 ```
@@ -591,6 +607,7 @@ Types: `DriverTypes.heartbeat`.
 ```ts
 export interface TickPayload {
   count: number;
+  /** Milliseconds since the Unix epoch. */
   now: number;
 }
 
@@ -698,6 +715,7 @@ export interface AudioStreamPayload {
   samplerate: number;
   channels: number;
   blocksize: number;
+  /** When the block reached the driver, in milliseconds since the Unix epoch. */
   ts: number;
 }
 
@@ -779,6 +797,7 @@ export interface RawPosePayload {
   body_world_pose: number[][];
   frame_width: number;
   frame_height: number;
+  /** Milliseconds since the Unix epoch. */
   ts: number;
   inference_ms: number;
 }
@@ -833,6 +852,7 @@ export interface MirroredPayload {
   left_hand_pose: number[][];
   face_mesh: number[][];
   body_world_pose: number[][];
+  /** Milliseconds since the Unix epoch. */
   ts: number;
 }
 
@@ -1014,6 +1034,7 @@ export interface AudioSettingsPayload {
 }
 
 export interface UnderrunPayload {
+  /** Milliseconds since the Unix epoch. */
   ts: number;
 }
 
@@ -1079,6 +1100,7 @@ Types: `DriverTypes.speech_activity_detection`.
 export interface ActivityPayload {
   confidence: number;
   is_speech: boolean;
+  /** Milliseconds since the Unix epoch. */
   ts: number;
 }
 
@@ -1092,6 +1114,7 @@ export interface PredictParams {
 export interface PredictResult {
   confidence: number;
   is_speech: boolean;
+  /** Milliseconds since the Unix epoch. */
   ts: number;
   /** @default true */
   ok: boolean;
@@ -1132,6 +1155,7 @@ export interface TranscriptionPayload {
   transcription: string;
   audio_duration_s: number;
   transcription_duration_s: number;
+  /** Milliseconds since the Unix epoch. */
   ts: number;
 }
 
@@ -1146,6 +1170,7 @@ export interface TranscribeResult {
   transcription: string;
   audio_duration_s: number;
   transcription_duration_s: number;
+  /** Milliseconds since the Unix epoch. */
   ts: number;
   /** @default true */
   ok: boolean;

@@ -27,7 +27,6 @@ sends empty face meshes and skips their projection.
 from __future__ import annotations
 
 import threading
-import time
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -37,9 +36,11 @@ import msgspec
 import numpy as np
 from msgspec import UNSET, Meta, UnsetType
 
+from gosai_py.clock import now_ms
 from gosai_py.driver import BaseDriver, DriverContext, Event, action
 from gosai_py.geometry import mirror
 from gosai_py.geometry.mirror import Array, BodyFrame
+from gosai_py.payloads import EpochMs
 from gosai_py.smoothing import lerp
 
 FACE_ANCHOR = 2  # left-eye landmark; the face mesh takes its depth.
@@ -49,7 +50,7 @@ LEFT_INDEX = 19  # body-pose index fingertips used for calibration samples.
 RIGHT_INDEX = 20
 
 RAW_HISTORY = 24  # recent raw-pose frames kept for sample capture.
-SAMPLE_MAX_AGE_S = 2.0
+SAMPLE_MAX_AGE_MS = 2000.0
 SAMPLE_MIN_FRAMES = 5
 SOLVE_MIN_SAMPLES = 4
 MIN_FINGERTIP_VISIBILITY = 0.35
@@ -139,7 +140,7 @@ class MirroredPayload(msgspec.Struct, kw_only=True):
     left_hand_pose: list[Landmark]
     face_mesh: list[Landmark]
     body_world_pose: list[Landmark]
-    ts: float
+    ts: EpochMs
 
 
 class CaptureParams(msgspec.Struct, kw_only=True):
@@ -232,12 +233,12 @@ class PoseToMirrorDriver(BaseDriver):
 
     @action("Record recent pose frames for one calibration target.")
     def capture_calibration_sample(self, params: CaptureParams) -> CaptureResult:
-        now = time.time()
+        now = now_ms()
         with self._lock:
             frames = [
                 raw
                 for raw in self._raw_history
-                if now - raw["ts"] <= SAMPLE_MAX_AGE_S and raw.get("body_pose")
+                if now - raw["ts"] <= SAMPLE_MAX_AGE_MS and raw.get("body_pose")
             ]
             if len(frames) < SAMPLE_MIN_FRAMES:
                 raise RuntimeError(
@@ -335,7 +336,7 @@ class PoseToMirrorDriver(BaseDriver):
                     "body_world_pose": body_world,
                     "frame_width": frame_w,
                     "frame_height": frame_h,
-                    "ts": float(data.get("ts") or time.time()),
+                    "ts": float(data.get("ts") or now_ms()),
                 }
             )
 
@@ -435,7 +436,7 @@ class PoseToMirrorDriver(BaseDriver):
 def _payload(parts: dict[str, Array], body_world: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {name: parts[name].tolist() for name in PARTS}
     payload["body_world_pose"] = body_world
-    payload["ts"] = time.time()
+    payload["ts"] = now_ms()
     return payload
 
 

@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import math
 import threading
-import time
 from collections import deque
 from collections.abc import Mapping
 from typing import Any, ClassVar
@@ -26,9 +25,10 @@ import msgspec
 import numpy as np
 
 from gosai_py import devices
+from gosai_py.clock import now_ms
 from gosai_py.driver import BaseDriver, DriverContext, Event, action
 from gosai_py.drivers.microphone import AudioSettingsPayload, DeviceResult, SamplerateResult
-from gosai_py.payloads import AudioSamples, Ok, mono_samples
+from gosai_py.payloads import AudioSamples, EpochMs, Ok, mono_samples
 
 DEFAULT_SAMPLERATE = 44_100
 BLOCKSIZE = 1024
@@ -41,7 +41,7 @@ class SpeakerConfig(msgspec.Struct, kw_only=True):
 
 
 class UnderrunPayload(msgspec.Struct, kw_only=True):
-    ts: float
+    ts: EpochMs
 
 
 class PlayResult(msgspec.Struct, kw_only=True):
@@ -196,7 +196,7 @@ class SpeakerDriver(BaseDriver):
         def callback(outdata: np.ndarray, _frames: int, _time: Any, status: Any) -> None:
             self._buffer.read_into(outdata)
             if status.output_underflow:
-                self.emit("underrun", {"ts": time.time()})
+                self.emit("underrun", {"ts": now_ms()})
 
         try:
             stream = sd.OutputStream(

@@ -28,6 +28,9 @@ Node as JSON Schema (see `gosai_py.schemas`):
   with `msgspec.convert` before the call; a method without a parameter takes
   no data. The return annotation is the result type.
 
+Timestamps in payloads are milliseconds since the Unix epoch, from
+`gosai_py.clock.now_ms()`, like the `ts` of the bridge's own messages.
+
 Actions report failures by raising. The bridge turns the exception into an
 error reply.
 """

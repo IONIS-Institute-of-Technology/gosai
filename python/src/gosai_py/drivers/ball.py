@@ -57,10 +57,11 @@ import cv2
 import msgspec
 import numpy as np
 
+from gosai_py.clock import now_ms
 from gosai_py.driver import BaseDriver, DriverContext, Event, action
 from gosai_py.frames import capture_timing, latency_ms
 from gosai_py.geometry import homography
-from gosai_py.payloads import FpsPayload, Matrix3x3, Ok, Size, SizeResult
+from gosai_py.payloads import CaptureMs, EpochMs, FpsPayload, Matrix3x3, Ok, Size, SizeResult
 from gosai_py.runtime import create_onnx_session
 from gosai_py.runtime.models import Model, resolve_model
 from gosai_py.smoothing import lerp
@@ -335,8 +336,8 @@ class Ball(msgspec.Struct, kw_only=True):
 class BallsPayload(msgspec.Struct, kw_only=True):
     balls: list[Ball]
     count: int
-    ts: float
-    capture_ts: float
+    ts: EpochMs
+    capture_ts: CaptureMs
     frame_age_ms: float
     latency_ms: float
 
@@ -510,7 +511,7 @@ class BallDriver(BaseDriver):
             {
                 "balls": balls,
                 "count": len(balls),
-                "ts": time.time(),
+                "ts": now_ms(),
                 "capture_ts": capture_ts,
                 "frame_age_ms": frame_age_ms,
                 "latency_ms": latency_ms(capture_ts),

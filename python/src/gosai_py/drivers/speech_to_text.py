@@ -20,8 +20,9 @@ from typing import Any, ClassVar
 
 import msgspec
 
+from gosai_py.clock import now_ms
 from gosai_py.driver import BaseDriver, DriverContext, Event, action
-from gosai_py.payloads import AudioSamples, mono_samples
+from gosai_py.payloads import AudioSamples, EpochMs, mono_samples
 from gosai_py.runtime import AcceleratorConfig, RuntimeInfo
 
 # CTranslate2 4.x is built against CUDA 12. The gpu extra's onnxruntime-gpu
@@ -71,7 +72,7 @@ class TranscriptionPayload(msgspec.Struct, kw_only=True):
     transcription: str
     audio_duration_s: float
     transcription_duration_s: float
-    ts: float
+    ts: EpochMs
 
 
 class TranscribeParams(msgspec.Struct, kw_only=True):
@@ -119,14 +120,14 @@ class SpeechToTextDriver(BaseDriver):
         else:
             audio = params
         samples = mono_samples(audio)
-        start = time.time()
+        start = time.perf_counter()
         segments, _info = self._model.transcribe(samples, beam_size=5)
         text = "".join(segment.text for segment in segments)
         payload = {
             "transcription": text,
             "audio_duration_s": len(samples) / self.SAMPLE_RATE,
-            "transcription_duration_s": time.time() - start,
-            "ts": time.time(),
+            "transcription_duration_s": time.perf_counter() - start,
+            "ts": now_ms(),
         }
         self.emit("transcription", payload)
         return TranscribeResult(**payload)

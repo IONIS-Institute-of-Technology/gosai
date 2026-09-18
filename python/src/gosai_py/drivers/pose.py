@@ -24,9 +24,10 @@ import mediapipe as mp
 import msgspec
 from mediapipe.tasks.python import vision
 
+from gosai_py.clock import now_ms
 from gosai_py.driver import BaseDriver, DriverContext, Event, action
 from gosai_py.frames import clamp_window, contiguous, flip_and_crop
-from gosai_py.payloads import FlipResult, WindowResult
+from gosai_py.payloads import EpochMs, FlipResult, WindowResult
 from gosai_py.runtime import RuntimeInfo, mediapipe_base_options
 from gosai_py.runtime.models import Model, resolve_model
 
@@ -57,7 +58,7 @@ class RawPosePayload(msgspec.Struct, kw_only=True):
     body_world_pose: list[list[float]]
     frame_width: float
     frame_height: float
-    ts: float
+    ts: EpochMs
     inference_ms: float
 
 
@@ -179,7 +180,7 @@ class PoseDriver(BaseDriver):
             ],
             "frame_width": float(frame.shape[1]),
             "frame_height": float(frame.shape[0]),
-            "ts": time.time(),
+            "ts": now_ms(),
             "inference_ms": inference_ms,
         }
         if not config.face_mesh:
