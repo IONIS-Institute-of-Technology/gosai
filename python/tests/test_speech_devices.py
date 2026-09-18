@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 import threading
 import time
+import wave
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import numpy as np
 import pytest
@@ -11,10 +13,15 @@ import pytest
 from fakes import RecordingContext, check_events, check_result
 from gosai_py.drivers import speech_activity_detection as vad_module
 from gosai_py.drivers import speech_to_text
-from gosai_py.drivers.speech_activity_detection import MODEL, SileroVad, SpeechActivityDriver
+from gosai_py.drivers.speech_activity_detection import (
+    MODEL,
+    SPEECH_THRESHOLD,
+    SileroVad,
+    SpeechActivityDriver,
+)
 from gosai_py.drivers.speech_to_text import select_device
 from gosai_py.runtime import AcceleratorConfig
-from gosai_py.runtime.models import models_dir
+from gosai_py.runtime.models import ModelUnavailableError, is_lfs_pointer, resolve_model
 
 
 class FakeSileroSession:
@@ -223,19 +230,78 @@ def test_vad_state_is_safe_across_threads() -> None:
     assert states == list(range(len(states)))
 
 
-def _silero_path() -> Path:
-    path = models_dir() / MODEL.filename
-    if not path.exists():
-        pytest.skip("silero_vad.onnx is not downloaded")
-    return path
+CLIP = Path(__file__).parent / "data" / "speech_then_silence.wav"
+# Where the voice starts and stops in the clip, in 512-sample windows: about
+# 0.65 s and 3.64 s in (see data/README.md).
+CLIP_SPEECH_WINDOWS = (20, 113)
+# How far Silero's first and last speech windows may land from those.
+CLIP_TOLERANCE_WINDOWS = 3
 
 
-def test_real_silero_model_streams_like_direct_scoring(monkeypatch: pytest.MonkeyPatch) -> None:
-    path = _silero_path()
-    monkeypatch.setattr(vad_module, "resolve_model", lambda model, log: path)
+def _unavailable(reason: str) -> NoReturn:
+    """Skip a test whose download or LFS file is missing. CI must run it, so fail there."""
+    if os.environ.get("CI"):
+        pytest.fail(f"{reason}. CI must run this test.")
+    pytest.skip(reason)
+
+
+@pytest.fixture(scope="module")
+def silero_model() -> Path:
+    """The real Silero model, fetched from the driver's pinned URL and checked against its sha256.
+
+    `resolve_model` downloads it once into `$GOSAI_HOME/models`, which CI caches.
+    """
+    try:
+        return resolve_model(MODEL, lambda _level, _message: None)
+    except ModelUnavailableError as exc:
+        _unavailable(f"can't get {MODEL.filename}: {exc}")
+
+
+def _real_vad_driver(
+    model: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[SpeechActivityDriver, RecordingContext]:
+    monkeypatch.setattr(vad_module, "resolve_model", lambda _model, _log: model)
     context = RecordingContext()
     driver = SpeechActivityDriver(context)
     driver.pre_run()
+    return driver, context
+
+
+def _read_clip() -> np.ndarray:
+    if is_lfs_pointer(CLIP):
+        _unavailable(f"{CLIP.name} is a Git LFS pointer; run `git lfs pull`")
+    with wave.open(str(CLIP)) as clip:
+        assert (clip.getframerate(), clip.getnchannels(), clip.getsampwidth()) == (16_000, 1, 2)
+        frames = clip.readframes(clip.getnframes())
+    return np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
+
+
+def test_real_silero_model_finds_where_speech_starts_and_ends(
+    silero_model: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = _read_clip()
+    driver, context = _real_vad_driver(silero_model, monkeypatch)
+
+    # Streamed the way the microphone sends it, in blocks of 1024 samples.
+    for offset in range(0, len(audio), 1024):
+        driver.on_data("microphone", "audio_stream", _block(audio[offset : offset + 1024]))
+
+    scores = [e["confidence"] for e in context.emitted("activity")]
+    assert len(scores) == len(audio) // SileroVad.CHUNK
+    speech = [i for i, score in enumerate(scores) if score > SPEECH_THRESHOLD]
+    assert speech, f"no window scored as speech: {scores}"
+    start, end = CLIP_SPEECH_WINDOWS
+    assert abs(speech[0] - start) <= CLIP_TOLERANCE_WINDOWS, speech
+    assert abs(speech[-1] - end) <= CLIP_TOLERANCE_WINDOWS, speech
+    # Short dips between words are fine, but most of the sentence is speech.
+    assert len(speech) >= 0.8 * (end - start + 1), speech
+    check_events(SpeechActivityDriver, context)
+
+
+def test_real_silero_model_streams_like_direct_scoring(
+    silero_model: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver, context = _real_vad_driver(silero_model, monkeypatch)
     rng = np.random.default_rng(0)
     t = np.arange(16_000 * 2) / 16_000
     # A second of near silence, then a second of a 140 Hz harmonic buzz with a 4 Hz
@@ -252,7 +318,7 @@ def test_real_silero_model_streams_like_direct_scoring(monkeypatch: pytest.Monke
             driver.on_data("microphone", "audio_stream", _block(audio[offset : offset + size]))
             offset += size
     streamed = [e["confidence"] for e in context.emitted("activity")]
-    driver.execute("reset", None)
+    # predict starts from a fresh state, as the stream did.
     direct = driver.execute("predict", audio[: len(streamed) * 512].tolist())["scores"]
 
     assert streamed == pytest.approx(direct, abs=1e-5)

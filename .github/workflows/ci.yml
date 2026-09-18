@@ -94,11 +94,19 @@ jobs:
       - uses: actions/checkout@v7
         with:
           lfs: false
-      - name: Fetch the ONNX models for the smoke tests
+      - name: Fetch the ONNX models and the audio clip for the tests
         working-directory: .
         run: |
           git lfs install --local
-          git lfs pull --include="python/src/gosai_py/drivers/slr_models/*.onnx,python/src/gosai_py/drivers/ball_models/ball.onnx"
+          git lfs pull --include="python/src/gosai_py/drivers/slr_models/*.onnx,python/src/gosai_py/drivers/ball_models/ball.onnx,python/tests/data/speech_then_silence.wav"
+      # The voice detection tests download the real Silero model into
+      # $GOSAI_HOME/models. The driver pins its URL and sha256, so a new pin
+      # downloads it once more.
+      - name: Cache the Silero VAD model
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/gosai-home/models
+          key: silero-vad-${{ runner.os }}-${{ hashFiles('python/src/gosai_py/drivers/speech_activity_detection.py') }}
       - uses: astral-sh/setup-uv@v10
         with:
           python-version: '3.12'
@@ -108,7 +116,10 @@ jobs:
       - run: uv run --locked ruff check .
       - run: uv run --locked ruff format --check .
       - run: uv run --locked pyright
+      # CI is set, so tests that need the model or the clip fail instead of skipping.
       - run: uv run --locked pytest -q
+        env:
+          GOSAI_HOME: ${{ runner.temp }}/gosai-home
 
   training:
     name: Training
