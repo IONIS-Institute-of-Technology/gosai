@@ -66,6 +66,8 @@ const display = {
 void mock.module('electron', () => ({
   app: { isPackaged: true, quit: () => undefined },
   BrowserWindow: FakeBrowserWindow,
+  net: { fetch: () => Promise.reject(new Error('no network in tests')) },
+  protocol: { handle: () => undefined, registerSchemesAsPrivileged: () => undefined },
   powerSaveBlocker: { start: () => 1, stop: () => undefined, isStarted: () => true },
   screen: {
     getAllDisplays: () => [display],

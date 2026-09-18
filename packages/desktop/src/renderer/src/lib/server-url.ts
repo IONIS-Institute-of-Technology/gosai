@@ -17,7 +17,11 @@ export const SERVER_WS_URL = `ws://${SERVER_HOST}:${SERVER_PORT}/ws`;
 /** Dashboard token for this window. */
 export const SERVER_TOKEN: string = params.get('token') ?? '';
 
-/** URL of the app's icon, or `null` when it declares none. */
+/**
+ * URL of the app's icon, or `null` when it declares none. Load it with
+ * `crossOrigin="anonymous"`: a plain `<img>` request carries `Origin: null`,
+ * which the server refuses, and a CORS one the dashboard's origin.
+ */
 export function appIconUrl(manifest: Pick<AppManifest, 'slug' | 'icon'>): string | null {
   if (!manifest.icon) return null;
   return `${SERVER_BASE_URL}/v1/apps/${manifest.slug}/static/${encodeURI(manifest.icon)}`;

@@ -14,6 +14,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { delimiter, join, resolve } from 'node:path';
 import { app } from 'electron';
+import { DASHBOARD_ORIGIN } from './dashboard-origin.js';
 import { uvCacheDir } from './python-bootstrap.js';
 
 export interface ServerRunnerOptions {
@@ -39,10 +40,10 @@ const READY_PREFIX = 'GOSAI_READY ';
 const EXE = process.platform === 'win32' ? '.exe' : '';
 
 /**
- * Origins of the dashboard window, which loads from `file://`. App windows
- * run on their own `http://<slug>.localhost` origins, which the server allows.
+ * The dashboard window's origin (see dashboard-origin.ts). App windows run on
+ * their own `http://<slug>.localhost` origins, which the server allows.
  */
-const DASHBOARD_ORIGINS = ['file://', 'null'];
+const DASHBOARD_ORIGINS = [DASHBOARD_ORIGIN];
 
 /**
  * The packaged app starts its own server. From source, `bun run dev` starts

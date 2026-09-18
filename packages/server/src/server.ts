@@ -56,7 +56,7 @@ export interface ServerOptions {
    * dashboard, and app tokens are derived from it.
    */
   readonly dashboardToken: string;
-  /** Extra origins allowed besides loopback http origins, e.g. `file://` and `null`. */
+  /** Extra origins allowed besides loopback http origins, e.g. the dashboard's `gosai://dashboard`. */
   readonly allowedOrigins?: readonly string[];
   /** Extra Host header names allowed besides loopback names and the bind host. */
   readonly allowedHosts?: readonly string[];

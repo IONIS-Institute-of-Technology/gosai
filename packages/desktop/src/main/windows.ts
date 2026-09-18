@@ -1,13 +1,16 @@
 import {
   app,
   BrowserWindow,
+  net,
   powerSaveBlocker,
+  protocol,
   screen,
   type Display,
   type WebContents,
   type WebFrameMain,
 } from 'electron';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { DisplayInfo } from '@gosai/shared';
 import { appHostname } from '@gosai/shared/app-origin';
 import { mintAppToken } from '@gosai/shared/auth';
@@ -19,6 +22,7 @@ import type {
   IpcEventChannels,
 } from '../ipc-contract.js';
 import { dashboardContentSecurityPolicy } from './dashboard-csp.js';
+import { DASHBOARD_ORIGIN, DASHBOARD_SCHEME, dashboardFile } from './dashboard-origin.js';
 
 interface WindowRegistryOptions {
   readonly rootDir: string;
@@ -82,6 +86,20 @@ const APP_WEB_PREFERENCES = {
   autoplayPolicy: 'no-user-gesture-required',
 } as const;
 
+/**
+ * Gives the dashboard's scheme (see dashboard-origin.ts) the privileges of a
+ * web origin: a secure context whose fetch and WebSocket requests carry
+ * `gosai://dashboard` as their origin. Call before the app is ready.
+ */
+export function registerDashboardScheme(): void {
+  protocol.registerSchemesAsPrivileged([
+    {
+      scheme: DASHBOARD_SCHEME,
+      privileges: { standard: true, secure: true, supportFetchAPI: true },
+    },
+  ]);
+}
+
 export class WindowRegistry {
   private dashboard: BrowserWindow | null = null;
   private readonly appHosts = new Map<number, AppHostHandle>();
@@ -91,6 +109,7 @@ export class WindowRegistry {
   private powerSaveBlockerId: number | null = null;
   private shuttingDown = false;
   private displayEventsInstalled = false;
+  private dashboardSchemeServed = false;
   private serverHost = '127.0.0.1';
   private serverPort = 7777;
   /** Created on first use, so the dashboard token only goes to a known server address. */
@@ -255,9 +274,8 @@ export class WindowRegistry {
     if (devRendererUrl) {
       void win.loadURL(`${devRendererUrl}/dashboard.html?${query.toString()}`);
     } else {
-      void win.loadFile(join(this.options.rootDir, '../renderer/dashboard.html'), {
-        search: `?${query.toString()}`,
-      });
+      this.serveDashboardScheme();
+      void win.loadURL(`${DASHBOARD_ORIGIN}/dashboard.html?${query.toString()}`);
     }
 
     win.on('closed', () => {
@@ -269,9 +287,22 @@ export class WindowRegistry {
     return win;
   }
 
+  /** Serves the built renderer on the dashboard's scheme. */
+  private serveDashboardScheme(): void {
+    if (this.dashboardSchemeServed) return;
+    this.dashboardSchemeServed = true;
+    const rendererDir = join(this.options.rootDir, '../renderer');
+    protocol.handle(DASHBOARD_SCHEME, (request) => {
+      const file = dashboardFile(rendererDir, request.url);
+      if (!file) return new Response('Not found', { status: 404 });
+      return net.fetch(pathToFileURL(file).toString());
+    });
+  }
+
   /**
    * Sets the dashboard's Content-Security-Policy as a response header, since
-   * the server's port is only known at runtime. Covers `file://` loads too.
+   * the server's port is only known at runtime. Covers the dashboard's own
+   * scheme too.
    */
   private installDashboardPolicy(win: BrowserWindow): void {
     const contents = win.webContents;
