@@ -14,12 +14,12 @@
 
 import { fitNoseHip, type NoseHipFit, type Point2 } from '../shared/align.js';
 import type { LayerDeps } from '../shared/deps.js';
-import { drawText, fillRect, strokeRect } from '../shared/draw.js';
+import { drawContain, drawText, fillRect, strokeRect } from '../shared/draw.js';
 import { createMediaCache } from '../shared/media.js';
 import { drawBody, drawHand } from '../shared/mirror.js';
 import { PERFORMABLE_SIGNS, SignTracker } from '../shared/sign.js';
 import { REF_HEIGHT, REF_WIDTH, type Landmark, type Layer } from '../shared/types.js';
-import { dist } from '../shared/ui.js';
+import { dist, type Rect } from '../shared/ui.js';
 
 const SAMPLE_FRAMES = 30;
 /**
@@ -27,6 +27,13 @@ const SAMPLE_FRAMES = 30;
  * frame per 60 fps render, so the 30 frames replay in half a second.
  */
 const SAMPLE_FRAME_MS = 1000 / 60;
+/**
+ * The reference video fits in this box. It sits right of the menu button
+ * (x 460 to 620), which would otherwise cover Aria's face and raised hands,
+ * and ends about where the old 600 px wide 16:9 video did, so it covers no
+ * more of the reflection.
+ */
+const VIDEO_BOX: Rect = { x: 650, y: 60, w: 390, h: 340 };
 const BODY_STUDY = [0, 11, 12, 15, 16, 23, 24];
 const HAND_STUDY = [0, 5, 17, 4, 8, 20];
 const BODY_PRECISION = 40;
@@ -243,10 +250,17 @@ export function createSignTrainingLayer(deps: LayerDeps): Layer {
       else if (phase === 'correction') updateCorrection(timestamp, deltaMs);
 
       if (phase === 'mimic' && video && media.playing(video)) {
-        const vw = 600;
-        const vh = (video.videoHeight / video.videoWidth) * vw || 380;
-        ctx.drawImage(video, REF_WIDTH / 2 - vw / 2, 60, vw, vh);
-        strokeRect(ctx, REF_WIDTH / 2 - vw / 2, 60, vw, vh, 4, '#ffffff');
+        const drawn = drawContain(
+          ctx,
+          video,
+          video.videoWidth,
+          video.videoHeight,
+          VIDEO_BOX.x + VIDEO_BOX.w / 2,
+          VIDEO_BOX.y + VIDEO_BOX.h / 2,
+          VIDEO_BOX.w,
+          VIDEO_BOX.h,
+        );
+        if (drawn) strokeRect(ctx, drawn.x, drawn.y, drawn.w, drawn.h, 4, '#ffffff');
       }
       media.pauseUnused();
 

@@ -181,3 +181,15 @@ No millimetres, offsets, FOVs or tilt angles are ever entered by hand.
   `slr` driver; the 16-sign action set is configured by `main.ts`.
 - Large media (sign videos, sprites, backgrounds, the dance animation and the
   VRM model) is stored with Git LFS.
+- Aria's sign clips in `assets/signs/Aria/` are cropped to the area she uses
+  across all of them, at 444x648 with alpha and no audio, so she fills the
+  boxes that sign-game and sign-training draw them in. A new clip recorded at
+  1920x1080 with the same framing matches the others with:
+
+  ```bash
+  opts=(-an -vf crop=592:864:420:200,scale=444:648:flags=lanczos -c:v libvpx-vp9
+        -pix_fmt yuva420p -b:v 0 -crf 36 -row-mt 1 -deadline good -cpu-used 1)
+  # Decode with libvpx-vp9: ffmpeg's own VP9 decoder drops the alpha channel.
+  ffmpeg -c:v libvpx-vp9 -i sign.webm "${opts[@]}" -pass 1 -f webm /dev/null
+  ffmpeg -c:v libvpx-vp9 -i sign.webm "${opts[@]}" -pass 2 assets/signs/Aria/sign.webm
+  ```

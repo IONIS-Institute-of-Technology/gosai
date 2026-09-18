@@ -10,7 +10,7 @@
  */
 
 import type { LayerDeps } from '../shared/deps.js';
-import { drawText, fillRect } from '../shared/draw.js';
+import { drawContain, drawText, fillRect } from '../shared/draw.js';
 import { createMediaCache, MediaCache } from '../shared/media.js';
 import { SIGN_COUNT_THRESHOLD, SignTracker } from '../shared/sign.js';
 import { REF_HEIGHT, REF_WIDTH, type Layer } from '../shared/types.js';
@@ -408,23 +408,6 @@ function drawTextBox(ctx: CanvasRenderingContext2D): void {
   ctx.strokeStyle = '#ffffff';
   ctx.lineWidth = 4;
   ctx.strokeRect(40, 1450, REF_WIDTH - 80, 410);
-}
-
-function drawContain(
-  ctx: CanvasRenderingContext2D,
-  src: CanvasImageSource,
-  sw: number,
-  sh: number,
-  cx: number,
-  cy: number,
-  maxW: number,
-  maxH: number,
-): void {
-  if (sw <= 0 || sh <= 0) return;
-  const scale = Math.min(maxW / sw, maxH / sh);
-  const w = sw * scale;
-  const h = sh * scale;
-  ctx.drawImage(src, cx - w / 2, cy - h / 2, w, h);
 }
 
 function wrapText(

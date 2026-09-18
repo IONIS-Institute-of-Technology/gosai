@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { drawContain } from '../src/shared/draw.js';
 import { createMirrorFeed } from '../src/shared/feed.js';
 import type { MirroredData } from '../src/shared/types.js';
 import {
@@ -10,6 +11,7 @@ import {
   inRect,
   roundRect,
   stepDwell,
+  type Rect,
 } from '../src/shared/ui.js';
 
 /** A 2D context that records the methods called on it. */
@@ -120,6 +122,40 @@ describe('drawing', () => {
     const names = half.calls.map(([name]) => name);
     expect(names.indexOf('save')).toBeLessThan(names.lastIndexOf('fill'));
     expect(names.indexOf('restore')).toBeGreaterThan(names.lastIndexOf('fill'));
+  });
+
+  test('drawContain fits the source in the box, centred, and returns where it drew', () => {
+    const src = {} as CanvasImageSource;
+    const expectRect = (actual: Rect | null, expected: Rect): void => {
+      expect(actual).not.toBeNull();
+      for (const key of ['x', 'y', 'w', 'h'] as const) {
+        expect(actual![key]).toBeCloseTo(expected[key], 6);
+      }
+    };
+
+    // A portrait clip in a landscape box fills the height.
+    const tall = recordingContext();
+    const tallRect = drawContain(tall.ctx, src, 444, 648, 845, 230, 390, 340);
+    const tallW = (444 * 340) / 648;
+    expectRect(tallRect, { x: 845 - tallW / 2, y: 60, w: tallW, h: 340 });
+    expect(tall.calls).toEqual([
+      ['drawImage', [src, tallRect!.x, tallRect!.y, tallRect!.w, tallRect!.h]],
+    ]);
+
+    // A 16:9 clip in the same box fills the width.
+    const wide = recordingContext();
+    const wideH = (1080 * 390) / 1920;
+    expectRect(drawContain(wide.ctx, src, 1920, 1080, 845, 230, 390, 340), {
+      x: 650,
+      y: 230 - wideH / 2,
+      w: 390,
+      h: wideH,
+    });
+
+    // A video without a frame yet has no size, so nothing is drawn.
+    const empty = recordingContext();
+    expect(drawContain(empty.ctx, src, 0, 0, 845, 230, 390, 340)).toBeNull();
+    expect(empty.calls).toEqual([]);
   });
 });
 
