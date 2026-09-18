@@ -1,7 +1,8 @@
 /**
  * Contract tests against the real Python bridge with the `heartbeat` driver,
  * and against an app's bridge with a tiny app driver next to it. Skipped when
- * `python/.venv` has not been synced; the app tests also need uv.
+ * `python/.venv` has not been synced; the app tests also need uv. The JS CI
+ * job syncs both, so there they must run.
  */
 
 import { describe, expect, test } from 'bun:test';
@@ -15,10 +16,15 @@ import { DriverHub, type AppDriverSource } from '../src/drivers/hub.js';
 import { DriverManager } from '../src/drivers/manager.js';
 import { EventBus } from '../src/ipc/bus.js';
 import { Logger } from '../src/logger/logger.js';
-import { COUNTER_DRIVER, HAS_UV, writeDriverPackage, writeTinyWheel } from './python-fixtures.js';
+import {
+  COUNTER_DRIVER,
+  HAS_PYTHON_ENV,
+  HAS_UV,
+  writeDriverPackage,
+  writeTinyWheel,
+} from './python-fixtures.js';
 
 const PYTHON_DIR = resolve(import.meta.dir, '..', '..', '..', 'python');
-const HAS_BRIDGE = existsSync(join(PYTHON_DIR, '.venv', 'bin', 'gosai-bridge'));
 const TIMEOUT_MS = 120_000;
 
 async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<void> {
@@ -33,7 +39,11 @@ function newLogger(): Logger {
   return new Logger({ logsDir: mkdtempSync(join(tmpdir(), 'gosai-contract-')) });
 }
 
-describe.skipIf(!HAS_BRIDGE)('python bridge contract', () => {
+test.if(Boolean(process.env.CI))('CI provides python/.venv and uv', () => {
+  expect({ venv: HAS_PYTHON_ENV, uv: HAS_UV }).toEqual({ venv: true, uv: true });
+});
+
+describe.skipIf(!HAS_PYTHON_ENV)('python bridge contract', () => {
   test(
     'heartbeat round trip',
     async () => {
@@ -149,7 +159,7 @@ describe.skipIf(!HAS_BRIDGE)('python bridge contract', () => {
   );
 });
 
-describe.skipIf(!HAS_BRIDGE || !HAS_UV)('app driver bridge contract', () => {
+describe.skipIf(!HAS_PYTHON_ENV || !HAS_UV)('app driver bridge contract', () => {
   interface DriverEvent {
     readonly driver: string;
     readonly event: string;

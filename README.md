@@ -115,8 +115,8 @@ To install a new app paste its git URL into the Apps tab of the dashboard.
 | `bun run python:sync`         | `uv sync` for the Python runtime                                                |
 | `bun run python:lint`         | `ruff check` for the Python runtime                                             |
 | `bun run python:test`         | `pytest` for the Python runtime                                                 |
-| `bun run python:check`        | ruff, pyright and pytest for the Python runtime                                 |
-| `bun run training:lint`       | `ruff check` for the training pipeline                                          |
+| `bun run python:check`        | ruff check, ruff format check, pyright and pytest for the Python runtime        |
+| `bun run training:lint`       | `ruff check` and `ruff format --check` for the training pipeline                |
 | `bun run package:linux`       | Linux x64 AppImage                                                              |
 | `bun run package:mac`         | macOS arm64 DMG (on a Mac)                                                      |
 | `bun run package:win`         | Windows x64 installer (best effort)                                             |
