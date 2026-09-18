@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 from collections.abc import Iterator
+from itertools import pairwise
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
@@ -14,6 +16,7 @@ import pytest
 from conftest import BridgeFactory
 from fakes import FakeSoundDevice, RecordingContext, check_events, check_result, wait_until
 from gosai_py import devices
+from gosai_py.drivers import speaker
 from gosai_py.drivers.frequency_analysis import FrequencyAnalysisDriver
 from gosai_py.drivers.microphone import MicrophoneDriver
 from gosai_py.drivers.speaker import SpeakerDriver
@@ -81,7 +84,6 @@ def test_microphone_reopens_and_lists_devices(
 
     listing = check_result(MicrophoneDriver, "list_devices", driver.execute("list_devices", None))
     assert listing == {
-        "ok": True,
         "default_input": 1,
         "devices": [
             {"index": 1, "name": "Mic", "max_input_channels": 1, "default_samplerate": 16000.0}
@@ -108,7 +110,7 @@ def test_speaker_plays_queued_samples_across_blocks(sd: FakeSoundDevice) -> None
     try:
         callback = sd.streams[-1].callback
         result = check_result(SpeakerDriver, "play", driver.execute("play", [0.5] * 1500))
-        assert result == {"ok": True, "queued": 2, "queued_samples": 1500}
+        assert result == {"queued": 2, "queued_samples": 1500}
         driver.execute("play", [[0.25, 1.0]] * 100)
 
         out = np.ones((1024, 1), dtype=np.float32)
@@ -118,10 +120,47 @@ def test_speaker_plays_queued_samples_across_blocks(sd: FakeSoundDevice) -> None
         assert (out[:476] == 0.5).all() and (out[476:576] == 0.25).all() and (out[576:] == 0).all()
 
         assert driver.execute("play", [0.1] * 10)["queued_samples"] == 10
-        assert driver.execute("clear", None) == {"ok": True}
+        assert check_result(SpeakerDriver, "clear", driver.execute("clear", None)) is None
         callback(out, 1024, None, SimpleNamespace(output_underflow=False))
         assert not out.any()
-        assert context.emitted("underrun")
+        wait_until(lambda: bool(context.emitted("underrun")))
+        assert context.emitted("underrun")[0]["count"] == 1
+        check_events(SpeakerDriver, context)
+    finally:
+        assert driver._bridge_stop(5.0)
+
+
+def test_speaker_reports_underruns_from_a_worker_at_most_once_per_interval(
+    sd: FakeSoundDevice, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert speaker.UNDERRUN_INTERVAL_S == 1.0
+    monkeypatch.setattr(speaker, "UNDERRUN_INTERVAL_S", 0.2)
+    driver, context = _speaker(sd)
+    reports: list[tuple[str, float, int]] = []
+    original_emit = context.emit
+
+    def emit(event: str, data: Any) -> None:
+        if event == "underrun":
+            reports.append((threading.current_thread().name, time.monotonic(), data["count"]))
+        original_emit(event, data)
+
+    context.emit = emit  # type: ignore[method-assign]
+    try:
+        callback = sd.streams[-1].callback
+        out = np.zeros((1024, 1), dtype=np.float32)
+        starved = SimpleNamespace(output_underflow=True)
+        for _ in range(5):
+            callback(out, 1024, None, starved)
+        wait_until(lambda: sum(count for *_, count in reports) == 5)
+        for _ in range(3):
+            callback(out, 1024, None, starved)
+        wait_until(lambda: sum(count for *_, count in reports) == 8)
+
+        # The audio callback never emits: every report comes from the worker,
+        # and no two come closer than the interval.
+        assert {name for name, *_ in reports} == {"driver:speaker:underruns"}
+        times = [at for _, at, _ in reports]
+        assert all(later - earlier >= 0.18 for earlier, later in pairwise(times))
         check_events(SpeakerDriver, context)
     finally:
         assert driver._bridge_stop(5.0)
@@ -254,7 +293,7 @@ def test_speech_to_text_transcribes_buffers(whisper: list[dict[str, Any]]) -> No
     assert driver.execute("transcribe", [[0.0, 1.0]] * 160)["transcription"] == "160 samples."
     with pytest.raises(ValueError, match="needs audio_buffer"):
         driver.execute("transcribe", {})
-    assert driver.execute("set_model", "small.en") == {"model": "small.en", "ok": True}
+    assert driver.execute("set_model", "small.en") == {"model": "small.en"}
     assert [load["size"] for load in whisper] == ["medium.en", "small.en"]
     assert whisper[0]["device"] == "cpu" and whisper[0]["compute_type"] == "int8"
     check_events(SpeechToTextDriver, context)

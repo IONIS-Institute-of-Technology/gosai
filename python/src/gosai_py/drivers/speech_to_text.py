@@ -20,8 +20,9 @@ from typing import Any, ClassVar
 
 import msgspec
 
+from gosai_py.clock import now_ms
 from gosai_py.driver import BaseDriver, DriverContext, Event, action
-from gosai_py.payloads import AudioSamples, mono_samples
+from gosai_py.payloads import AudioSamples, EpochMs, mono_samples
 from gosai_py.runtime import AcceleratorConfig, RuntimeInfo
 
 # CTranslate2 4.x is built against CUDA 12. The gpu extra's onnxruntime-gpu
@@ -71,7 +72,7 @@ class TranscriptionPayload(msgspec.Struct, kw_only=True):
     transcription: str
     audio_duration_s: float
     transcription_duration_s: float
-    ts: float
+    ts: EpochMs
 
 
 class TranscribeParams(msgspec.Struct, kw_only=True):
@@ -79,13 +80,8 @@ class TranscribeParams(msgspec.Struct, kw_only=True):
     samples: AudioSamples | None = None
 
 
-class TranscribeResult(TranscriptionPayload, kw_only=True):
-    ok: bool = True
-
-
 class ModelResult(msgspec.Struct, kw_only=True):
     model: str
-    ok: bool
 
 
 class SpeechToTextDriver(BaseDriver):
@@ -109,7 +105,7 @@ class SpeechToTextDriver(BaseDriver):
         self._load_model()
 
     @action("Transcribe 16 kHz mono audio: a sample list, or {audio_buffer} / {samples}.")
-    def transcribe(self, params: TranscribeParams | AudioSamples) -> TranscribeResult:
+    def transcribe(self, params: TranscribeParams | AudioSamples) -> TranscriptionPayload:
         if self._model is None:
             raise RuntimeError("model not loaded")
         if isinstance(params, TranscribeParams):
@@ -119,24 +115,24 @@ class SpeechToTextDriver(BaseDriver):
         else:
             audio = params
         samples = mono_samples(audio)
-        start = time.time()
+        start = time.perf_counter()
         segments, _info = self._model.transcribe(samples, beam_size=5)
         text = "".join(segment.text for segment in segments)
         payload = {
             "transcription": text,
             "audio_duration_s": len(samples) / self.SAMPLE_RATE,
-            "transcription_duration_s": time.time() - start,
-            "ts": time.time(),
+            "transcription_duration_s": time.perf_counter() - start,
+            "ts": now_ms(),
         }
         self.emit("transcription", payload)
-        return TranscribeResult(**payload)
+        return TranscriptionPayload(**payload)
 
     @action("Load another Whisper model, such as `small.en` or `large-v3`.")
     def set_model(self, model: str) -> ModelResult:
         self._model_size = model
         self._model = None
         self._load_model()
-        return ModelResult(model=self._model_size, ok=self._model is not None)
+        return ModelResult(model=self._model_size)
 
     def _load_model(self) -> None:
         try:

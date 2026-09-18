@@ -30,7 +30,9 @@ Events and actions are declared with their types on the driver class. Each
 ball has a center ``x, y``, a ``diameter`` and a velocity ``vx, vy`` in px/s.
 
 The letterbox preprocessing mirrors ``training/``'s ONNX export, which is a
-separate package and keeps its own copy.
+separate package and keeps its own copy. Golden-value tests on both sides
+(``tests/test_ball_driver.py`` and ``training/tests/test_yolo_detect.py``)
+fail until the two copies agree.
 
 Environment (optional):
 - ``GOSAI_BALL_CONFIDENCE`` — detection confidence threshold 0..1 (default 0.70);
@@ -57,10 +59,11 @@ import cv2
 import msgspec
 import numpy as np
 
+from gosai_py.clock import now_ms
 from gosai_py.driver import BaseDriver, DriverContext, Event, action
 from gosai_py.frames import capture_timing, latency_ms
 from gosai_py.geometry import homography
-from gosai_py.payloads import FpsPayload, Matrix3x3, Ok, Size, SizeResult
+from gosai_py.payloads import CaptureMs, EpochMs, FpsPayload, Matrix3x3, Size, SizeResult
 from gosai_py.runtime import create_onnx_session
 from gosai_py.runtime.models import Model, resolve_model
 from gosai_py.smoothing import lerp
@@ -335,8 +338,8 @@ class Ball(msgspec.Struct, kw_only=True):
 class BallsPayload(msgspec.Struct, kw_only=True):
     balls: list[Ball]
     count: int
-    ts: float
-    capture_ts: float
+    ts: EpochMs
+    capture_ts: CaptureMs
     frame_age_ms: float
     latency_ms: float
 
@@ -410,9 +413,8 @@ class BallDriver(BaseDriver):
         self.set_runtime_info(dict(info))
 
     @action("Set the camera->output homography (9 values, row-major).")
-    def set_homography(self, matrix: Matrix3x3) -> Ok:
+    def set_homography(self, matrix: Matrix3x3) -> None:
         self._homography = homography.to_matrix(matrix)
-        return Ok()
 
     @action("Set the output size balls are kept within once a homography is set.")
     def set_output_size(self, size: Size) -> SizeResult:
@@ -510,7 +512,7 @@ class BallDriver(BaseDriver):
             {
                 "balls": balls,
                 "count": len(balls),
-                "ts": time.time(),
+                "ts": now_ms(),
                 "capture_ts": capture_ts,
                 "frame_age_ms": frame_age_ms,
                 "latency_ms": latency_ms(capture_ts),

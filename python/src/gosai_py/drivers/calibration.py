@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import base64
 import threading
-import time
 from collections.abc import Mapping
 from typing import Annotated, Any, ClassVar, Literal
 
@@ -29,10 +28,11 @@ import msgspec
 import numpy as np
 from msgspec import Meta
 
+from gosai_py.clock import now_ms
 from gosai_py.driver import BaseDriver, DriverContext, Event, action
 from gosai_py.geometry import homography
 from gosai_py.geometry.homography import MarkerPlacement
-from gosai_py.payloads import Ok, Point, PositiveInt, Size
+from gosai_py.payloads import EpochMs, Point, PositiveInt, Size
 from gosai_py.serialization import frame_to_jpeg_base64
 
 ARUCO_DICTIONARY = cv2.aruco.DICT_4X4_50
@@ -47,7 +47,7 @@ class DetectionPayload(msgspec.Struct, kw_only=True):
     ids: list[int]
     # 4 corners per marker (TL, TR, BR, BL) in camera pixels.
     corners: list[list[list[float]]]
-    ts: float
+    ts: EpochMs
 
 
 class HomographyPayload(msgspec.Struct, kw_only=True):
@@ -57,7 +57,7 @@ class HomographyPayload(msgspec.Struct, kw_only=True):
     inverse: list[float]
     surface_matrix: list[float] | None
     surface_inverse: list[float] | None
-    ts: float
+    ts: EpochMs
 
 
 class StatusPayload(msgspec.Struct, kw_only=True):
@@ -88,7 +88,6 @@ class ComputeParams(msgspec.Struct, kw_only=True):
 
 
 class ComputeResult(msgspec.Struct, kw_only=True):
-    ok: bool = True
     matrix: list[float]
     inverse: list[float]
     surface_matrix: list[float] | None
@@ -117,18 +116,19 @@ class RenderMarkerParams(msgspec.Struct, kw_only=True):
 
 
 class MarkerImage(msgspec.Struct, kw_only=True):
-    ok: bool = True
     id: int
     size: int
     png_base64: str
 
 
 class LatestFrame(msgspec.Struct, kw_only=True):
-    ok: bool = True
     jpeg_base64: str
     width: int | None = None
     height: int | None = None
-    ts: float | None = None
+    ts: Annotated[
+        float | None,
+        Meta(description="The frame's `ts`, in milliseconds since the Unix epoch."),
+    ] = None
 
 
 class ReprojectPointParams(msgspec.Struct, kw_only=True):
@@ -138,7 +138,6 @@ class ReprojectPointParams(msgspec.Struct, kw_only=True):
 
 
 class ReprojectedPoint(msgspec.Struct, kw_only=True):
-    ok: bool = True
     x: float
     y: float
 
@@ -149,7 +148,6 @@ class ReprojectPointsParams(msgspec.Struct, kw_only=True):
 
 
 class ReprojectedPoints(msgspec.Struct, kw_only=True):
-    ok: bool = True
     # In input order; null where a point maps to infinity.
     points: list[Point | None]
 
@@ -220,7 +218,7 @@ class CalibrationDriver(BaseDriver):
                 "detected": len(found),
                 "ids": found,
                 "corners": [c.tolist() for c in marker_corners],
-                "ts": time.time(),
+                "ts": now_ms(),
             },
         )
 
@@ -284,7 +282,7 @@ class CalibrationDriver(BaseDriver):
                 "inverse": inverse,
                 "surface_matrix": surface,
                 "surface_inverse": surface_inverse,
-                "ts": time.time(),
+                "ts": now_ms(),
             },
         )
         self.emit(
@@ -317,11 +315,10 @@ class CalibrationDriver(BaseDriver):
         )
 
     @action("Forget accumulated detections.")
-    def clear(self) -> Ok:
+    def clear(self) -> None:
         with self._lock:
             self._detections.clear()
         self.emit("status", {"stage": "cleared", "message": "accumulated detections cleared"})
-        return Ok()
 
     @action("Render an ArUco marker as a PNG. Accepts {id, size} or a bare id.")
     def render_marker(self, params: RenderMarkerParams | int) -> MarkerImage:

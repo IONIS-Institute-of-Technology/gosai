@@ -27,7 +27,7 @@ def test_steps_move_toward_the_target() -> None:
     )
     wait_until(lambda: len(context.emitted("interpolated_data")) == 4)
 
-    assert result == {"ok": True, "name": "p"}
+    assert result == {"name": "p"}
     steps = [e["points"] for e in context.emitted("interpolated_data")]
     assert steps == [[[0.0, 0.0]], [[4.0, 8.0]], [[6.0, 12.0]], [[7.0, 14.0]]]
     check_events(InterpolateDriver, context)
@@ -66,8 +66,8 @@ def test_cleanup_stops_running_jobs() -> None:
 
 def test_reset_and_validation() -> None:
     driver = InterpolateDriver(RecordingContext())
-    assert driver.execute("reset", "p") == {"ok": True}
-    assert driver.execute("reset", None) == {"ok": True}
+    assert driver.execute("reset", "p") is None
+    assert driver.execute("reset", None) is None
     with pytest.raises(ValueError, match="amount"):
         driver.execute("interpolate_points", {"amount": 0})
 

@@ -38,7 +38,16 @@ negatives = ["requests>=2.31", "gdown>=5.2.0"]
 [dependency-groups]
 # pyyaml, rich and numpy let the unit tests import the pipeline without the ML
 # stack, so CI can run `uv run --only-group dev pytest` without downloading torch.
-dev = ["ruff>=0.16.8", "pytest>=9.1.1", "pyyaml>=6.0", "rich>=13.0", "numpy>=2.0"]
+# OpenCV runs the export's letterbox in its test; albumentations already brings
+# the headless build into the full environment.
+dev = [
+    "ruff>=0.16.8",
+    "pytest>=9.1.1",
+    "pyyaml>=6.0",
+    "rich>=13.0",
+    "numpy>=2.0",
+    "opencv-python-headless>=5.0",
+]
 
 [project.scripts]
 gosai-train = "gosai_train.cli:main"

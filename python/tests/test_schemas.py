@@ -73,7 +73,10 @@ def test_schema_shape() -> None:
             "TickPayload": {
                 "title": "TickPayload",
                 "type": "object",
-                "properties": {"count": {"type": "integer"}, "now": {"type": "number"}},
+                "properties": {
+                    "count": {"type": "integer"},
+                    "now": {"description": "Milliseconds since the Unix epoch.", "type": "number"},
+                },
                 "required": ["count", "now"],
             },
         },
@@ -225,6 +228,23 @@ def test_event_delivery_matches_the_bridge() -> None:
     assert "queue_size" not in camera_events["frame_size"]
     assert microphone_events["audio_stream"]["delivery"] == "buffered"
     assert microphone_events["audio_stream"]["queue_size"] == 64
+
+
+def test_event_delivery_follows_the_rule() -> None:
+    from gosai_py.drivers.interpolate import InterpolateDriver
+    from gosai_py.drivers.slr import SLRDriver
+    from gosai_py.drivers.speaker import SpeakerDriver
+    from gosai_py.drivers.speech_activity_detection import SpeechActivityDriver
+
+    def delivery(cls: type[BaseDriver], event: str) -> str:
+        return schemas.driver_schema(cls)["events"][event]["delivery"]
+
+    assert delivery(SpeechActivityDriver, "activity") == "latest"
+    assert delivery(SLRDriver, "new_sign") == "latest"
+    # Discrete events stay queued; the speaker rate-limits underruns itself.
+    assert delivery(SpeakerDriver, "underrun") == "ordered"
+    # Several named streams share this event, and each stream's last step matters.
+    assert delivery(InterpolateDriver, "interpolated_data") == "ordered"
 
 
 def test_documented_input_conversions() -> None:

@@ -26,7 +26,12 @@ Node as JSON Schema (see `gosai_py.schemas`):
 - `@action(description)` on a method makes it an action named after the
   method. The annotation of its only parameter is the type of `data`, decoded
   with `msgspec.convert` before the call; a method without a parameter takes
-  no data. The return annotation is the result type.
+  no data. The return annotation is the result type. An action with nothing
+  to report returns None, which Node receives as null. Results carry no `ok`
+  flag: the bridge's reply already says whether the action succeeded.
+
+Timestamps in payloads are milliseconds since the Unix epoch, from
+`gosai_py.clock.now_ms()`, like the `ts` of the bridge's own messages.
 
 Actions report failures by raising. The bridge turns the exception into an
 error reply.
@@ -200,6 +205,13 @@ class BaseDriver:
       such as audio blocks or frame sequences.
     - `loop_interval_s`: how often `loop()` is called (0 == as fast as possible,
       `None` == no loop, callback-only).
+
+    Which delivery an event gets: an event that carries a new state every
+    frame or audio window, replaced by the next one, goes in `stream_events`.
+    A discrete event, such as a settings change or a transcription, is queued:
+    ordered, or in `buffered_events` when every value matters and it comes at
+    a steady high rate, like raw audio blocks. A discrete event that can fire
+    in bursts is rate-limited where it is emitted, as `speaker.underrun` is.
     """
 
     name: ClassVar[str] = ""

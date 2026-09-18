@@ -29,10 +29,19 @@ import msgspec
 import numpy as np
 from mediapipe.tasks.python import BaseOptions, vision
 
+from gosai_py.clock import now_ms
 from gosai_py.driver import BaseDriver, DriverContext, Event, action
 from gosai_py.frames import capture_timing, clamp_window, contiguous, flip_and_crop, latency_ms
 from gosai_py.geometry import homography
-from gosai_py.payloads import FlipResult, Matrix3x3, Size, SizeResult, WindowResult
+from gosai_py.payloads import (
+    CaptureMs,
+    EpochMs,
+    FlipResult,
+    Matrix3x3,
+    Size,
+    SizeResult,
+    WindowResult,
+)
 from gosai_py.runtime import mediapipe_base_options
 from gosai_py.runtime.models import Model, resolve_model
 
@@ -51,15 +60,14 @@ DETECT_WARNING_INTERVAL_S = 5.0
 class HandPosePayload(msgspec.Struct, kw_only=True):
     hands_landmarks: list[list[list[float]]]
     hands_handedness: list[tuple[int, str, float]]
-    ts: float
-    capture_ts: float
+    ts: EpochMs
+    capture_ts: CaptureMs
     inference_ms: float
     frame_age_ms: float
     latency_ms: float
 
 
 class HomographyResult(msgspec.Struct, kw_only=True):
-    ok: bool = True
     cleared: bool = False
 
 
@@ -163,7 +171,7 @@ class HandPoseDriver(BaseDriver):
         self.record("frame_age_ms", frame_age_ms)
 
         # VIDEO mode requires strictly increasing timestamps (ms).
-        ts_ms = max(self._last_ts_ms + 1, int(capture_ts * 1000))
+        ts_ms = max(self._last_ts_ms + 1, int(capture_ts))
         self._last_ts_ms = ts_ms
         with self._detector_lock:
             if self._detector is None or self.stop_requested():
@@ -199,7 +207,7 @@ class HandPoseDriver(BaseDriver):
             {
                 "hands_landmarks": [warped[i].tolist() for i in kept],
                 "hands_handedness": hands_handedness,
-                "ts": time.time(),
+                "ts": now_ms(),
                 "capture_ts": capture_ts,
                 "inference_ms": elapsed_ms,
                 "frame_age_ms": frame_age_ms,

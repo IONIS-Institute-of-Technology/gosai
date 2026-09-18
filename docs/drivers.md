@@ -47,7 +47,7 @@ Types: `DriverTypes.ball`.
 
 | Action            | Params     | Result             | Description                                                         |
 | ----------------- | ---------- | ------------------ | ------------------------------------------------------------------- |
-| `set_homography`  | `number[]` | `Ok`               | Set the camera->output homography (9 values, row-major).            |
+| `set_homography`  | `number[]` | `null`             | Set the camera->output homography (9 values, row-major).            |
 | `set_output_size` | `Size`     | `SizeResult`       | Set the output size balls are kept within once a homography is set. |
 | `set_confidence`  | `number`   | `ConfidenceResult` | Set the detection confidence threshold (clamped to 0.01..1).        |
 | `set_max_ball_px` | `number`   | `MaxBallResult`    | Ignore detections larger than this, in camera pixels.               |
@@ -61,7 +61,9 @@ Types: `DriverTypes.ball`.
 export interface BallsPayload {
   balls: Ball[];
   count: number;
+  /** Milliseconds since the Unix epoch. */
   ts: number;
+  /** When the camera captured the frame, in milliseconds since the Unix epoch. */
   capture_ts: number;
   frame_age_ms: number;
   latency_ms: number;
@@ -85,14 +87,7 @@ export interface Size {
   height: number;
 }
 
-export interface Ok {
-  /** @default true */
-  ok: boolean;
-}
-
 export interface SizeResult {
-  /** @default true */
-  ok: boolean;
   width: number;
   height: number;
 }
@@ -141,7 +136,7 @@ Types: `DriverTypes.calibration`.
 | `set_marker_layout` | `MarkerPlacement[]`            | `LayoutResult`      | Set where the markers are drawn on the display. Clears detections.                     |
 | `set_camera_event`  | `null \| CameraEventParams`    | `CameraEventResult` | Detect markers in another event with `_frame` or `jpeg_base64` (default camera.frame). |
 | `compute`           | `null \| ComputeParams`        | `ComputeResult`     | Compute the homographies from the current detections.                                  |
-| `clear`             | none                           | `Ok`                | Forget accumulated detections.                                                         |
+| `clear`             | none                           | `null`              | Forget accumulated detections.                                                         |
 | `render_marker`     | `number \| RenderMarkerParams` | `MarkerImage`       | Render an ArUco marker as a PNG. Accepts {id, size} or a bare id.                      |
 | `get_latest_frame`  | none                           | `LatestFrame`       | The latest camera frame as a base64 JPEG.                                              |
 | `reproject_point`   | `ReprojectPointParams`         | `ReprojectedPoint`  | Warp a camera pixel into display or surface space. Fails when it maps to infinity.     |
@@ -154,6 +149,7 @@ export interface DetectionPayload {
   detected: number;
   ids: number[];
   corners: number[][][];
+  /** Milliseconds since the Unix epoch. */
   ts: number;
 }
 
@@ -163,6 +159,7 @@ export interface HomographyPayload {
   inverse: number[];
   surface_matrix: number[] | null;
   surface_inverse: number[] | null;
+  /** Milliseconds since the Unix epoch. */
   ts: number;
 }
 
@@ -236,8 +233,6 @@ export interface CameraEventResult {
 }
 
 export interface ComputeResult {
-  /** @default true */
-  ok: boolean;
   matrix: number[];
   inverse: number[];
   surface_matrix: number[] | null;
@@ -253,41 +248,31 @@ export interface ComputeResult {
   reprojection_error_max: number;
 }
 
-export interface Ok {
-  /** @default true */
-  ok: boolean;
-}
-
 export interface MarkerImage {
-  /** @default true */
-  ok: boolean;
   id: number;
   size: number;
   png_base64: string;
 }
 
 export interface LatestFrame {
-  /** @default true */
-  ok: boolean;
   jpeg_base64: string;
   /** @default null */
   width: number | null;
   /** @default null */
   height: number | null;
-  /** @default null */
+  /**
+   * The frame's `ts`, in milliseconds since the Unix epoch.
+   * @default null
+   */
   ts: number | null;
 }
 
 export interface ReprojectedPoint {
-  /** @default true */
-  ok: boolean;
   x: number;
   y: number;
 }
 
 export interface ReprojectedPoints {
-  /** @default true */
-  ok: boolean;
   points: (null | Point)[];
 }
 ```
@@ -341,8 +326,11 @@ export interface CameraConfig {
 export interface FramePayload {
   width: number;
   height: number;
+  /** Milliseconds since the Unix epoch, equal to `capture_ts`. */
   ts: number;
+  /** When the camera captured the frame, in milliseconds since the Unix epoch. */
   capture_ts: number;
+  /** `time.perf_counter()` at capture in milliseconds, comparable only within the bridge process. */
   capture_perf: number;
   codec: string;
 }
@@ -350,8 +338,11 @@ export interface FramePayload {
 export interface ColorPayload {
   width: number;
   height: number;
+  /** Milliseconds since the Unix epoch, equal to `capture_ts`. */
   ts: number;
+  /** When the camera captured the frame, in milliseconds since the Unix epoch. */
   capture_ts: number;
+  /** `time.perf_counter()` at capture in milliseconds, comparable only within the bridge process. */
   capture_perf: number;
   codec: string;
   jpeg_base64: string;
@@ -395,8 +386,6 @@ export interface ModeParams {
 }
 
 export interface CameraFormats {
-  /** @default true */
-  ok: boolean;
   device: number;
   formats: CameraFormat[];
   /** @default false */
@@ -503,7 +492,9 @@ Types: `DriverTypes.hand_pose`.
 export interface HandPosePayload {
   hands_landmarks: number[][][];
   hands_handedness: [number, string, number][];
+  /** Milliseconds since the Unix epoch. */
   ts: number;
+  /** When the camera captured the frame, in milliseconds since the Unix epoch. */
   capture_ts: number;
   inference_ms: number;
   frame_age_ms: number;
@@ -524,15 +515,11 @@ export interface WindowResult {
 }
 
 export interface HomographyResult {
-  /** @default true */
-  ok: boolean;
   /** @default false */
   cleared: boolean;
 }
 
 export interface SizeResult {
-  /** @default true */
-  ok: boolean;
   width: number;
   height: number;
 }
@@ -562,6 +549,7 @@ None.
 /** One `[label, confidence]` pair per hand, in `hand_pose` order. */
 export interface SignPayload {
   sign: [string, number][];
+  /** Milliseconds since the Unix epoch. */
   ts: number;
 }
 ```
@@ -591,6 +579,7 @@ Types: `DriverTypes.heartbeat`.
 ```ts
 export interface TickPayload {
   count: number;
+  /** Milliseconds since the Unix epoch. */
   now: number;
 }
 
@@ -619,7 +608,7 @@ Types: `DriverTypes.interpolate`.
 | Action               | Params              | Result              | Description                                                               |
 | -------------------- | ------------------- | ------------------- | ------------------------------------------------------------------------- |
 | `interpolate_points` | `InterpolateParams` | `InterpolateResult` | Interpolate the stream `name` toward `points`, replacing its running job. |
-| `reset`              | `string \| null`    | `Ok`                | Forget the last value of one stream, or of every stream when null.        |
+| `reset`              | `string \| null`    | `null`              | Forget the last value of one stream, or of every stream when null.        |
 
 ### Types
 
@@ -645,14 +634,7 @@ export interface InterpolateParams {
 }
 
 export interface InterpolateResult {
-  /** @default true */
-  ok: boolean;
   name: string;
-}
-
-export interface Ok {
-  /** @default true */
-  ok: boolean;
 }
 ```
 
@@ -698,6 +680,7 @@ export interface AudioStreamPayload {
   samplerate: number;
   channels: number;
   blocksize: number;
+  /** When the block reached the driver, in milliseconds since the Unix epoch. */
   ts: number;
 }
 
@@ -709,8 +692,6 @@ export interface AudioSettingsPayload {
 }
 
 export interface InputDevices {
-  /** @default true */
-  ok: boolean;
   default_input: number | null;
   devices: InputDevice[];
 }
@@ -779,6 +760,7 @@ export interface RawPosePayload {
   body_world_pose: number[][];
   frame_width: number;
   frame_height: number;
+  /** Milliseconds since the Unix epoch. */
   ts: number;
   inference_ms: number;
 }
@@ -833,6 +815,7 @@ export interface MirroredPayload {
   left_hand_pose: number[][];
   face_mesh: number[][];
   body_world_pose: number[][];
+  /** Milliseconds since the Unix epoch. */
   ts: number;
 }
 
@@ -908,16 +891,12 @@ export interface MirrorSettings {
 }
 
 export interface CaptureResult {
-  /** @default true */
-  ok: boolean;
   samples: number;
   landmark: number;
   visibility: number;
 }
 
 export interface SolveResult {
-  /** @default true */
-  ok: boolean;
   tilt_deg: number;
   scale: number;
   affine: number[];
@@ -929,8 +908,6 @@ export interface SolveResult {
 }
 
 export interface ClearResult {
-  /** @default true */
-  ok: boolean;
   samples: number;
 }
 ```
@@ -947,13 +924,13 @@ Types: `DriverTypes.slr`.
 
 | Event      | Payload       | Delivery | Description                                    |
 | ---------- | ------------- | -------- | ---------------------------------------------- |
-| `new_sign` | `SignPayload` | ordered  | Most likely sign over the last 30 pose frames. |
+| `new_sign` | `SignPayload` | latest   | Most likely sign over the last 30 pose frames. |
 
 ### Actions
 
 | Action        | Params     | Result | Description                                                                |
 | ------------- | ---------- | ------ | -------------------------------------------------------------------------- |
-| `set_actions` | `string[]` | `Ok`   | Register the sign labels, in model output order. Selects slr_<count>.onnx. |
+| `set_actions` | `string[]` | `null` | Register the sign labels, in model output order. Selects slr_<count>.onnx. |
 
 ### Types
 
@@ -961,11 +938,6 @@ Types: `DriverTypes.slr`.
 export interface SignPayload {
   guessed_sign: string;
   probability: number;
-}
-
-export interface Ok {
-  /** @default true */
-  ok: boolean;
 }
 ```
 
@@ -981,17 +953,17 @@ Config: `SpeakerConfig`
 
 ### Events
 
-| Event      | Payload                | Delivery | Description                          |
-| ---------- | ---------------------- | -------- | ------------------------------------ |
-| `settings` | `AudioSettingsPayload` | ordered  | Stream settings after each (re)open. |
-| `underrun` | `UnderrunPayload`      | ordered  | The output device ran out of data.   |
+| Event      | Payload                | Delivery | Description                                                             |
+| ---------- | ---------------------- | -------- | ----------------------------------------------------------------------- |
+| `settings` | `AudioSettingsPayload` | ordered  | Stream settings after each (re)open.                                    |
+| `underrun` | `UnderrunPayload`      | ordered  | The output device ran out of data. At most once a second, with a count. |
 
 ### Actions
 
 | Action           | Params                           | Result             | Description                                                                        |
 | ---------------- | -------------------------------- | ------------------ | ---------------------------------------------------------------------------------- |
 | `play`           | `(number \| number[])[] \| null` | `PlayResult`       | Queue samples in [-1, 1] at the stream's sample rate. Rows use their first column. |
-| `clear`          | none                             | `Ok`               | Drop queued audio.                                                                 |
+| `clear`          | none                             | `null`             | Drop queued audio.                                                                 |
 | `list_devices`   | none                             | `OutputDevices`    | List output devices.                                                               |
 | `set_device`     | `number \| null`                 | `DeviceResult`     | Play on another device; null picks the system default.                             |
 | `set_samplerate` | `number`                         | `SamplerateResult` | Play at another sample rate.                                                       |
@@ -1014,24 +986,18 @@ export interface AudioSettingsPayload {
 }
 
 export interface UnderrunPayload {
+  /** Underruns since the previous event. */
+  count: number;
+  /** Milliseconds since the Unix epoch. */
   ts: number;
 }
 
 export interface PlayResult {
-  /** @default true */
-  ok: boolean;
   queued: number;
   queued_samples: number;
 }
 
-export interface Ok {
-  /** @default true */
-  ok: boolean;
-}
-
 export interface OutputDevices {
-  /** @default true */
-  ok: boolean;
   default_output: number | null;
   devices: OutputDevice[];
 }
@@ -1064,14 +1030,14 @@ Types: `DriverTypes.speech_activity_detection`.
 
 | Event      | Payload           | Delivery | Description                                  |
 | ---------- | ----------------- | -------- | -------------------------------------------- |
-| `activity` | `ActivityPayload` | ordered  | Speech probability of one 512-sample window. |
+| `activity` | `ActivityPayload` | latest   | Speech probability of one 512-sample window. |
 
 ### Actions
 
-| Action    | Params                                    | Result          | Description                                                        |
-| --------- | ----------------------------------------- | --------------- | ------------------------------------------------------------------ |
-| `predict` | `(number \| number[])[] \| PredictParams` | `PredictResult` | Score 16 kHz mono audio whose length is a multiple of 512 samples. |
-| `reset`   | none                                      | `Ok`            | Clear the model state and the buffered stream.                     |
+| Action    | Params                                    | Result          | Description                                                                                                                            |
+| --------- | ----------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `predict` | `(number \| number[])[] \| PredictParams` | `PredictResult` | Score 16 kHz mono audio whose length is a multiple of 512 samples, from a fresh state. Leaves the live stream alone and emits nothing. |
+| `reset`   | none                                      | `null`          | Clear the live stream's model state and buffered audio.                                                                                |
 
 ### Types
 
@@ -1079,6 +1045,7 @@ Types: `DriverTypes.speech_activity_detection`.
 export interface ActivityPayload {
   confidence: number;
   is_speech: boolean;
+  /** Milliseconds since the Unix epoch. */
   ts: number;
 }
 
@@ -1092,15 +1059,9 @@ export interface PredictParams {
 export interface PredictResult {
   confidence: number;
   is_speech: boolean;
+  /** Milliseconds since the Unix epoch. */
   ts: number;
-  /** @default true */
-  ok: boolean;
   scores: number[];
-}
-
-export interface Ok {
-  /** @default true */
-  ok: boolean;
 }
 ```
 
@@ -1120,10 +1081,10 @@ Types: `DriverTypes.speech_to_text`.
 
 ### Actions
 
-| Action       | Params                                       | Result             | Description                                                                 |
-| ------------ | -------------------------------------------- | ------------------ | --------------------------------------------------------------------------- |
-| `transcribe` | `(number \| number[])[] \| TranscribeParams` | `TranscribeResult` | Transcribe 16 kHz mono audio: a sample list, or {audio_buffer} / {samples}. |
-| `set_model`  | `string`                                     | `ModelResult`      | Load another Whisper model, such as `small.en` or `large-v3`.               |
+| Action       | Params                                       | Result                 | Description                                                                 |
+| ------------ | -------------------------------------------- | ---------------------- | --------------------------------------------------------------------------- |
+| `transcribe` | `(number \| number[])[] \| TranscribeParams` | `TranscriptionPayload` | Transcribe 16 kHz mono audio: a sample list, or {audio_buffer} / {samples}. |
+| `set_model`  | `string`                                     | `ModelResult`          | Load another Whisper model, such as `small.en` or `large-v3`.               |
 
 ### Types
 
@@ -1132,6 +1093,7 @@ export interface TranscriptionPayload {
   transcription: string;
   audio_duration_s: number;
   transcription_duration_s: number;
+  /** Milliseconds since the Unix epoch. */
   ts: number;
 }
 
@@ -1142,17 +1104,7 @@ export interface TranscribeParams {
   samples?: (number | number[])[] | null;
 }
 
-export interface TranscribeResult {
-  transcription: string;
-  audio_duration_s: number;
-  transcription_duration_s: number;
-  ts: number;
-  /** @default true */
-  ok: boolean;
-}
-
 export interface ModelResult {
   model: string;
-  ok: boolean;
 }
 ```

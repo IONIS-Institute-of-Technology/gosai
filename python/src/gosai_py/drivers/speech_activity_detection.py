@@ -7,14 +7,16 @@ across windows of 512 samples at 16 kHz.
 Live `microphone.audio_stream` blocks of any size are buffered and scored one
 512-sample window at a time; the leftover waits for the next block. Each score
 is emitted as `activity`. Audio at another sample rate is skipped with a
-warning. `predict` scores audio directly, for offline use, and `reset` clears
-the model state and the buffer.
+warning. `reset` clears the live stream's model state and buffer.
+
+`predict` scores audio directly, for offline use. Each call starts from a
+fresh state on the same ONNX session and emits nothing, so offline audio never
+disturbs the live stream.
 """
 
 from __future__ import annotations
 
 import threading
-import time
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
@@ -22,8 +24,9 @@ import msgspec
 import numpy as np
 import onnxruntime as ort
 
+from gosai_py.clock import now_ms
 from gosai_py.driver import BaseDriver, DriverContext, Event, action
-from gosai_py.payloads import AudioSamples, Ok, mono_samples
+from gosai_py.payloads import AudioSamples, EpochMs, mono_samples
 from gosai_py.runtime import RuntimeInfo
 from gosai_py.runtime.models import Model, resolve_model
 
@@ -41,8 +44,9 @@ SPEECH_THRESHOLD = 0.5
 class SileroVad:
     """Stateful Silero VAD v5+ over ONNX Runtime, matching Silero's own OnnxWrapper.
 
-    Thread-safe: the bridge thread (`predict`) and the subscription worker
-    share the recurrent state.
+    Each instance holds the recurrent state of one audio stream, behind a lock
+    so any thread may call it. Instances made with `new_stream` share the ONNX
+    session, which accepts concurrent runs.
     """
 
     SAMPLE_RATE: ClassVar[int] = 16_000
@@ -54,6 +58,10 @@ class SileroVad:
         self._sr = np.array(self.SAMPLE_RATE, dtype=np.int64)
         self._lock = threading.Lock()
         self.reset()
+
+    def new_stream(self) -> SileroVad:
+        """A detector on the same session, with a fresh state of its own."""
+        return SileroVad(self._session)
 
     def reset(self) -> None:
         with self._lock:
@@ -95,7 +103,7 @@ class SileroVad:
 class ActivityPayload(msgspec.Struct, kw_only=True):
     confidence: float
     is_speech: bool
-    ts: float
+    ts: EpochMs
 
 
 class PredictParams(msgspec.Struct, kw_only=True):
@@ -104,7 +112,6 @@ class PredictParams(msgspec.Struct, kw_only=True):
 
 
 class PredictResult(ActivityPayload, kw_only=True):
-    ok: bool = True
     # One score per 512-sample window; `confidence` is the last.
     scores: list[float]
 
@@ -115,6 +122,7 @@ class SpeechActivityDriver(BaseDriver):
     events: ClassVar[Mapping[str, Event]] = {
         "activity": Event(ActivityPayload, "Speech probability of one 512-sample window."),
     }
+    stream_events = ("activity",)
     dependencies = ("microphone",)
     subscribed = (("microphone", "audio_stream"),)
     # Silero keeps state across chunks and needs contiguous audio.
@@ -147,7 +155,10 @@ class SpeechActivityDriver(BaseDriver):
         )
         self.log("info", "Silero VAD loaded")
 
-    @action("Score 16 kHz mono audio whose length is a multiple of 512 samples.")
+    @action(
+        "Score 16 kHz mono audio whose length is a multiple of 512 samples, from a fresh"
+        " state. Leaves the live stream alone and emits nothing."
+    )
     def predict(self, params: PredictParams | AudioSamples) -> PredictResult:
         model = self._require_model()
         if isinstance(params, PredictParams):
@@ -161,16 +172,15 @@ class SpeechActivityDriver(BaseDriver):
             raise ValueError(
                 f"predict needs a positive multiple of {SileroVad.CHUNK} samples, got {len(samples)}"
             )
-        scores = [model(window) for window in samples.reshape(-1, SileroVad.CHUNK)]
-        payload = {}
-        for score in scores:
-            payload = self._emit_score(score)
-        return PredictResult(**payload, scores=scores)
+        scores = model.new_stream().feed(samples)
+        last = scores[-1]
+        return PredictResult(
+            confidence=last, is_speech=last > SPEECH_THRESHOLD, ts=now_ms(), scores=scores
+        )
 
-    @action("Clear the model state and the buffered stream.")
-    def reset(self) -> Ok:
+    @action("Clear the live stream's model state and buffered audio.")
+    def reset(self) -> None:
         self._require_model().reset()
-        return Ok()
 
     def on_data(self, driver: str, event: str, data: Any) -> None:
         if self._model is None or not isinstance(data, dict):
@@ -192,10 +202,10 @@ class SpeechActivityDriver(BaseDriver):
         for score in self._model.feed(block[:, 0] if block.ndim > 1 else block):
             self._emit_score(score)
 
-    def _emit_score(self, score: float) -> dict[str, Any]:
-        payload = {"confidence": score, "is_speech": score > SPEECH_THRESHOLD, "ts": time.time()}
-        self.emit("activity", payload)
-        return payload
+    def _emit_score(self, score: float) -> None:
+        self.emit(
+            "activity", {"confidence": score, "is_speech": score > SPEECH_THRESHOLD, "ts": now_ms()}
+        )
 
     def _require_model(self) -> SileroVad:
         if self._model is None:

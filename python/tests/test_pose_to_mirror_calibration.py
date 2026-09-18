@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from fakes import RecordingContext, check_events, check_result
+from gosai_py.clock import now_ms
 from gosai_py.drivers.pose_to_mirror import RIGHT_INDEX, MirrorSettings, PoseToMirrorDriver
 from gosai_py.geometry import mirror
 from gosai_py.geometry.mirror import LEFT_SHOULDER, NOSE, RIGHT_SHOULDER
@@ -78,7 +79,7 @@ def _make_raw(
         "body_world_pose": body_world,
         "frame_width": FRAME_W,
         "frame_height": FRAME_H,
-        "ts": time.time(),
+        "ts": now_ms(),
     }
 
 
@@ -128,7 +129,6 @@ def _capture_all(
             "capture_calibration_sample",
             driver.execute("capture_calibration_sample", {"target": target}),
         )
-        assert result["ok"], result
         assert result["landmark"] == RIGHT_INDEX
 
 
@@ -142,8 +142,9 @@ def test_solver_recovers_ground_truth(
     driver: PoseToMirrorDriver, affine: tuple[float, float, float, float]
 ) -> None:
     _capture_all(driver, affine)
-    fit = driver.execute("solve_calibration", {})
-    assert fit["ok"], fit
+    fit = check_result(
+        PoseToMirrorDriver, "solve_calibration", driver.execute("solve_calibration", {})
+    )
 
     assert fit["residual_px_mean"] < 3.0
     assert fit["residual_px_max"] < 6.0
@@ -171,7 +172,7 @@ def test_solver_respects_apply_false(driver: PoseToMirrorDriver) -> None:
         "solve_calibration",
         driver.execute("solve_calibration", {"apply": False}),
     )
-    assert fit["ok"], fit
+    assert fit["applied"] is False
     after = driver.execute("set_mirror_config", None)
     assert after["affine"] is None
     assert after["tilt_deg"] == before["tilt_deg"]
@@ -179,7 +180,7 @@ def test_solver_respects_apply_false(driver: PoseToMirrorDriver) -> None:
 
 def test_clear_samples(driver: PoseToMirrorDriver) -> None:
     _capture_all(driver)
-    assert driver.execute("clear_calibration_samples", None) == {"ok": True, "samples": 0}
+    assert driver.execute("clear_calibration_samples", None) == {"samples": 0}
     with pytest.raises(RuntimeError, match="need at least"):
         driver.execute("solve_calibration", {})
 
@@ -239,7 +240,7 @@ def _make_standing_raw(distance_mm: float, tilt_deg: float) -> dict[str, Any]:
         "body_world_pose": body_world,
         "frame_width": FRAME_W,
         "frame_height": FRAME_H,
-        "ts": time.time(),
+        "ts": now_ms(),
     }
 
 

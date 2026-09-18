@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
-import time
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
 import msgspec
 
+from gosai_py.clock import now_ms
 from gosai_py.driver import BaseDriver, DriverContext, Event, action
+from gosai_py.payloads import EpochMs
 
 
 class TickPayload(msgspec.Struct, kw_only=True):
     count: int
-    now: float
+    now: EpochMs
 
 
 class EchoResult(msgspec.Struct, kw_only=True):
@@ -36,7 +37,7 @@ class HeartbeatDriver(BaseDriver):
 
     def loop(self) -> None:
         self._counter += 1
-        self.emit("tick", {"count": self._counter, "now": time.time()})
+        self.emit("tick", {"count": self._counter, "now": now_ms()})
 
     @action("Return the data unchanged, with the current tick count.")
     def echo(self, data: Any) -> EchoResult:

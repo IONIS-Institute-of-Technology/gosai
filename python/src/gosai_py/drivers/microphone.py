@@ -10,14 +10,15 @@ ndarray, and can skip the list conversion.
 
 from __future__ import annotations
 
-import time
 from collections.abc import Mapping
-from typing import Any, ClassVar
+from typing import Annotated, Any, ClassVar
 
 import msgspec
 import numpy as np
+from msgspec import Meta
 
 from gosai_py import devices
+from gosai_py.clock import now_ms
 from gosai_py.driver import BaseDriver, DriverContext, Event, action
 from gosai_py.workers import BoundedQueueWorker
 
@@ -39,7 +40,12 @@ class AudioStreamPayload(msgspec.Struct, kw_only=True):
     samplerate: int
     channels: int
     blocksize: int
-    ts: float
+    ts: Annotated[
+        float,
+        Meta(
+            description="When the block reached the driver, in milliseconds since the Unix epoch."
+        ),
+    ]
 
 
 class AudioSettingsPayload(msgspec.Struct, kw_only=True):
@@ -57,7 +63,6 @@ class InputDevice(msgspec.Struct, kw_only=True):
 
 
 class InputDevices(msgspec.Struct, kw_only=True):
-    ok: bool = True
     default_input: int | None
     devices: list[InputDevice]
 
@@ -154,7 +159,7 @@ class MicrophoneDriver(BaseDriver):
         )
 
         def callback(indata: Any, _frames: int, _time: Any, status: Any) -> None:
-            worker.offer((indata.copy(), time.time(), str(status) if status else None))
+            worker.offer((indata.copy(), now_ms(), str(status) if status else None))
 
         try:
             stream = sd.InputStream(

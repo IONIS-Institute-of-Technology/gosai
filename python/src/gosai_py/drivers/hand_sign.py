@@ -14,7 +14,7 @@ Output payload (matches legacy):
 ```json
 {
   "sign": [["OK", 0.95], ["FIST", 0.92]],
-  "ts": 1716200000.123
+  "ts": 1716200000123.0
 }
 ```
 """
@@ -22,13 +22,14 @@ Output payload (matches legacy):
 from __future__ import annotations
 
 import math
-import time
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
 import msgspec
 
+from gosai_py.clock import now_ms
 from gosai_py.driver import BaseDriver, Event
+from gosai_py.payloads import EpochMs
 
 Point = tuple[float, float]
 
@@ -37,7 +38,7 @@ class SignPayload(msgspec.Struct, kw_only=True):
     """One `[label, confidence]` pair per hand, in `hand_pose` order."""
 
     sign: list[tuple[str, float]]
-    ts: float
+    ts: EpochMs
 
 
 class HandSignDriver(BaseDriver):
@@ -63,7 +64,7 @@ class HandSignDriver(BaseDriver):
                 results.append(("UNKNOWN", 0.0))
                 continue
             results.append(_classify_hand([(float(p[0]), float(p[1])) for p in hand]))
-        self.emit("sign", {"sign": results, "ts": time.time()})
+        self.emit("sign", {"sign": results, "ts": now_ms()})
 
 
 # Indices in MediaPipe hand landmarks

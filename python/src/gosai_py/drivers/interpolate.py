@@ -22,7 +22,6 @@ import msgspec
 from msgspec import Meta
 
 from gosai_py.driver import BaseDriver, DriverContext, Event, action
-from gosai_py.payloads import Ok
 from gosai_py.smoothing import lerp
 
 JOB_JOIN_TIMEOUT_S = 1.0
@@ -38,7 +37,6 @@ class InterpolateParams(msgspec.Struct, kw_only=True):
 
 
 class InterpolateResult(msgspec.Struct, kw_only=True):
-    ok: bool = True
     name: str
 
 
@@ -57,6 +55,9 @@ class InterpolateDriver(BaseDriver):
     name = "interpolate"
     description = "Smoothly interpolate any numeric stream over time."
     events: ClassVar[Mapping[str, Event]] = {
+        # Queued, not latest-only: the bridge keeps one latest value per event,
+        # so with several streams a slow reader would lose other streams' last
+        # steps, and with them their targets.
         "interpolated_data": Event(InterpolatedPayload, "One step of a stream's interpolation."),
     }
     loop_interval_s = None
@@ -83,13 +84,12 @@ class InterpolateDriver(BaseDriver):
         return InterpolateResult(name=params.name)
 
     @action("Forget the last value of one stream, or of every stream when null.")
-    def reset(self, name: str | None) -> Ok:
+    def reset(self, name: str | None) -> None:
         with self._lock:
             if name is None:
                 self._previous.clear()
             else:
                 self._previous.pop(name, None)
-        return Ok()
 
     def cleanup(self) -> None:
         with self._lock:

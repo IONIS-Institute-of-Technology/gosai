@@ -1,7 +1,9 @@
 from collections import Counter
 
+import numpy as np
 import pytest
 
+from gosai_train.pipelines.yolo_detect.export import _letterbox
 from gosai_train.pipelines.yolo_detect.prepare import _expand_boxes
 from gosai_train.pipelines.yolo_detect.sources import assign_split, classify_name, to_bbox_line
 
@@ -75,3 +77,54 @@ def test_assign_split_is_deterministic_and_roughly_80_10_10() -> None:
     assert 0.75 < counts["train"] / len(keys) < 0.85
     assert 0.07 < counts["val"] / len(keys) < 0.13
     assert 0.07 < counts["test"] / len(keys) < 0.13
+
+
+# Golden values for the export's `_letterbox`. python/tests/test_ball_driver.py
+# runs the ball driver's copy on the same image and expects the same pixels, so
+# changing either letterbox fails a test until the other one matches.
+LETTERBOX_IMAGE = [[0, 40, 80, 120, 160, 200], [20, 60, 100, 140, 180, 220]]
+# Target (height, width) and the expected image.
+LETTERBOX_CASES = [
+    # Shrinks by 2/3 and pads rows unevenly.
+    (
+        (4, 4),
+        [
+            [114, 114, 114, 114],
+            [20, 80, 140, 200],
+            [114, 114, 114, 114],
+            [114, 114, 114, 114],
+        ],
+    ),
+    # Already the target height: no resize, one column of padding on each side.
+    (
+        (2, 8),
+        [
+            [114, 0, 40, 80, 120, 160, 200, 114],
+            [114, 20, 60, 100, 140, 180, 220, 114],
+        ],
+    ),
+    # Grows by 1.5 and pads the last row.
+    (
+        (4, 9),
+        [
+            [0, 20, 47, 73, 100, 127, 153, 180, 200],
+            [10, 30, 57, 83, 110, 137, 163, 190, 210],
+            [20, 40, 67, 93, 120, 146, 173, 200, 220],
+            [114, 114, 114, 114, 114, 114, 114, 114, 114],
+        ],
+    ),
+]
+
+
+def _three_channels(rows: list[list[int]]) -> np.ndarray:
+    return np.repeat(np.array(rows, dtype=np.uint8)[:, :, None], 3, axis=2)
+
+
+@pytest.mark.parametrize(("size", "expected"), LETTERBOX_CASES)
+def test_letterbox_matches_the_ball_driver(
+    size: tuple[int, int], expected: list[list[int]]
+) -> None:
+    out = _letterbox(_three_channels(LETTERBOX_IMAGE), size)
+
+    assert out.dtype == np.uint8 and out.shape == (*size, 3)
+    assert np.array_equal(out, _three_channels(expected))

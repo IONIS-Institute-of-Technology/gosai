@@ -20,7 +20,7 @@ export type { DriverTypes } from './drivers.generated.js';
  *     my_driver: {
  *       config: undefined;
  *       events: { reading: { value: number } };
- *       actions: { reset: { params: undefined; result: { ok: boolean } } };
+ *       actions: { reset: { params: undefined; result: null } };
  *     };
  *   }
  * }

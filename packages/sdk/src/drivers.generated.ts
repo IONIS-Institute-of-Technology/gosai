@@ -9,7 +9,9 @@ export declare namespace DriverTypes {
     export interface BallsPayload {
       balls: Ball[];
       count: number;
+      /** Milliseconds since the Unix epoch. */
       ts: number;
+      /** When the camera captured the frame, in milliseconds since the Unix epoch. */
       capture_ts: number;
       frame_age_ms: number;
       latency_ms: number;
@@ -33,14 +35,7 @@ export declare namespace DriverTypes {
       height: number;
     }
 
-    export interface Ok {
-      /** @default true */
-      ok: boolean;
-    }
-
     export interface SizeResult {
-      /** @default true */
-      ok: boolean;
       width: number;
       height: number;
     }
@@ -72,6 +67,7 @@ export declare namespace DriverTypes {
       detected: number;
       ids: number[];
       corners: number[][][];
+      /** Milliseconds since the Unix epoch. */
       ts: number;
     }
 
@@ -81,6 +77,7 @@ export declare namespace DriverTypes {
       inverse: number[];
       surface_matrix: number[] | null;
       surface_inverse: number[] | null;
+      /** Milliseconds since the Unix epoch. */
       ts: number;
     }
 
@@ -154,8 +151,6 @@ export declare namespace DriverTypes {
     }
 
     export interface ComputeResult {
-      /** @default true */
-      ok: boolean;
       matrix: number[];
       inverse: number[];
       surface_matrix: number[] | null;
@@ -171,41 +166,31 @@ export declare namespace DriverTypes {
       reprojection_error_max: number;
     }
 
-    export interface Ok {
-      /** @default true */
-      ok: boolean;
-    }
-
     export interface MarkerImage {
-      /** @default true */
-      ok: boolean;
       id: number;
       size: number;
       png_base64: string;
     }
 
     export interface LatestFrame {
-      /** @default true */
-      ok: boolean;
       jpeg_base64: string;
       /** @default null */
       width: number | null;
       /** @default null */
       height: number | null;
-      /** @default null */
+      /**
+       * The frame's `ts`, in milliseconds since the Unix epoch.
+       * @default null
+       */
       ts: number | null;
     }
 
     export interface ReprojectedPoint {
-      /** @default true */
-      ok: boolean;
       x: number;
       y: number;
     }
 
     export interface ReprojectedPoints {
-      /** @default true */
-      ok: boolean;
       points: (null | Point)[];
     }
   }
@@ -228,8 +213,11 @@ export declare namespace DriverTypes {
     export interface FramePayload {
       width: number;
       height: number;
+      /** Milliseconds since the Unix epoch, equal to `capture_ts`. */
       ts: number;
+      /** When the camera captured the frame, in milliseconds since the Unix epoch. */
       capture_ts: number;
+      /** `time.perf_counter()` at capture in milliseconds, comparable only within the bridge process. */
       capture_perf: number;
       codec: string;
     }
@@ -237,8 +225,11 @@ export declare namespace DriverTypes {
     export interface ColorPayload {
       width: number;
       height: number;
+      /** Milliseconds since the Unix epoch, equal to `capture_ts`. */
       ts: number;
+      /** When the camera captured the frame, in milliseconds since the Unix epoch. */
       capture_ts: number;
+      /** `time.perf_counter()` at capture in milliseconds, comparable only within the bridge process. */
       capture_perf: number;
       codec: string;
       jpeg_base64: string;
@@ -282,8 +273,6 @@ export declare namespace DriverTypes {
     }
 
     export interface CameraFormats {
-      /** @default true */
-      ok: boolean;
       device: number;
       formats: CameraFormat[];
       /** @default false */
@@ -343,7 +332,9 @@ export declare namespace DriverTypes {
     export interface HandPosePayload {
       hands_landmarks: number[][][];
       hands_handedness: [number, string, number][];
+      /** Milliseconds since the Unix epoch. */
       ts: number;
+      /** When the camera captured the frame, in milliseconds since the Unix epoch. */
       capture_ts: number;
       inference_ms: number;
       frame_age_ms: number;
@@ -364,15 +355,11 @@ export declare namespace DriverTypes {
     }
 
     export interface HomographyResult {
-      /** @default true */
-      ok: boolean;
       /** @default false */
       cleared: boolean;
     }
 
     export interface SizeResult {
-      /** @default true */
-      ok: boolean;
       width: number;
       height: number;
     }
@@ -383,6 +370,7 @@ export declare namespace DriverTypes {
     /** One `[label, confidence]` pair per hand, in `hand_pose` order. */
     export interface SignPayload {
       sign: [string, number][];
+      /** Milliseconds since the Unix epoch. */
       ts: number;
     }
   }
@@ -391,6 +379,7 @@ export declare namespace DriverTypes {
   export namespace heartbeat {
     export interface TickPayload {
       count: number;
+      /** Milliseconds since the Unix epoch. */
       now: number;
     }
 
@@ -423,14 +412,7 @@ export declare namespace DriverTypes {
     }
 
     export interface InterpolateResult {
-      /** @default true */
-      ok: boolean;
       name: string;
-    }
-
-    export interface Ok {
-      /** @default true */
-      ok: boolean;
     }
   }
 
@@ -450,6 +432,7 @@ export declare namespace DriverTypes {
       samplerate: number;
       channels: number;
       blocksize: number;
+      /** When the block reached the driver, in milliseconds since the Unix epoch. */
       ts: number;
     }
 
@@ -461,8 +444,6 @@ export declare namespace DriverTypes {
     }
 
     export interface InputDevices {
-      /** @default true */
-      ok: boolean;
       default_input: number | null;
       devices: InputDevice[];
     }
@@ -506,6 +487,7 @@ export declare namespace DriverTypes {
       body_world_pose: number[][];
       frame_width: number;
       frame_height: number;
+      /** Milliseconds since the Unix epoch. */
       ts: number;
       inference_ms: number;
     }
@@ -535,6 +517,7 @@ export declare namespace DriverTypes {
       left_hand_pose: number[][];
       face_mesh: number[][];
       body_world_pose: number[][];
+      /** Milliseconds since the Unix epoch. */
       ts: number;
     }
 
@@ -610,16 +593,12 @@ export declare namespace DriverTypes {
     }
 
     export interface CaptureResult {
-      /** @default true */
-      ok: boolean;
       samples: number;
       landmark: number;
       visibility: number;
     }
 
     export interface SolveResult {
-      /** @default true */
-      ok: boolean;
       tilt_deg: number;
       scale: number;
       affine: number[];
@@ -631,8 +610,6 @@ export declare namespace DriverTypes {
     }
 
     export interface ClearResult {
-      /** @default true */
-      ok: boolean;
       samples: number;
     }
   }
@@ -642,11 +619,6 @@ export declare namespace DriverTypes {
     export interface SignPayload {
       guessed_sign: string;
       probability: number;
-    }
-
-    export interface Ok {
-      /** @default true */
-      ok: boolean;
     }
   }
 
@@ -667,24 +639,18 @@ export declare namespace DriverTypes {
     }
 
     export interface UnderrunPayload {
+      /** Underruns since the previous event. */
+      count: number;
+      /** Milliseconds since the Unix epoch. */
       ts: number;
     }
 
     export interface PlayResult {
-      /** @default true */
-      ok: boolean;
       queued: number;
       queued_samples: number;
     }
 
-    export interface Ok {
-      /** @default true */
-      ok: boolean;
-    }
-
     export interface OutputDevices {
-      /** @default true */
-      ok: boolean;
       default_output: number | null;
       devices: OutputDevice[];
     }
@@ -710,6 +676,7 @@ export declare namespace DriverTypes {
     export interface ActivityPayload {
       confidence: number;
       is_speech: boolean;
+      /** Milliseconds since the Unix epoch. */
       ts: number;
     }
 
@@ -723,15 +690,9 @@ export declare namespace DriverTypes {
     export interface PredictResult {
       confidence: number;
       is_speech: boolean;
+      /** Milliseconds since the Unix epoch. */
       ts: number;
-      /** @default true */
-      ok: boolean;
       scores: number[];
-    }
-
-    export interface Ok {
-      /** @default true */
-      ok: boolean;
     }
   }
 
@@ -741,6 +702,7 @@ export declare namespace DriverTypes {
       transcription: string;
       audio_duration_s: number;
       transcription_duration_s: number;
+      /** Milliseconds since the Unix epoch. */
       ts: number;
     }
 
@@ -751,18 +713,8 @@ export declare namespace DriverTypes {
       samples?: (number | number[])[] | null;
     }
 
-    export interface TranscribeResult {
-      transcription: string;
-      audio_duration_s: number;
-      transcription_duration_s: number;
-      ts: number;
-      /** @default true */
-      ok: boolean;
-    }
-
     export interface ModelResult {
       model: string;
-      ok: boolean;
     }
   }
 }
@@ -782,7 +734,7 @@ export interface BuiltinDrivers {
       /** Set the camera->output homography (9 values, row-major). */
       set_homography: {
         params: number[];
-        result: DriverTypes.ball.Ok;
+        result: null;
       };
       /** Set the output size balls are kept within once a homography is set. */
       set_output_size: {
@@ -846,7 +798,7 @@ export interface BuiltinDrivers {
       /** Forget accumulated detections. */
       clear: {
         params: undefined;
-        result: DriverTypes.calibration.Ok;
+        result: null;
       };
       /** Render an ArUco marker as a PNG. Accepts {id, size} or a bare id. */
       render_marker: {
@@ -1011,7 +963,7 @@ export interface BuiltinDrivers {
       /** Forget the last value of one stream, or of every stream when null. */
       reset: {
         params: string | null;
-        result: DriverTypes.interpolate.Ok;
+        result: null;
       };
     };
   };
@@ -1110,7 +1062,7 @@ export interface BuiltinDrivers {
       /** Register the sign labels, in model output order. Selects slr_<count>.onnx. */
       set_actions: {
         params: string[];
-        result: DriverTypes.slr.Ok;
+        result: null;
       };
     };
   };
@@ -1120,7 +1072,7 @@ export interface BuiltinDrivers {
     events: {
       /** Stream settings after each (re)open. */
       settings: DriverTypes.speaker.AudioSettingsPayload;
-      /** The output device ran out of data. */
+      /** The output device ran out of data. At most once a second, with a count. */
       underrun: DriverTypes.speaker.UnderrunPayload;
     };
     actions: {
@@ -1132,7 +1084,7 @@ export interface BuiltinDrivers {
       /** Drop queued audio. */
       clear: {
         params: undefined;
-        result: DriverTypes.speaker.Ok;
+        result: null;
       };
       /** List output devices. */
       list_devices: {
@@ -1159,15 +1111,15 @@ export interface BuiltinDrivers {
       activity: DriverTypes.speech_activity_detection.ActivityPayload;
     };
     actions: {
-      /** Score 16 kHz mono audio whose length is a multiple of 512 samples. */
+      /** Score 16 kHz mono audio whose length is a multiple of 512 samples, from a fresh state. Leaves the live stream alone and emits nothing. */
       predict: {
         params: (number | number[])[] | DriverTypes.speech_activity_detection.PredictParams;
         result: DriverTypes.speech_activity_detection.PredictResult;
       };
-      /** Clear the model state and the buffered stream. */
+      /** Clear the live stream's model state and buffered audio. */
       reset: {
         params: undefined;
-        result: DriverTypes.speech_activity_detection.Ok;
+        result: null;
       };
     };
   };
@@ -1182,7 +1134,7 @@ export interface BuiltinDrivers {
       /** Transcribe 16 kHz mono audio: a sample list, or {audio_buffer} / {samples}. */
       transcribe: {
         params: (number | number[])[] | DriverTypes.speech_to_text.TranscribeParams;
-        result: DriverTypes.speech_to_text.TranscribeResult;
+        result: DriverTypes.speech_to_text.TranscriptionPayload;
       };
       /** Load another Whisper model, such as `small.en` or `large-v3`. */
       set_model: {

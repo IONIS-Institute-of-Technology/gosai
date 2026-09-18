@@ -22,6 +22,28 @@ Breaking:
 - `gosai.app.schema.json` drops the placeholder `python.module` and
   per-experience `python` fields, and `python` requires `drivers`. GOSAI still
   loads manifests with the old fields and ignores them with a warning.
+- Timestamps in built-in driver payloads are milliseconds since the Unix epoch,
+  like `Date.now()`. They were seconds. This covers every `ts` and
+  `capture_ts`, `heartbeat.tick`'s `now`, and `camera.frame`'s `capture_perf`,
+  which stays a clock of the bridge process but now counts milliseconds too.
+- Built-in driver results no longer carry `ok: true`. A failed action already
+  rejects. Actions with nothing to report resolve with `null`:
+  `ball.set_homography`, `calibration.clear`, `interpolate.reset`,
+  `slr.set_actions`, `speaker.clear` and `speech_activity_detection.reset`.
+  The `DriverTypes.<driver>.Ok` types are gone, and
+  `speech_to_text.transcribe` returns
+  `DriverTypes.speech_to_text.TranscriptionPayload` instead of
+  `TranscribeResult`.
+- `speech_activity_detection.activity` and `slr.new_sign` keep only the
+  latest value, like the other events sent every frame or audio window: an app
+  that reads slower than the driver emits gets the newest value and misses the
+  ones before it.
+- `speaker.underrun` comes at most once a second, with `count`, the number of
+  underruns since the previous event. It used to come once per starved audio
+  block.
+- `speech_activity_detection.predict` scores from a fresh model state on each
+  call and no longer emits `activity`, so offline audio can't disturb the live
+  microphone stream. `reset` clears only the live stream's state.
 
 Added:
 

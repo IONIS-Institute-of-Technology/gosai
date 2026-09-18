@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from fakes import RecordingContext, check_events, check_result
+from gosai_py.clock import now_ms
 from gosai_py.drivers import hand_pose, pose, slr
 from gosai_py.drivers.hand_pose import HandPoseDriver
 from gosai_py.drivers.hand_sign import HandSignDriver
@@ -25,9 +26,11 @@ class FakeDetector:
     def __init__(self, result: Any) -> None:
         self.result = result
         self.images: list[Any] = []
+        self.timestamps: list[int] = []
 
     def detect_for_video(self, image: Any, ts_ms: int) -> Any:
         self.images.append(image)
+        self.timestamps.append(ts_ms)
         return self.result
 
     def close(self) -> None:
@@ -137,6 +140,22 @@ def test_hand_pose_emits_normalised_landmarks(
     check_events(HandPoseDriver, context)
 
 
+def test_hand_pose_times_frames_in_milliseconds(
+    hand_driver: tuple[HandPoseDriver, RecordingContext],
+) -> None:
+    driver, context = hand_driver
+    captured = now_ms() - 40.0
+
+    driver.on_data("camera", "frame", {**_frame(640, 480), "capture_ts": captured})
+
+    payload = context.emitted("raw_data")[0]
+    assert payload["capture_ts"] == captured
+    assert 40.0 <= payload["frame_age_ms"] <= payload["latency_ms"] < 1_000.0
+    assert captured < payload["ts"] <= now_ms()
+    # MediaPipe's video timestamps follow the capture time.
+    assert driver._detector.timestamps == [int(captured)]
+
+
 def test_hand_pose_warp_follows_the_live_frame_size(
     hand_driver: tuple[HandPoseDriver, RecordingContext],
 ) -> None:
@@ -144,10 +163,7 @@ def test_hand_pose_warp_follows_the_live_frame_size(
     identity = [1, 0, 0, 0, 1, 0, 0, 0, 1]
     assert check_result(
         HandPoseDriver, "set_homography", driver.execute("set_homography", identity)
-    ) == {
-        "ok": True,
-        "cleared": False,
-    }
+    ) == {"cleared": False}
     check_result(
         HandPoseDriver,
         "set_surface_size",
@@ -164,7 +180,7 @@ def test_hand_pose_warp_follows_the_live_frame_size(
     driver.execute("set_frame_size", {"width": 800, "height": 600})
     driver.on_data("camera", "frame", _frame(400, 300))
     assert context.emitted("raw_data")[-1]["hands_landmarks"][0][0] == pytest.approx([1.0, 0.5])
-    assert driver.execute("set_homography", None) == {"ok": True, "cleared": True}
+    assert driver.execute("set_homography", None) == {"cleared": True}
     with pytest.raises(ValueError, match="Expected `int`"):
         driver.execute("set_surface_size", {"width": "wide", "height": 3})
 
@@ -205,9 +221,7 @@ def test_slr_classifies_a_full_window(monkeypatch: pytest.MonkeyPatch) -> None:
     driver = slr.SLRDriver(context)
     labels = [f"sign_{i}" for i in range(16)]
 
-    assert check_result(slr.SLRDriver, "set_actions", driver.execute("set_actions", labels)) == {
-        "ok": True
-    }
+    assert check_result(slr.SLRDriver, "set_actions", driver.execute("set_actions", labels)) is None
     frame = {"body_pose": [[320.0, 240.0, 1.0]] * 33, "face_mesh": [[1.0, 2.0, 1.0]] * 478}
     for _ in range(slr.SEQUENCE_LENGTH):
         driver.on_data("pose", "raw_data", frame)
