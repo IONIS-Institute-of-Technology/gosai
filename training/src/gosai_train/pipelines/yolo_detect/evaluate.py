@@ -48,8 +48,16 @@ def _val_row(
 ) -> tuple[str, ...]:
     # nms=False runs the NMS-free end-to-end head, the one `export` ships.
     metrics = model.val(
-        data=str(data), split=split, imgsz=imgsz, device=device, nms=False, verbose=False, plots=False,
-        project=str(runs_dir), name="eval", exist_ok=True,
+        data=str(data),
+        split=split,
+        imgsz=imgsz,
+        device=device,
+        nms=False,
+        verbose=False,
+        plots=False,
+        project=str(runs_dir),
+        name="eval",
+        exist_ok=True,
     )
     box = metrics.box
     return (name, f"{box.map50:.3f}", f"{box.map:.3f}", f"{box.mp:.3f}", f"{box.mr:.3f}")
@@ -75,12 +83,16 @@ def run(ctx: ModelContext, args: Namespace) -> None:
     rows: list[tuple[str, ...]] = []
     merged_yaml = ctx.merged_dir / "data.yaml"
     if merged_yaml.exists() and test_images:
-        rows.append(_val_row(model, "merged test", merged_yaml, "test", imgsz, device, ctx.runs_dir))
+        rows.append(
+            _val_row(model, "merged test", merged_yaml, "test", imgsz, device, ctx.runs_dir)
+        )
     else:
         console.print("[dim]merged test split not found (run `prepare`); skipping[/]")
 
     if len(golden_negatives) < len(golden_images):
-        rows.append(_val_row(model, "golden", _golden_data_yaml(ctx), "val", imgsz, device, ctx.runs_dir))
+        rows.append(
+            _val_row(model, "golden", _golden_data_yaml(ctx), "val", imgsz, device, ctx.runs_dir)
+        )
     else:
         console.print(
             f"[dim]no labelled golden set at {ctx.golden_dir}/images + labels; skipping. "
@@ -106,8 +118,13 @@ def run(ctx: ModelContext, args: Namespace) -> None:
     with paths_source("eval-negatives", negatives) as source:
         # nms=False runs the NMS-free end-to-end head, the one `export` ships.
         results = model.predict(
-            source=source, conf=args.conf, device=device, nms=False,
-            batch=1, stream=True, verbose=False,
+            source=source,
+            conf=args.conf,
+            device=device,
+            nms=False,
+            batch=1,
+            stream=True,
+            verbose=False,
         )
         for result in results:
             n = len(result.boxes)

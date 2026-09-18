@@ -75,7 +75,9 @@ def test_resolve_weights_prefers_argument_then_newest_run(ctx, tmp_path: Path) -
     assert resolve_weights(ctx, "mine.pt") == "mine.pt"
 
 
-@pytest.mark.parametrize(("value", "expected"), [(3, 3), ("latest", "latest"), ("Latest ", "latest")])
+@pytest.mark.parametrize(
+    ("value", "expected"), [(3, 3), ("latest", "latest"), ("Latest ", "latest")]
+)
 def test_requested_version(value, expected) -> None:
     assert download.requested_version({"name": "d", "version": value}) == expected
 
@@ -87,14 +89,18 @@ def test_requested_version_rejects_other_values(value) -> None:
 
 
 def test_newest_version() -> None:
-    project = Namespace(id="w/p", versions=lambda: [Namespace(version="2"), Namespace(version="11")])
+    project = Namespace(
+        id="w/p", versions=lambda: [Namespace(version="2"), Namespace(version="11")]
+    )
     assert download.newest_version(project) == 11
 
 
 def _datasets(ctx, *entries: str) -> None:
     ctx.datasets_config.write_text(
         "format: yolov11\ndatasets:\n"
-        + "".join(f"  - {{name: {e}, workspace: w, project: p, version: {v}}}\n" for e, v in entries)
+        + "".join(
+            f"  - {{name: {e}, workspace: w, project: p, version: {v}}}\n" for e, v in entries
+        )
     )
 
 
@@ -169,7 +175,9 @@ def test_install_copies_model_and_metadata(ctx) -> None:
     _exported(ctx, b"onnx bytes")
     install.run(ctx, Namespace(src=None))
     assert ctx.install_path.read_bytes() == b"onnx bytes"
-    assert json.loads(sidecar(ctx.install_path).read_text())["sha256"] == sha256_file(ctx.install_path)
+    assert json.loads(sidecar(ctx.install_path).read_text())["sha256"] == sha256_file(
+        ctx.install_path
+    )
 
 
 def test_install_rejects_sha256_mismatch(ctx) -> None:
@@ -189,7 +197,12 @@ def test_install_requires_metadata(ctx) -> None:
 def test_prune_pool_keeps_enabled_sources_only(tmp_path: Path) -> None:
     images = tmp_path / "images"
     images.mkdir()
-    for name in ("glare__00000.jpg", "glare__00001.jpg", "flare7k__00000.jpg", "synthetic-glare__00000.jpg"):
+    for name in (
+        "glare__00000.jpg",
+        "glare__00001.jpg",
+        "flare7k__00000.jpg",
+        "synthetic-glare__00000.jpg",
+    ):
         (images / name).write_bytes(b"")
     assert prune_pool(tmp_path, {"glare"}) == {"glare": 2}
     assert sorted(p.name for p in images.iterdir()) == ["glare__00000.jpg", "glare__00001.jpg"]

@@ -36,8 +36,13 @@ def _letterbox(img: Any, size: tuple[int, int]) -> Any:
     resized = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_LINEAR)
     top, left = (ih - nh) // 2, (iw - nw) // 2
     return cv2.copyMakeBorder(
-        resized, top, ih - nh - top, left, iw - nw - left,
-        cv2.BORDER_CONSTANT, value=(114, 114, 114),
+        resized,
+        top,
+        ih - nh - top,
+        left,
+        iw - nw - left,
+        cv2.BORDER_CONSTANT,
+        value=(114, 114, 114),
     )
 
 
@@ -85,7 +90,9 @@ def _match(iou: Any) -> Any:
     return correct
 
 
-def _onnx_metrics(ctx: ModelContext, onnx_path: Path, size: tuple[int, int]) -> dict[str, Any] | None:
+def _onnx_metrics(
+    ctx: ModelContext, onnx_path: Path, size: tuple[int, int]
+) -> dict[str, Any] | None:
     """Score the exported ONNX file on the merged test split, or val when test is empty.
 
     Ultralytics' ``val()`` feeds square batches, which a fixed rectangular ONNX
@@ -96,7 +103,9 @@ def _onnx_metrics(ctx: ModelContext, onnx_path: Path, size: tuple[int, int]) -> 
         (s for s in ("test", "val") if any(iter_images(ctx.merged_dir / s / "images"))), None
     )
     if split is None:
-        console.print("[yellow]metrics[/] no merged test or val split (run `prepare`); not recorded")
+        console.print(
+            "[yellow]metrics[/] no merged test or val split (run `prepare`); not recorded"
+        )
         return None
     images = list(iter_images(ctx.merged_dir / split / "images"))
 
@@ -113,19 +122,28 @@ def _onnx_metrics(ctx: ModelContext, onnx_path: Path, size: tuple[int, int]) -> 
     model = YOLO(str(onnx_path), task="detect")
     with paths_source("export-val", images) as source:
         results = model.predict(
-            source=source, imgsz=list(size), conf=0.001, device="cpu",
-            batch=1, stream=True, verbose=False,
+            source=source,
+            imgsz=list(size),
+            conf=0.001,
+            device="cpu",
+            batch=1,
+            stream=True,
+            verbose=False,
         )
         for result in results:
             height, width = result.orig_shape
             rows = read_label_rows(labels_dir / f"{Path(result.path).stem}.txt")
-            targets = torch.tensor([[float(v) for v in parts[1:5]] for parts in rows]).reshape(-1, 4)
+            targets = torch.tensor([[float(v) for v in parts[1:5]] for parts in rows]).reshape(
+                -1, 4
+            )
             iou = box_iou(xywhn2xyxy(targets, w=width, h=height), result.boxes.xyxy.cpu())
             tps.append(_match(iou.numpy()))
             confs.append(result.boxes.conf.cpu().numpy())
             targets_total += len(rows)
     if targets_total == 0:
-        console.print(f"[yellow]metrics[/] merged {split} split has no labelled boxes; not recorded")
+        console.print(
+            f"[yellow]metrics[/] merged {split} split has no labelled boxes; not recorded"
+        )
         return None
 
     tp, conf = np.concatenate(tps), np.concatenate(confs)
