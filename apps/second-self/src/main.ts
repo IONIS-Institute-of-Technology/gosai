@@ -35,7 +35,7 @@ import { cssViewport } from './shared/ui.js';
 import { createAriaLayer } from './layers/aria.js';
 import { createBodyLayer } from './layers/body.js';
 import { createBounceLayer } from './layers/bounce.js';
-import { createCalibrateLayer } from './layers/calibrate.js';
+import { createCalibrateLayer } from './calibration/wizard.js';
 import { createClockLayer } from './layers/clock.js';
 import { createDanceLayer } from './layers/dance.js';
 import { createFaceLayer } from './layers/face.js';
