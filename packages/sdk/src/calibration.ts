@@ -132,16 +132,27 @@ export interface CalibrationLaunch {
   readonly role: CalibrationRole;
   /** The app being calibrated. The running app when the window names none. */
   readonly target: string;
+  /**
+   * GOSAI opened the window for a calibration flow, from the dashboard's
+   * Calibrate button or a kiosk, and waits for {@link finishCalibration}.
+   * `false` when the experience started some other way, such as the app's
+   * own `rt.router.switchTo`: nothing waits for the result then, so the app
+   * decides where to go when the flow ends.
+   */
+  readonly managed: boolean;
 }
 
-/** Which window of a calibration flow this is, and for which app. */
+/** Which window of a calibration flow this is, for which app, and who opened it. */
 export function readCalibrationLaunch(
   rt: Pick<ExperienceRuntimeContext, 'app'>,
 ): CalibrationLaunch {
   const params = rt.app.params;
+  const role = params[CalibrationParams.Role];
+  const target = params[CalibrationParams.Target];
   return {
-    role: params[CalibrationParams.Role] === 'control' ? 'control' : 'projector',
-    target: params[CalibrationParams.Target] ?? rt.app.appSlug,
+    role: role === 'control' ? 'control' : 'projector',
+    target: target ?? rt.app.appSlug,
+    managed: role !== undefined || target !== undefined,
   };
 }
 

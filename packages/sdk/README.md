@@ -363,6 +363,19 @@ Use `rt.events` with `CalibrationWizardTopics.Step` to keep the two windows in
 step. Report failures with `finishCalibration` too, so the windows don't stay
 open.
 
+The app can also start the flow itself, for example from its own menu with
+`rt.router.switchTo`. The experience then runs in one window, as `projector`,
+and `readCalibrationLaunch(rt).managed` is `false`: nothing waits for
+`finishCalibration`, so the flow picks where to go when it ends, such as back
+to the experience it came from.
+
+```ts
+const launch = readCalibrationLaunch(rt);
+// ... once the profile is saved:
+if (launch.managed) await finishCalibration(rt, { ok: true });
+else await rt.router.switchTo('main');
+```
+
 ### From the earlier calibration API
 
 Manifests in the earlier shape still load, with a deprecation warning in the

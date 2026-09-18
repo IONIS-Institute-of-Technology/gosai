@@ -41,6 +41,9 @@ Added:
 - The desktop app and kiosks open and close windows as experiences start and
   stop, so `rt.router.switchTo` replaces the app's window with the next
   experience's.
+- `readCalibrationLaunch(rt).managed` tells a calibration window GOSAI opened,
+  which waits for `finishCalibration`, from a calibration experience the app
+  started itself, for example with `rt.router.switchTo` from its own menu.
 
 ## 0.1.0
 
