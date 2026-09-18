@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import type { DriverInfo, DriverSchema } from '@gosai/shared';
 import { appBridgeEnv } from '../src/drivers/app-drivers.js';
 import type { BridgeHandlers, BridgeRequestSansId, DriverBridge } from '../src/drivers/bridge.js';
-import { DriverHub, type AppDriverSource } from '../src/drivers/hub.js';
+import { DriverHub, type AppBridgeProvider, type AppDriverSource } from '../src/drivers/hub.js';
 import type { DriverManifestEntry } from '../src/drivers/manager.js';
 import { EventBus } from '../src/ipc/bus.js';
 import { Logger } from '../src/logger/logger.js';
@@ -26,6 +26,8 @@ const SCHEMA: DriverSchema = {
 class StubBridge implements DriverBridge {
   running = false;
   starts = 0;
+  /** Start attempts left to fail. */
+  failStarts = 0;
   readonly requests: BridgeRequestSansId[] = [];
   private readonly instances = new Set<string>();
 
@@ -39,8 +41,12 @@ class StubBridge implements DriverBridge {
   }
 
   async start(): Promise<void> {
-    this.running = true;
     this.starts += 1;
+    if (this.failStarts > 0) {
+      this.failStarts -= 1;
+      throw new Error('gosai-bridge exited: No module named cv2');
+    }
+    this.running = true;
   }
 
   async stop(): Promise<void> {
@@ -115,43 +121,50 @@ function makeHub(
   options: {
     prepare?: (app: AppDriverSource, signal: AbortSignal) => Promise<void>;
     prepareWaitMs?: number;
+    unavailable?: string;
+    withoutApps?: boolean;
+    builtinStartFailures?: number;
+    initialBackoffMs?: number;
   } = {},
 ) {
   const bus = new EventBus();
   const bridges: { builtin?: StubBridge; apps: Map<string, StubBridge> } = { apps: new Map() };
   const prepared: string[] = [];
+  const apps: AppBridgeProvider = {
+    prepare: async (app, signal) => {
+      prepared.push(app.slug);
+      await options.prepare?.(app, signal);
+    },
+    createBridge: (app, handlers) => {
+      const bridge = new StubBridge(handlers, [
+        {
+          name: 'counter',
+          events: ['count'],
+          actions: ['reset'],
+          dependencies: [],
+          schema: SCHEMA,
+        },
+        { name: 'doubler', events: ['value'], actions: [], dependencies: ['counter'] },
+      ]);
+      bridges.apps.set(app.slug, bridge);
+      return bridge;
+    },
+  };
   const hub = new DriverHub({
     logger: new Logger({ logsDir }),
     bus,
-    supervisorTiming: { initialBackoffMs: 1, pingIntervalMs: 60_000 },
+    supervisorTiming: { initialBackoffMs: options.initialBackoffMs ?? 1, pingIntervalMs: 60_000 },
     bridgeReadyWaitMs: 2_000,
     ...(options.prepareWaitMs !== undefined ? { prepareWaitMs: options.prepareWaitMs } : {}),
+    ...(options.unavailable !== undefined ? { unavailable: options.unavailable } : {}),
     createBridge: (handlers) => {
       bridges.builtin = new StubBridge(handlers, [
         { name: 'heartbeat', events: ['tick'], actions: ['echo'], dependencies: [], shared: true },
       ]);
+      bridges.builtin.failStarts = options.builtinStartFailures ?? 0;
       return bridges.builtin;
     },
-    apps: {
-      prepare: async (app, signal) => {
-        prepared.push(app.slug);
-        await options.prepare?.(app, signal);
-      },
-      createBridge: (app, handlers) => {
-        const bridge = new StubBridge(handlers, [
-          {
-            name: 'counter',
-            events: ['count'],
-            actions: ['reset'],
-            dependencies: [],
-            schema: SCHEMA,
-          },
-          { name: 'doubler', events: ['value'], actions: [], dependencies: ['counter'] },
-        ]);
-        bridges.apps.set(app.slug, bridge);
-        return bridge;
-      },
-    },
+    ...(options.withoutApps ? {} : { apps }),
   });
   hubs.push(hub);
   return { hub, bus, bridges, prepared };
@@ -248,6 +261,43 @@ describe('driver hub', () => {
     await hub.subscribe('hello-app', 'hello-app/counter', 'count', 'c');
     expect(prepared).toEqual(['hello-app', 'hello-app']);
     expect(hub.getDriver('heartbeat')).toBeDefined();
+  });
+
+  test('without Python, every driver call fails with the reason', async () => {
+    const reason = 'there is no Python environment at /py/.venv; run `uv sync` in /py';
+    const { hub, bridges } = makeHub({ unavailable: reason, withoutApps: true });
+    await hub.start();
+    hub.sync([APP]);
+    const message = `Python drivers are unavailable: ${reason}`;
+
+    expect(hub.unavailableReason()).toBe(reason);
+    await expect(hub.subscribe('pool', 'pose', '*', 'c')).rejects.toThrow(message);
+    expect(() => hub.execute('pool', 'pose', 'reset', {})).toThrow(message);
+    expect(() => hub.getData('pool', 'pose', 'landmarks')).toThrow(message);
+    expect(() => hub.getSchemas('pose')).toThrow(message);
+    // App environments build on the same Python, so app drivers can't run either.
+    await expect(hub.subscribe('hello-app', 'hello-app/counter', '*', 'c')).rejects.toThrow(
+      message,
+    );
+    expect(bridges.builtin?.starts).toBe(0);
+    expect(hub.listDrivers()).toEqual([]);
+  });
+
+  test('built-in drivers report why their bridge never started, and work once it does', async () => {
+    const { hub, bridges } = makeHub({ builtinStartFailures: 1, initialBackoffMs: 200 });
+    hub.sync([APP]);
+    await expect(hub.start()).rejects.toThrow('No module named cv2');
+
+    const message = 'Python drivers are unavailable: gosai-bridge exited: No module named cv2';
+    expect(hub.unavailableReason()).toBe('gosai-bridge exited: No module named cv2');
+    await expect(hub.subscribe('pool', 'heartbeat', 'tick', 'c')).rejects.toThrow(message);
+    expect(() => hub.execute('pool', 'heartbeat', 'echo', {})).toThrow(message);
+    // App drivers have a bridge of their own.
+    await hub.subscribe('hello-app', 'hello-app/counter', 'count', 'c');
+
+    await waitFor(() => hub.unavailableReason() === null);
+    await hub.subscribe('pool', 'heartbeat', 'tick', 'c');
+    expect(bridges.builtin?.starts).toBe(2);
   });
 
   test('keeps app bridges in step with the apps and lists every driver in one event', async () => {

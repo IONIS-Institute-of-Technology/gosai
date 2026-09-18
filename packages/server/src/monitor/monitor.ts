@@ -1,6 +1,7 @@
 /**
  * System monitor. Samples OS-wide CPU and memory usage periodically and
- * publishes them as `system:stats`.
+ * publishes them as `system:stats`, along with whether Python drivers can
+ * run, which the dashboard's status bar shows.
  */
 
 import { cpus, freemem, totalmem, uptime } from 'node:os';
@@ -12,6 +13,8 @@ import type { ChildLogger } from '../logger/logger.js';
 export interface SystemMonitorOptions {
   readonly bus: EventBus;
   readonly logger: ChildLogger;
+  /** Why the built-in Python drivers can't run, or null. See `DriverHub.unavailableReason`. */
+  readonly pythonUnavailable?: () => string | null;
   readonly intervalMs?: number;
 }
 
@@ -49,6 +52,7 @@ export class SystemMonitor {
         memoryBytes: totalmem() - freemem(),
         memoryTotalBytes: totalmem(),
         uptimeMs: Math.floor(uptime() * 1000),
+        pythonUnavailable: this.options.pythonUnavailable?.() ?? null,
       };
       this.options.bus.emit(ServerEvents.Stats, stats, 'monitor');
     } catch (err) {

@@ -42,6 +42,7 @@ import {
 } from 'node:fs';
 import { uptime } from 'node:os';
 import { basename, join } from 'node:path';
+import { bridgeExecutable } from '@gosai/shared/python-bridge';
 
 /** Written in the runtime directory once every install step succeeded. */
 export const COMPLETE_MARKER = '.complete';
@@ -144,13 +145,6 @@ export function runtimeName(info: PythonRuntimeInfo, extras: readonly string[]):
     .digest('hex')
     .slice(0, 12);
   return `${RUNTIME_PREFIX}${key}`;
-}
-
-/** The venv's `gosai-bridge` entry point. Windows venvs use `Scripts` and `.exe`. */
-export function bridgeExecutable(pythonDir: string, platform: NodeJS.Platform): string {
-  return platform === 'win32'
-    ? join(pythonDir, '.venv', 'Scripts', 'gosai-bridge.exe')
-    : join(pythonDir, '.venv', 'bin', 'gosai-bridge');
 }
 
 /** How this module sees processes and time. Tests replace it. */

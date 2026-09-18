@@ -417,8 +417,11 @@ describe('WebSocket access', () => {
       expect((await client.request('subscribe', { events: ['*'] })).ok).toBe(true);
       expect((await client.request('config:get')).ok).toBe(true);
       expect((await client.request('drivers:schema', {})).data).toEqual({ schemas: {} });
+      // The handler runs; this server has no Python drivers.
       const unknown = await client.request('drivers:schema', { driver: 'nope' });
-      expect(unknown.error?.message).toBe('Unknown driver: nope');
+      expect(unknown.error?.message).toBe(
+        'Python drivers are unavailable: Python is disabled (GOSAI_PYTHON=0)',
+      );
       expect((await client.request('drivers:schema', { driver: 7 })).error?.code).toBe(
         'INVALID_PAYLOAD',
       );

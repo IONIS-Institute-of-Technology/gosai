@@ -11,7 +11,6 @@
  */
 
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
 import type { Subprocess } from 'bun';
 import type { DriverRuntimeInfo } from '@gosai/shared';
 import {
@@ -19,6 +18,7 @@ import {
   type BridgeRequest,
   type BridgeResponse,
 } from '@gosai/shared/protocol';
+import { bridgeExecutable } from '@gosai/shared/python-bridge';
 import type { ChildLogger } from '../logger/logger.js';
 
 /** Discriminated-union-friendly Omit<BridgeRequest, 'id'>. */
@@ -436,11 +436,4 @@ function classifyNativeStderrLine(line: string): 'debug' | 'warn' {
     return 'debug';
   }
   return 'warn';
-}
-
-/** The venv's `gosai-bridge` entry point. Windows venvs use `Scripts` and `.exe`. */
-export function bridgeExecutable(pythonDir: string, platform = process.platform): string {
-  return platform === 'win32'
-    ? join(pythonDir, '.venv', 'Scripts', 'gosai-bridge.exe')
-    : join(pythonDir, '.venv', 'bin', 'gosai-bridge');
 }

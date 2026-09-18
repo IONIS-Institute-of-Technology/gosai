@@ -2,8 +2,10 @@ import { realpathSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 /**
- * Top-level directories the server keeps inside an app's install directory
- * for storage and settings. They are private to the app and its tokens.
+ * Top-level directories where the server used to keep an app's storage and
+ * settings, inside its install directory. That data now lives in
+ * `paths.data/<slug>` (see data-migration.ts), but installs from before the
+ * migration may still have them, so they stay private.
  */
 const PRIVATE_TOP_LEVEL = new Set(['_data', '_config']);
 

@@ -70,6 +70,10 @@
       "types": "./src/app-origin.ts",
       "import": "./src/app-origin.ts"
     },
+    "./python-bridge": {
+      "types": "./src/python-bridge.ts",
+      "import": "./src/python-bridge.ts"
+    },
     "./gosai.app.schema.json": "./schemas/gosai.app.schema.json"
   },
   "scripts": {

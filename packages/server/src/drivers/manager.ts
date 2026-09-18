@@ -187,6 +187,8 @@ export class DriverManager {
   private readonly stopRetries = new Map<string, StopRetry>();
   private readonly readyWaiters = new Set<ReadyWaiter>();
   private bridgeReady = false;
+  /** Set once the bridge first came up. */
+  private started = false;
   /** Between `start()` and `stop()`. */
   private active = false;
   /** Bumped whenever the bridge goes down, so late replies are ignored. */
@@ -244,6 +246,11 @@ export class DriverManager {
     this.log.info('starting python bridge');
     this.active = true;
     await this.supervisor.start();
+  }
+
+  /** Whether the bridge has come up at least once. */
+  hasStarted(): boolean {
+    return this.started;
   }
 
   async stop(): Promise<void> {
@@ -529,6 +536,7 @@ export class DriverManager {
       }
     }
     this.bridgeReady = true;
+    this.started = true;
     if (this.leases.size > 0) {
       this.log.info('re-applying driver leases', { leases: this.leases.size });
     }

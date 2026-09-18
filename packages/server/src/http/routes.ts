@@ -26,8 +26,6 @@ export interface HttpRoutesOptions {
   readonly apps: Pick<AppManager, 'getInstallPath' | 'getManifest'>;
   readonly guard: RequestGuard;
   readonly authenticate: (req: Request) => TokenScope | null;
-  /** The bound port, read per request because port 0 resolves late. */
-  readonly port: () => number;
   /** The built SDK served under `/sdk/<version>/`, when built. */
   readonly sdkDir?: string;
 }
@@ -48,10 +46,7 @@ export function createHttpRoutes(options: HttpRoutesOptions): Hono {
     const hostSlug = appSlugFromHost(c.req.header('host'));
     if (hostSlug) {
       const connect = apps.getManifest(hostSlug)?.network?.connect;
-      c.header(
-        'content-security-policy',
-        appContentSecurityPolicy({ port: options.port(), ...(connect ? { connect } : {}) }),
-      );
+      c.header('content-security-policy', appContentSecurityPolicy(connect ? { connect } : {}));
     }
   });
   app.options('*', (c) => c.body(null, 204));

@@ -35,7 +35,7 @@ export async function bootRuntime(options: BootOptions): Promise<BootedRuntime> 
   const { splash } = options;
   splash.setStatus('Starting…');
   const warnings: string[] = [];
-  const pythonDir = await preparePython(options, warnings);
+  const python = await preparePython(options, warnings);
 
   splash.setStatus('Starting the GOSAI server…');
   // From source the server finds the repository's apps/ itself.
@@ -43,7 +43,8 @@ export async function bootRuntime(options: BootOptions): Promise<BootedRuntime> 
     options.builtinAppsDir ?? (app.isPackaged ? join(process.resourcesPath, 'apps') : null);
   const runner = new ServerRunner({
     dashboardToken: options.dashboardToken,
-    ...(pythonDir ? { pythonDir } : {}),
+    ...(python.kind === 'ready' && python.pythonDir ? { pythonDir: python.pythonDir } : {}),
+    ...(python.kind === 'failed' ? { pythonSetupError: python.error } : {}),
     ...(options.homeDir ? { homeDir: options.homeDir } : {}),
     ...(builtinAppsDir ? { builtinAppsDir } : {}),
   });
@@ -58,25 +59,35 @@ export async function bootRuntime(options: BootOptions): Promise<BootedRuntime> 
 }
 
 /**
- * The python directory to hand the server. Python problems don't stop the
- * boot: apps without Python drivers still work.
+ * The Python runtime to hand the server. `pythonDir` is null when the server
+ * finds its own: from source, or when GOSAI_PYTHON or GOSAI_PYTHON_DIR is set.
  */
-async function preparePython(options: BootOptions, warnings: string[]): Promise<string | null> {
+type PythonSetup =
+  | { readonly kind: 'ready'; readonly pythonDir: string | null }
+  | { readonly kind: 'failed'; readonly error: string };
+
+/**
+ * Python problems don't stop the boot: apps without Python drivers still
+ * work. The server gets the reason and fails Python driver calls with it.
+ */
+async function preparePython(options: BootOptions, warnings: string[]): Promise<PythonSetup> {
   // The server reads these itself.
-  if (process.env.GOSAI_PYTHON === '0' || process.env.GOSAI_PYTHON_DIR) return null;
+  if (process.env.GOSAI_PYTHON === '0' || process.env.GOSAI_PYTHON_DIR) {
+    return { kind: 'ready', pythonDir: null };
+  }
   try {
-    return await ensurePythonRuntime({
+    const pythonDir = await ensurePythonRuntime({
       extras: options.pythonExtras ?? [],
       onStatus: (message) => options.splash.setStatus(message),
     });
+    return { kind: 'ready', pythonDir };
   } catch (err) {
-    console.error(`[gosai] Python runtime setup failed: ${errorMessage(err)}`);
+    const error = errorMessage(err);
+    console.error(`[gosai] Python runtime setup failed: ${error}`);
     warnings.push(
-      `Python drivers are unavailable because the Python runtime could not be installed: ${errorMessage(err)}`,
+      `Python drivers are unavailable because the Python runtime could not be installed: ${error}`,
     );
-    // The bundled tree has no venv, so the server reports a clear error
-    // when an app starts a Python driver.
-    return app.isPackaged ? join(process.resourcesPath, 'python') : null;
+    return { kind: 'failed', error };
   }
 }
 
@@ -92,8 +103,7 @@ export async function showBootFailure(
   const message = errorMessage(error);
   console.error(`[gosai] boot failed: ${message}`);
   if (mode === 'kiosk') {
-    splash.showError('GOSAI could not start', message);
-    await sleep(KIOSK_ERROR_MS);
+    await showKioskError(splash, 'GOSAI could not start', message);
     return;
   }
   splash.close();
@@ -104,6 +114,16 @@ export async function showBootFailure(
     detail: message,
     buttons: ['Quit'],
   });
+}
+
+/** Shows an error a kiosk exits with on the splash, long enough to read it. */
+export async function showKioskError(
+  splash: SplashWindow,
+  title: string,
+  message: string,
+): Promise<void> {
+  splash.showError(title, message);
+  await sleep(KIOSK_ERROR_MS);
 }
 
 export async function showBootWarnings(

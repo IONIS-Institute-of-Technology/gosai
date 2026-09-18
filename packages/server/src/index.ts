@@ -34,6 +34,10 @@ const server = await createServer({
   port,
   paths,
   pythonDir: envPath('GOSAI_PYTHON_DIR') ?? layout.python,
+  // Desktop main sets it when it could not install the Python runtime.
+  ...(process.env.GOSAI_PYTHON_SETUP_ERROR
+    ? { pythonSetupError: process.env.GOSAI_PYTHON_SETUP_ERROR }
+    : {}),
   uv: envPath('GOSAI_UV') ?? layout.uv,
   ...(process.env.GOSAI_UV_CACHE_DIR
     ? { uvCacheDir: resolve(process.env.GOSAI_UV_CACHE_DIR) }

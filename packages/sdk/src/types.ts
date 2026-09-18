@@ -33,6 +33,7 @@ export type {
   ExperienceDescriptor,
   PythonConfig,
   InstalledApp,
+  ExperienceCrash,
   RunningExperience,
   DriverInfo,
   DriverInstanceInfo,

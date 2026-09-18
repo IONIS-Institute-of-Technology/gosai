@@ -172,7 +172,9 @@ doesn't make motion jump. Scale motion by `deltaMs` rather than per frame.
 
 If `render` throws, the runtime logs each distinct error once. After 60
 consecutive failing frames it stops the experience and the window shows the
-error. If `init` or `start` throws, the runtime calls `stop` (when `init`
+error. It also tells the server, which reports the experience `crashed` with
+that error: the dashboard shows it on the app's row, the desktop app closes
+the window, and a kiosk exits with code 1. If `init` or `start` throws, the runtime calls `stop` (when `init`
 succeeded), releases everything and shows the error. When the window closes
 while `init` or `start` is still running, `rt.signal` aborts at once so the
 hook can bail out, and the experience stops once the hook returns.

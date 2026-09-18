@@ -15,7 +15,7 @@ import { existsSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { app, screen } from 'electron';
 import type { ServerClient } from '@gosai/shared/client';
-import { bootRuntime, showBootWarnings } from './boot.js';
+import { bootRuntime, errorMessage, showBootWarnings, showKioskError } from './boot.js';
 import type { ServerRunner } from './server-runner.js';
 import type { SplashWindow } from './splash.js';
 import type { KioskConfig } from './kiosk-config.js';
@@ -23,7 +23,7 @@ import type { CalibrationOrchestrator } from './calibration.js';
 import { planKioskCalibration, usesCalibrationRunner } from './calibration-plan.js';
 import type { ResolvedDisplay } from './displays.js';
 import type { ExperienceWindows } from './experience-windows.js';
-import { KioskLifecycle } from './kiosk-lifecycle.js';
+import { KioskLifecycle, type KioskExit } from './kiosk-lifecycle.js';
 import type { WindowRegistry } from './windows.js';
 
 /**
@@ -119,44 +119,45 @@ export async function runKiosk(options: RunKioskOptions): Promise<ServerRunner> 
   const { address } = runtime;
   windows.setServerAddress(address);
   const server = windows.server;
-  // The steps below report their own failures; the window still opens.
+  // The steps below report their own failures. A start that fails for good
+  // quits the kiosk.
   await server.ready(30_000).catch((err: unknown) => {
     console.error(`[gosai-kiosk] could not connect to the embedded server: ${String(err)}`);
   });
 
   const appSlug = config.manifest.slug;
+  const appName = config.manifest.name ?? appSlug;
   const display = kioskDisplay(config);
 
   await maybeCalibrate(config, calibration, server, display.displayId);
 
+  // An unattended kiosk has no dashboard, so it shows why it fails before quitting.
+  const quitWith = async (exit: KioskExit): Promise<void> => {
+    const error = exit.code === 1 ? exit.error : undefined;
+    console.log(`[gosai-kiosk] quitting with ${exit.code}: ${exit.reason}`);
+    if (exit.code === 1) {
+      if (error) console.error(`[gosai-kiosk] ${error}`);
+      const detail = error ? `${exit.reason}\n\n${error}` : exit.reason;
+      await showKioskError(splash, `${appName} stopped`, detail);
+    }
+    quit(exit.code);
+  };
+
   // From here main opens and closes the app's windows as its experiences
   // start and stop, including when the app switches experiences.
-  const lifecycle = new KioskLifecycle({
-    appSlug,
-    exit: ({ code, reason }) => {
-      console.log(`[gosai-kiosk] quitting with ${code}: ${reason}`);
-      quit(code);
-    },
-  });
+  const lifecycle = new KioskLifecycle({ appSlug, exit: (exit) => void quitWith(exit) });
   server.on('experience:state-changed', (experience) => lifecycle.onExperience(experience));
   windows.onAppWindowClosedByUser(() => lifecycle.onWindowClosedByUser());
   experienceWindows.start();
 
-  const started = await startExperienceWithRetry(server, appSlug, config.experienceSlug);
-  if (!started) {
-    console.error(
-      `[gosai-kiosk] could not start ${appSlug}/${config.experienceSlug} on the server; ` +
-        'opening the window anyway so the error is visible',
-    );
-    windows.openAppHost({
-      appSlug,
-      experienceSlug: config.experienceSlug,
-      ...display,
-    });
+  const start = await startExperienceWithRetry(server, appSlug, config.experienceSlug);
+  if (!start.ok) {
+    lifecycle.startFailed({ experienceSlug: config.experienceSlug, error: start.error });
+    return serverRunner;
   }
-
+  lifecycle.started();
   console.log(
-    `[gosai-kiosk] ${config.manifest.name ?? appSlug} (${basename(config.appDir)}) ` +
+    `[gosai-kiosk] ${appName} (${basename(config.appDir)}) ` +
       `running on ${windows.serverBaseUrl}, home=${config.homeDir}`,
   );
   return serverRunner;
@@ -200,21 +201,26 @@ async function isCalibrated(server: ServerClient, appSlug: string): Promise<bool
   }
 }
 
+type StartResult = { readonly ok: true } | { readonly ok: false; readonly error: string };
+
+/** Tries a few times, since the server may still be settling. Fails with the last error. */
 async function startExperienceWithRetry(
   server: ServerClient,
   appSlug: string,
   experienceSlug: string,
   attempts = 3,
-): Promise<boolean> {
+): Promise<StartResult> {
+  let error = 'the experience did not start';
   for (let i = 0; i < attempts; i++) {
     try {
       await server.ready(10_000);
       await server.request('experience:start', { appSlug, experienceSlug });
-      return true;
+      return { ok: true };
     } catch (err) {
-      console.error(`[gosai-kiosk] experience start attempt ${i + 1} failed: ${String(err)}`);
+      error = errorMessage(err);
+      console.error(`[gosai-kiosk] experience start attempt ${i + 1} failed: ${error}`);
     }
-    await new Promise((r) => setTimeout(r, 1000));
+    if (i + 1 < attempts) await new Promise((r) => setTimeout(r, 1000));
   }
-  return false;
+  return { ok: false, error };
 }

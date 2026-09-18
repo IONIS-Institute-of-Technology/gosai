@@ -39,6 +39,7 @@ export type {
   DriverInstanceInfo,
   DriverRuntimeInfo,
   DriverState,
+  ExperienceCrash,
   ExperienceDescriptor,
   ExperienceState,
   InstalledApp,

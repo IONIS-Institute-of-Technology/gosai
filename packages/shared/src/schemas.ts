@@ -824,6 +824,7 @@ export const installedAppSchema: z.ZodType<InstalledApp> = z.object({
   builtin: z.boolean(),
   grantedCapabilities: z.array(z.custom<Capability>(isCapability)),
   state: z.enum(['installed', 'starting', 'running', 'stopping', 'crashed']),
+  crash: z.object({ experienceSlug: z.string(), error: z.string() }).optional(),
 });
 
 export const invalidAppSchema: z.ZodType<InvalidApp> = z.object({
@@ -838,6 +839,7 @@ export const runningExperienceSchema: z.ZodType<RunningExperience> = z.object({
   state: z.enum(['idle', 'starting', 'running', 'stopping', 'crashed']),
   startedAt: z.number(),
   startedAs: z.enum(['request', 'requirement']),
+  error: z.string().optional(),
 });
 
 export const performanceSampleSchema: z.ZodType<PerformanceSample> = z.object({
@@ -854,6 +856,7 @@ export const systemStatsSchema: z.ZodType<SystemStats> = z.object({
   memoryBytes: z.number(),
   memoryTotalBytes: z.number(),
   uptimeMs: z.number(),
+  pythonUnavailable: z.string().nullable(),
 });
 
 // ── Errors ─────────────────────────────────────────────────────────────────

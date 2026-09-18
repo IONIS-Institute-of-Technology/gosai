@@ -281,6 +281,14 @@ export interface InstalledApp {
    */
   readonly grantedCapabilities: readonly Capability[];
   readonly state: AppState;
+  /** While `state` is `crashed`: which experience crashed, and why. */
+  readonly crash?: ExperienceCrash;
+}
+
+export interface ExperienceCrash {
+  readonly experienceSlug: string;
+  /** Why its start failed, or the error its window reported when it stopped. */
+  readonly error: string;
 }
 
 /** An installed app whose manifest doesn't parse. The dashboard offers to uninstall it. */
@@ -301,6 +309,11 @@ export interface RunningExperience {
    * app opens windows for requested experiences only.
    */
   readonly startedAs: ExperienceStart;
+  /**
+   * With `state: 'crashed'`: why its start failed, or the error its window
+   * reported with `experience:stop`.
+   */
+  readonly error?: string;
 }
 
 export type ExperienceStart = 'request' | 'requirement';
@@ -447,4 +460,9 @@ export interface SystemStats {
   readonly memoryBytes: number;
   readonly memoryTotalBytes: number;
   readonly uptimeMs: number;
+  /**
+   * Why the built-in Python drivers can't run, such as a missing Python
+   * environment. Their calls fail with it. Null when they can run.
+   */
+  readonly pythonUnavailable: string | null;
 }

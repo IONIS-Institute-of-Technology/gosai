@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import { defineExperience } from '../src/experience.js';
-import { PROTOCOL_VERSION, type WelcomePayload } from '@gosai/shared/protocol';
+import {
+  MAX_EXPERIENCE_ERROR_LENGTH,
+  PROTOCOL_VERSION,
+  type WelcomePayload,
+} from '@gosai/shared/protocol';
 import { ProtocolVersionError } from '../src/protocol-check.js';
 import { startRuntime, type RuntimeEnvironment } from '../src/runtime.js';
 import type { ExperienceDefinition, ExperienceRuntimeContext, FrameInfo } from '../src/types.js';
@@ -392,6 +396,11 @@ describe('render errors', () => {
     let renders = 0;
     let stopped = false;
     let fatal: unknown = null;
+    const closedWhenReported: boolean[] = [];
+    server.reply = (type) => {
+      if (type === 'experience:stop') closedWhenReported.push(server.closed);
+      return { ok: true };
+    };
     await startRuntime(
       {
         render: () => {
@@ -413,6 +422,40 @@ describe('render errors', () => {
       'render failed',
       'stopping after 5 consecutive render failures',
     ]);
+    // The server hears why before the connection closes, and reports the experience crashed.
+    expect(server.requestsOf('experience:stop').map((r) => r.payload)).toEqual([
+      {
+        appSlug: 'demo',
+        experienceSlug: 'main',
+        error: 'The experience stopped after 5 consecutive render errors: broken',
+      },
+    ]);
+    expect(closedWhenReported).toEqual([false]);
+  });
+
+  test('shortens the error it reports to what the server accepts', async () => {
+    const { server, frames, env } = environment();
+    await startRuntime(
+      {
+        render: () => {
+          throw new Error('x'.repeat(5000));
+        },
+      },
+      runtimeOptions({ maxRenderFailures: 1 }),
+      env,
+    );
+    frames.tick();
+    const [report] = server.requestsOf('experience:stop');
+    const { error } = (report?.payload ?? {}) as { error: string };
+    expect(error).toHaveLength(MAX_EXPERIENCE_ERROR_LENGTH);
+    expect(error.endsWith('…')).toBe(true);
+  });
+
+  test('a stop the host asked for is not reported as a crash', async () => {
+    const { server, env } = environment();
+    const handle = await startRuntime({ render: () => undefined }, runtimeOptions(), env);
+    await handle.stop();
+    expect(server.requestsOf('experience:stop')).toEqual([]);
   });
 });
 
@@ -576,6 +619,10 @@ describe('protocol version', () => {
     expect(fatal[0]).toBeInstanceOf(ProtocolVersionError);
     await Bun.sleep(0);
     expect(stopped).toBe(true);
+    // Best effort: that server may not understand the report.
+    expect(server.requestsOf('experience:stop').map((r) => r.payload)).toEqual([
+      { appSlug: 'demo', experienceSlug: 'main', error: (fatal[0] as Error).message },
+    ]);
   });
 });
 

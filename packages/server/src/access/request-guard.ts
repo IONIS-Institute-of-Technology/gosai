@@ -23,7 +23,7 @@ export interface RequestGuardOptions {
   /** Extra hostnames clients may use, e.g. a LAN address when binding to 0.0.0.0. */
   readonly allowedHosts?: readonly string[];
   /**
-   * Extra origins, compared exactly. Desktop main adds `file://` and `null`
+   * Extra origins, compared exactly. Desktop main adds `gosai://dashboard`
    * for the dashboard window. Loopback http origins on any port are always allowed.
    */
   readonly allowedOrigins?: readonly string[];

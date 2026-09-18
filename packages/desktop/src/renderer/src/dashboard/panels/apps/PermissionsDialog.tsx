@@ -74,7 +74,12 @@ function PermissionsForm({
     <div className="space-y-4">
       <div className="flex items-start gap-3">
         {icon ? (
-          <img src={icon} alt="" className="h-12 w-12 shrink-0 rounded object-cover" />
+          <img
+            src={icon}
+            alt=""
+            crossOrigin="anonymous"
+            className="h-12 w-12 shrink-0 rounded object-cover"
+          />
         ) : (
           <div className="h-12 w-12 shrink-0 rounded bg-neutral-800" aria-hidden />
         )}

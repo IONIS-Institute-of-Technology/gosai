@@ -30,8 +30,6 @@ export const HOST_PAGE_IMPORT_MAP = JSON.stringify({
 const IMPORT_MAP_HASH = createHash('sha256').update(HOST_PAGE_IMPORT_MAP).digest('base64');
 
 export interface AppPolicyOptions {
-  /** Port the server listens on; app origins are only trusted on it. */
-  readonly port: number;
   /** Extra `connect-src` origins from the manifest's `network.connect`. */
   readonly connect?: readonly string[];
 }

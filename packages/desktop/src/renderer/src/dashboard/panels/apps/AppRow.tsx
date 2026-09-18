@@ -139,7 +139,12 @@ export function AppRow({
             ▸
           </span>
           {icon ? (
-            <img src={icon} alt="" className="h-8 w-8 shrink-0 rounded object-cover" />
+            <img
+              src={icon}
+              alt=""
+              crossOrigin="anonymous"
+              className="h-8 w-8 shrink-0 rounded object-cover"
+            />
           ) : null}
           <span className="flex min-w-0 flex-col">
             <span className="flex items-center gap-2">
@@ -159,6 +164,11 @@ export function AppRow({
               {manifest.sdk === undefined ? '' : ` · ${sdkRangeLabel(manifest)}`}
               {anyRunning ? ` · running: ${running.map((r) => r.experienceSlug).join(', ')}` : ''}
             </span>
+            {app.state === 'crashed' && app.crash ? (
+              <span className="truncate font-mono text-[11px] text-red-400" title={app.crash.error}>
+                {app.crash.experienceSlug} crashed: {app.crash.error}
+              </span>
+            ) : null}
           </span>
         </button>
 

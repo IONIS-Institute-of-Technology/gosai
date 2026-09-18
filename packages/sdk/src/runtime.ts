@@ -9,6 +9,7 @@ import { createAssetsClient } from './assets.js';
 import { forwardCspViolations } from './csp-violations.js';
 import { assertProtocolVersion } from './protocol-check.js';
 import { ServerClient } from '@gosai/shared/client';
+import { MAX_EXPERIENCE_ERROR_LENGTH } from '@gosai/shared/protocol';
 import { AppConfigClientImpl } from './app-config.js';
 import { DriverClientImpl } from './driver-client.js';
 import type {
@@ -68,7 +69,9 @@ export interface RuntimeOptions {
   /**
    * Called when the runtime stops the experience on its own: after repeated
    * render failures, or with a `ProtocolVersionError` when the server it
-   * reconnected to speaks another protocol version.
+   * reconnected to speaks another protocol version. The runtime has already
+   * sent the error to the server with `experience:stop`, which reports the
+   * experience `crashed`.
    */
   readonly onFatalError?: (error: unknown) => void;
 }
@@ -164,12 +167,14 @@ export async function startRuntime<TState>(
     log.error(`${context} failed`, describeError(err)),
   );
   // A server replaced while the experience runs may speak another protocol.
+  // It may not understand the report either, so that one is a best effort.
   const offStatus = server.onStatus((status) => {
     if (status !== 'connected' || !server.serverInfo) return;
     try {
       assertProtocolVersion(server.serverInfo);
     } catch (err) {
       console.error(err);
+      reportCrash(describeError(err).message);
       void stop();
       options.onFatalError?.(err);
     }
@@ -222,6 +227,22 @@ export async function startRuntime<TState>(
   let initialized = false;
   let stopping: Promise<void> | null = null;
   let frameHandle: number | null = null;
+
+  /**
+   * Tells the server the experience crashed, so it stops reporting it
+   * running. Call it before `stop()`, which closes the connection: the
+   * request is on the socket as soon as this returns.
+   */
+  const reportCrash = (error: string): void => {
+    if (stopping) return;
+    server
+      .request('experience:stop', {
+        appSlug: options.appSlug,
+        experienceSlug: options.experienceSlug,
+        error: shorten(error, MAX_EXPERIENCE_ERROR_LENGTH),
+      })
+      .catch(() => undefined);
+  };
 
   const stop = (): Promise<void> => {
     stopping ??= (async () => {
@@ -296,6 +317,9 @@ export async function startRuntime<TState>(
         }
         if (failures >= maxFailures) {
           log.error(`stopping after ${failures} consecutive render failures`, { message });
+          reportCrash(
+            `The experience stopped after ${failures} consecutive render errors: ${message}`,
+          );
           void stop();
           options.onFatalError?.(err);
           return;
@@ -553,6 +577,10 @@ async function waitForConnection(
 
 function abortError(): Error {
   return new DOMException('The experience was stopped while starting', 'AbortError');
+}
+
+function shorten(text: string, maxLength: number): string {
+  return text.length <= maxLength ? text : `${text.slice(0, maxLength - 1)}…`;
 }
 
 function describeError(err: unknown): { message: string; stack?: string } {

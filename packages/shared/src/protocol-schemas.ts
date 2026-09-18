@@ -9,6 +9,7 @@
 
 import { z } from 'zod';
 import { isCapability } from './capabilities.js';
+import { MAX_EXPERIENCE_ERROR_LENGTH } from './protocol.js';
 import {
   calibrationProfileInputSchema,
   calibrationProfileSchema,
@@ -134,7 +135,12 @@ export const commandSchemas = {
     response: runningExperienceSchema,
   },
   'experience:stop': {
-    request: z.strictObject({ appSlug: slugSchema, experienceSlug: slugSchema }),
+    request: z.strictObject({
+      appSlug: slugSchema,
+      experienceSlug: slugSchema,
+      /** Why the experience stopped on its own. The server then reports it `crashed`. */
+      error: z.string().min(1).max(MAX_EXPERIENCE_ERROR_LENGTH).optional(),
+    }),
     response: ok,
   },
 

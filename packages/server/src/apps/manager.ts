@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import type {
   AppManifest,
   AppState,
+  ExperienceCrash,
   ExperienceDescriptor,
   InstalledApp,
   InvalidApp,
@@ -77,12 +78,19 @@ export interface StartExperienceOptions {
   readonly driverBinding?: string;
 }
 
+export interface StopExperienceOptions {
+  /** Why the experience stopped on its own. It is then reported `crashed`. */
+  readonly error?: string;
+}
+
 interface AppRecord {
   readonly manifest: AppManifest;
   readonly installPath: string;
   readonly installedAt: number;
   readonly builtin: boolean;
   state: AppState;
+  /** Set while `state` is `crashed`. */
+  crash: ExperienceCrash | null;
 }
 
 interface InvalidAppRecord extends DiscoveredInvalidApp {
@@ -412,22 +420,22 @@ export class AppManager {
         subscribed.push(driver);
       }
     } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
       await this.releaseDrivers(driverBinding, subscribed, key);
       this.running.delete(key);
-      record.state = 'crashed';
-      this.broadcastExperience({ ...starting, state: 'crashed' });
-      this.broadcastList();
       this.log.error('failed to start experience', {
         app: appSlug,
         experience: experience.slug,
-        err: String(err),
+        err: error,
       });
+      this.crashed(record, { ...starting, state: 'crashed', error });
       throw err;
     }
 
     const running: ExperienceRecord = { ...starting, state: 'running' };
     this.running.set(key, running);
     record.state = 'running';
+    record.crash = null;
     this.broadcastExperience(running);
     this.broadcastList();
     this.log.info('experience started', {
@@ -438,10 +446,22 @@ export class AppManager {
     return running;
   }
 
-  async stopExperience(appSlug: string, experienceSlug: string): Promise<void> {
+  /**
+   * Stops an experience and releases its drivers. With an `error`, from a
+   * window whose experience stopped on its own, it ends `crashed`.
+   */
+  async stopExperience(
+    appSlug: string,
+    experienceSlug: string,
+    options: StopExperienceOptions = {},
+  ): Promise<void> {
     const key = experienceKey(appSlug, experienceSlug);
     const current = this.running.get(key);
     if (!current) return;
+    const { error } = options;
+    if (error !== undefined) {
+      this.log.error('experience crashed', { app: appSlug, experience: experienceSlug, error });
+    }
     this.running.set(key, { ...current, state: 'stopping' });
     this.broadcastExperience({ ...current, state: 'stopping' });
 
@@ -449,6 +469,10 @@ export class AppManager {
     // The drivers it started with: the manifest may have been replaced since.
     await this.releaseDrivers(current.driverBinding, current.drivers, key);
     this.running.delete(key);
+    if (error !== undefined) {
+      this.crashed(record, { ...current, state: 'crashed', error });
+      return;
+    }
     this.broadcastExperience({ ...current, state: 'idle' });
     // A crash stays visible until the next successful start.
     if (record && record.state !== 'crashed' && !this.hasRunningExperienceFor(appSlug)) {
@@ -532,6 +556,7 @@ export class AppManager {
       builtin: record.builtin,
       grantedCapabilities: this.grantedCapabilities(record.manifest.slug),
       state: record.state,
+      ...(record.crash ? { crash: record.crash } : {}),
     };
   }
 
@@ -558,6 +583,7 @@ export class AppManager {
       installedAt: installTime(found.installPath),
       builtin,
       state: 'installed',
+      crash: null,
     };
     this.catalogue.set(found.manifest.slug, record);
     return record;
@@ -669,6 +695,19 @@ export class AppManager {
     );
   }
 
+  /** Reports the crash, and keeps it on the app until its next successful start. */
+  private crashed(
+    record: AppRecord | undefined,
+    experience: ExperienceRecord & { readonly error: string },
+  ): void {
+    if (record) {
+      record.state = 'crashed';
+      record.crash = { experienceSlug: experience.experienceSlug, error: experience.error };
+    }
+    this.broadcastExperience(experience);
+    if (record) this.broadcastList();
+  }
+
   private broadcastExperience(state: ExperienceRecord): void {
     this.options.bus.emit(ServerEvents.ExperienceStateChanged, toPublicExperience(state), 'apps');
     this.options.bus.emit(
@@ -710,6 +749,7 @@ function toPublicExperience(record: RunningExperience): RunningExperience {
     state: record.state,
     startedAt: record.startedAt,
     startedAs: record.startedAs,
+    ...(record.error !== undefined ? { error: record.error } : {}),
   };
 }
 

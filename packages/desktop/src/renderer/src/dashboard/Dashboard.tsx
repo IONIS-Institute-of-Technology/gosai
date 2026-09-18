@@ -94,9 +94,11 @@ function StatusBar(): React.ReactElement {
   const [systemStats, setSystemStats] = useState<SystemStats | null>(null);
   useEffect(() => client.on('system:stats', setSystemStats), [client]);
 
+  const pythonUnavailable = status === 'connected' ? systemStats?.pythonUnavailable : null;
+
   return (
-    <footer className="flex items-center justify-between border-t border-neutral-800 bg-neutral-900/60 px-4 py-1.5 font-mono text-[11px] text-neutral-400">
-      <div className="flex items-center gap-3">
+    <footer className="flex items-center justify-between gap-6 border-t border-neutral-800 bg-neutral-900/60 px-4 py-1.5 font-mono text-[11px] text-neutral-400">
+      <div className="flex min-w-0 items-center gap-3">
         <span className="font-medium text-neutral-100">GOSAI</span>
         <span>v{window.gosai.version}</span>
         <span className="text-neutral-600">·</span>
@@ -114,8 +116,19 @@ function StatusBar(): React.ReactElement {
         </span>
         <span className="text-neutral-600">·</span>
         <span>{window.gosai.platform}</span>
+        {pythonUnavailable ? (
+          <>
+            <span className="text-neutral-600">·</span>
+            <span className="flex min-w-0 items-center gap-1.5 text-amber-300">
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" />
+              <span className="truncate" title={pythonUnavailable}>
+                Python drivers unavailable: {pythonUnavailable}
+              </span>
+            </span>
+          </>
+        ) : null}
       </div>
-      <div className="flex items-center gap-3">
+      <div className="flex shrink-0 items-center gap-3">
         {systemStats ? (
           <>
             <span>cpu {systemStats.cpuPercent.toFixed(1)}%</span>

@@ -14,7 +14,7 @@ import { installWebContentsGuards } from './security.js';
 import { checkServerToken } from './server-auth.js';
 import { shouldAutostartServer, type ServerRunner } from './server-runner.js';
 import { SplashWindow } from './splash.js';
-import { WindowRegistry } from './windows.js';
+import { registerDashboardScheme, WindowRegistry } from './windows.js';
 
 function configureLinuxWindowingBackend(): void {
   if (process.platform !== 'linux') return;
@@ -61,6 +61,7 @@ if (configError || app.requestSingleInstanceLock()) {
 }
 
 function main(): void {
+  registerDashboardScheme();
   // A new token at each launch. GOSAI_DASHBOARD_TOKEN lets `bun run dev`
   // share one token between a separately started server and this app.
   const dashboardToken = process.env.GOSAI_DASHBOARD_TOKEN || generateDashboardToken();

@@ -85,6 +85,7 @@ export interface CommandRequests {
   'experience:stop': {
     appSlug: string;
     experienceSlug: string;
+    error?: string | undefined;
   };
   'drivers:list': {
     [x: string]: never;
@@ -215,6 +216,7 @@ export interface ParsedCommandRequests {
   'experience:stop': {
     appSlug: string;
     experienceSlug: string;
+    error?: string | undefined;
   };
   'drivers:list': {
     [x: string]: never;
