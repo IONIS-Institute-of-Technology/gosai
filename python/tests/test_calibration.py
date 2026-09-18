@@ -34,7 +34,12 @@ def _frame() -> np.ndarray:
 
 def _layout() -> list[dict[str, float]]:
     return [
-        {"id": i, "x": cx * DISPLAY_SCALE, "y": cy * DISPLAY_SCALE, "size": MARKER_PX * DISPLAY_SCALE}
+        {
+            "id": i,
+            "x": cx * DISPLAY_SCALE,
+            "y": cy * DISPLAY_SCALE,
+            "size": MARKER_PX * DISPLAY_SCALE,
+        }
         for i, (cx, cy) in enumerate(CAMERA_CENTERS)
     ]
 
@@ -43,7 +48,9 @@ def _calibrated() -> tuple[CalibrationDriver, RecordingContext]:
     context = RecordingContext()
     driver = CalibrationDriver(context)
     driver.execute("set_marker_layout", _layout())
-    driver.on_data("camera", "frame", {"width": FRAME_W, "height": FRAME_H, "ts": 1.0, "_frame": _frame()})
+    driver.on_data(
+        "camera", "frame", {"width": FRAME_W, "height": FRAME_H, "ts": 1.0, "_frame": _frame()}
+    )
     return driver, context
 
 
@@ -80,7 +87,9 @@ def test_detects_markers_and_computes_both_homographies() -> None:
     corners = check_result(
         CalibrationDriver,
         "reproject_points",
-        driver.execute("reproject_points", {"points": [[200, 150], {"x": 600, "y": 450}], "space": "surface"}),
+        driver.execute(
+            "reproject_points", {"points": [[200, 150], {"x": 600, "y": 450}], "space": "surface"}
+        ),
     )
     assert [v for p in corners["points"] for v in (p["x"], p["y"])] == pytest.approx(
         [0, 0, 1000, 500], abs=1e-6
@@ -109,16 +118,24 @@ def test_latest_frame_and_marker_rendering() -> None:
     driver = CalibrationDriver(RecordingContext())
     with pytest.raises(RuntimeError, match="no camera frame"):
         driver.execute("get_latest_frame", None)
-    driver.on_data("camera", "frame", {"width": FRAME_W, "height": FRAME_H, "ts": 2.0, "_frame": _frame()})
+    driver.on_data(
+        "camera", "frame", {"width": FRAME_W, "height": FRAME_H, "ts": 2.0, "_frame": _frame()}
+    )
 
-    latest = check_result(CalibrationDriver, "get_latest_frame", driver.execute("get_latest_frame", None))
-    decoded = cv2.imdecode(np.frombuffer(base64.b64decode(latest["jpeg_base64"]), np.uint8), cv2.IMREAD_COLOR)
+    latest = check_result(
+        CalibrationDriver, "get_latest_frame", driver.execute("get_latest_frame", None)
+    )
+    decoded = cv2.imdecode(
+        np.frombuffer(base64.b64decode(latest["jpeg_base64"]), np.uint8), cv2.IMREAD_COLOR
+    )
     assert decoded is not None
     assert decoded.shape == (FRAME_H, FRAME_W, 3)
     assert (latest["width"], latest["height"], latest["ts"]) == (FRAME_W, FRAME_H, 2.0)
 
     marker = check_result(CalibrationDriver, "render_marker", driver.execute("render_marker", 7))
-    png = cv2.imdecode(np.frombuffer(base64.b64decode(marker["png_base64"]), np.uint8), cv2.IMREAD_GRAYSCALE)
+    png = cv2.imdecode(
+        np.frombuffer(base64.b64decode(marker["png_base64"]), np.uint8), cv2.IMREAD_GRAYSCALE
+    )
     assert png is not None
     assert png.shape == (200, 200)
     assert driver.execute("render_marker", {"id": 3, "size": 64})["size"] == 64
@@ -134,12 +151,19 @@ def test_detects_in_jpeg_only_events() -> None:
 
 def test_compute_homographies_recovers_a_perspective_transform() -> None:
     truth = np.array([[1.2, 0.1, 30.0], [-0.05, 0.9, 12.0], [0.0002, 0.0001, 1.0]])
-    layout = [MarkerPlacement(id=i, x=100.0 + 200 * i, y=100.0 + 50 * (i % 2), size=40.0) for i in range(4)]
+    layout = [
+        MarkerPlacement(id=i, x=100.0 + 200 * i, y=100.0 + 50 * (i % 2), size=40.0)
+        for i in range(4)
+    ]
     inverse = np.linalg.inv(truth)
     detections = {m.id: warp_points(inverse, m.corners()) for m in layout}
 
     result = compute_homographies(
-        layout, detections, focus_quad=[[0, 0], [1, 0], [1, 1], [0, 1]], frame_size=(640, 480), surface_size=(64, 48)
+        layout,
+        detections,
+        focus_quad=[[0, 0], [1, 0], [1, 1], [0, 1]],
+        frame_size=(640, 480),
+        surface_size=(64, 48),
     )
 
     assert result.display / result.display[2, 2] == pytest.approx(truth, rel=1e-4, abs=1e-6)
@@ -161,7 +185,10 @@ def test_warp_points_returns_nan_for_points_at_infinity() -> None:
 
 
 def test_surface_quad_display_is_null_when_a_corner_maps_to_infinity() -> None:
-    layout = [MarkerPlacement(id=i, x=100.0 + 150 * i, y=100.0 + 50 * (i % 2), size=40.0) for i in range(4)]
+    layout = [
+        MarkerPlacement(id=i, x=100.0 + 150 * i, y=100.0 + 50 * (i % 2), size=40.0)
+        for i in range(4)
+    ]
     inverse = np.linalg.inv(TOWARDS_INFINITY)
     detections = {m.id: warp_points(inverse, m.corners()) for m in layout}
 
@@ -180,6 +207,8 @@ def test_reprojection_reports_points_at_infinity() -> None:
     with pytest.raises(ValueError, match="maps to infinity"):
         driver.execute("reproject_point", {"x": 640, "y": 10})
     points = check_result(
-        CalibrationDriver, "reproject_points", driver.execute("reproject_points", {"points": [[320, 0], [640, 0]]})
+        CalibrationDriver,
+        "reproject_points",
+        driver.execute("reproject_points", {"points": [[320, 0], [640, 0]]}),
     )
     assert points["points"] == [{"x": 640.0, "y": 0.0}, None]

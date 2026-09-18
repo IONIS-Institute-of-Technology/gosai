@@ -101,8 +101,9 @@ def _letterbox(img: Any, size: tuple[int, int]) -> tuple[Any, float, tuple[int, 
         img = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_LINEAR)
     top, left = (ih - nh) // 2, (iw - nw) // 2
     bottom, right = ih - nh - top, iw - nw - left
-    img = cv2.copyMakeBorder(img, top, bottom, left, right,
-                             cv2.BORDER_CONSTANT, value=(114, 114, 114))
+    img = cv2.copyMakeBorder(
+        img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(114, 114, 114)
+    )
     return img, scale, (top, left)
 
 
@@ -263,16 +264,20 @@ class _BallTracker:
     couple of missed frames so a dropped YOLO frame does not flicker.
     """
 
-    def __init__(self, max_miss: int = 3, render_miss: int = 2,
-                 match_radius: float = 110.0, min_match_radius: float = 45.0) -> None:
+    def __init__(
+        self,
+        max_miss: int = 3,
+        render_miss: int = 2,
+        match_radius: float = 110.0,
+        min_match_radius: float = 45.0,
+    ) -> None:
         self.max_miss = max_miss
         self.render_miss = render_miss
         self.match_radius = match_radius
         self.min_match_radius = min_match_radius
         self.tracks: list[_TrackedBall] = []
 
-    def update(self, detections: list[_Detection],
-               t: float) -> list[_TrackedBall]:
+    def update(self, detections: list[_Detection], t: float) -> list[_TrackedBall]:
         used_det: set[int] = set()
         used_trk: set[int] = set()
 
@@ -382,8 +387,9 @@ class BallDriver(BaseDriver):
         self._max_ball_px = 100.0
         self._max_aspect = 1.6
         self._frame_times: deque[float] = deque(maxlen=50)
-        self._tracker = _BallTracker(max_miss=3, render_miss=2,
-                                     match_radius=110.0, min_match_radius=45.0)
+        self._tracker = _BallTracker(
+            max_miss=3, render_miss=2, match_radius=110.0, min_match_radius=45.0
+        )
         self._frame_idx = 0
         self._skip = 0  # 0 = process every frame; raise on slow hardware
         # None uses GOSAI_CUDA_DEVICE_ID, read when the session is created.
@@ -462,9 +468,13 @@ class BallDriver(BaseDriver):
         outputs = self._session.run(None, {self._input_name: tensor})
 
         detections = _postprocess(
-            outputs, scale, pad,
+            outputs,
+            scale,
+            pad,
             self._confidence,
-            self._min_ball_px, self._max_ball_px, self._max_aspect,
+            self._min_ball_px,
+            self._max_ball_px,
+            self._max_aspect,
         )
         if self._homography is not None:
             detections = _warp_detections(detections, self._homography)

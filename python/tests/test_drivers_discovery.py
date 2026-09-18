@@ -47,7 +47,14 @@ EXPECTED_METADATA: dict[str, dict[str, tuple[str, ...]]] = {
     "heartbeat": {"events": ("tick",), "actions": ("echo",), "dependencies": ()},
     "camera": {
         "events": ("frame", "color", "frame_size", "fps"),
-        "actions": ("set_device", "set_mode", "set_resolution", "set_fps", "snapshot", "list_formats"),
+        "actions": (
+            "set_device",
+            "set_mode",
+            "set_resolution",
+            "set_fps",
+            "snapshot",
+            "list_formats",
+        ),
         "dependencies": (),
     },
     "calibration": {
@@ -86,10 +93,20 @@ EXPECTED_METADATA: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "hand_pose": {
         "events": ("raw_data",),
-        "actions": ("set_flip", "set_window", "set_homography", "set_frame_size", "set_surface_size"),
+        "actions": (
+            "set_flip",
+            "set_window",
+            "set_homography",
+            "set_frame_size",
+            "set_surface_size",
+        ),
         "dependencies": ("camera",),
     },
-    "pose": {"events": ("raw_data",), "actions": ("set_flip", "set_window"), "dependencies": ("camera",)},
+    "pose": {
+        "events": ("raw_data",),
+        "actions": ("set_flip", "set_window"),
+        "dependencies": ("camera",),
+    },
     "pose_to_mirror": {
         "events": ("mirrored_data", "projected_data"),
         "actions": (

@@ -167,7 +167,9 @@ def test_solver_respects_apply_false(driver: PoseToMirrorDriver) -> None:
     _capture_all(driver)
     before = driver.execute("set_mirror_config", None)
     fit = check_result(
-        PoseToMirrorDriver, "solve_calibration", driver.execute("solve_calibration", {"apply": False})
+        PoseToMirrorDriver,
+        "solve_calibration",
+        driver.execute("solve_calibration", {"apply": False}),
     )
     assert fit["ok"], fit
     after = driver.execute("set_mirror_config", None)
@@ -216,12 +218,8 @@ def _make_standing_raw(distance_mm: float, tilt_deg: float) -> dict[str, Any]:
     def to_camera(x: float, y: float, z: float) -> tuple[float, float, float]:
         return (x, y * cos_t - z * sin_t, y * sin_t + z * cos_t)
 
-    cam = {
-        i: to_camera(x, y, distance_mm) for i, (x, y) in STANDING_JOINTS_MIRROR.items()
-    }
-    mid_hip = tuple(
-        (a + b) / 2.0 for a, b in zip(cam[LEFT_HIP], cam[RIGHT_HIP], strict=True)
-    )
+    cam = {i: to_camera(x, y, distance_mm) for i, (x, y) in STANDING_JOINTS_MIRROR.items()}
+    mid_hip = tuple((a + b) / 2.0 for a, b in zip(cam[LEFT_HIP], cam[RIGHT_HIP], strict=True))
     body_pose: list[list[float]] = []
     body_world: list[list[float]] = []
     for i in range(33):
@@ -246,9 +244,7 @@ def _make_standing_raw(distance_mm: float, tilt_deg: float) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize("distance_mm", [1000.0, 1500.0, 2500.0])
-def test_reflection_matches_physical_mirror(
-    driver: PoseToMirrorDriver, distance_mm: float
-) -> None:
+def test_reflection_matches_physical_mirror(driver: PoseToMirrorDriver, distance_mm: float) -> None:
     """The trace of your reflection on the glass is half your size, at any
     distance: the glass point for body point P seen from eye E is (E + P) / 2
     in mirror-plane coordinates. The projected coordinates must therefore be

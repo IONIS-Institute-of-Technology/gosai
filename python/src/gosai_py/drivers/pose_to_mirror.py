@@ -255,7 +255,9 @@ class PoseToMirrorDriver(BaseDriver):
                 raise ValueError(f"landmark must be a body landmark index, got {landmark}")
             visibility = _median_visibility(pose, landmark)
             if visibility < MIN_FINGERTIP_VISIBILITY:
-                raise RuntimeError(f"fingertip landmark {landmark} barely visible ({visibility:.2f})")
+                raise RuntimeError(
+                    f"fingertip landmark {landmark} barely visible ({visibility:.2f})"
+                )
             target = (params.target[0], params.target[1])
             self._samples.append(_Sample(target, landmark, pose, world, sizes))
             # The next target must not reuse these frames; the stream refills
@@ -297,7 +299,10 @@ class PoseToMirrorDriver(BaseDriver):
         if apply:
             with self._lock:
                 self._settings = msgspec.structs.replace(
-                    self._settings, tilt_deg=result.tilt_deg, scale=result.scale, affine=result.affine
+                    self._settings,
+                    tilt_deg=result.tilt_deg,
+                    scale=result.scale,
+                    affine=result.affine,
                 )
         self.log(
             "info",
@@ -344,7 +349,9 @@ class PoseToMirrorDriver(BaseDriver):
         if settings.mode == "direct":
             pixels = self._direct(settings, parts, frame_w, frame_h)
         else:
-            projected = self._reflect(settings, parts, mirror.landmarks(body_world), frame_w, frame_h)
+            projected = self._reflect(
+                settings, parts, mirror.landmarks(body_world), frame_w, frame_h
+            )
             self.emit("projected_data", _payload(projected, body_world))
             ax, bx, ay, by = settings.pixel_affine()
             pixels = {
@@ -359,7 +366,11 @@ class PoseToMirrorDriver(BaseDriver):
         """Fit the camera frame to the canvas, keeping the aspect ratio."""
         width_ratio = settings.width / max(frame_w, 1.0)
         height_ratio = settings.height / max(frame_h, 1.0)
-        ratio = max(width_ratio, height_ratio) if settings.fit == "cover" else min(width_ratio, height_ratio)
+        ratio = (
+            max(width_ratio, height_ratio)
+            if settings.fit == "cover"
+            else min(width_ratio, height_ratio)
+        )
         scale = ratio * max(settings.zoom, 0.1)
         sx, sy = frame_w * scale, frame_h * scale
         ox, oy = (settings.width - sx) / 2.0, (settings.height - sy) / 2.0
@@ -452,7 +463,9 @@ class _Solver:
         self._bounds = np.cumsum([0, *(len(s.pose) for s in samples)])
         self._targets = np.array([s.target for s in samples])
 
-    def best(self, tilts: list[float], scales: list[float], best: _Fit | None = None) -> _Fit | None:
+    def best(
+        self, tilts: list[float], scales: list[float], best: _Fit | None = None
+    ) -> _Fit | None:
         for tilt in tilts:
             for scale in scales:
                 fit = self._evaluate(tilt, scale)
@@ -487,4 +500,3 @@ class _Solver:
         predicted = np.column_stack([ax * pts[:, 0] + bx, ay * pts[:, 1] + by])
         errors = np.linalg.norm(predicted - tgt, axis=1)
         return _Fit(tilt_deg, scale, (ax, bx, ay, by), errors, float(np.sqrt(np.mean(errors**2))))
-

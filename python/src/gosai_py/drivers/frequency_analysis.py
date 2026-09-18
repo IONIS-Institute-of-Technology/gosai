@@ -42,7 +42,9 @@ class WindowSizeResult(msgspec.Struct, kw_only=True):
     window_blocks: int
 
 
-def spectrum(samples: np.ndarray, samplerate: float, max_frequency: float) -> tuple[np.ndarray, np.ndarray]:
+def spectrum(
+    samples: np.ndarray, samplerate: float, max_frequency: float
+) -> tuple[np.ndarray, np.ndarray]:
     """Frequencies and magnitudes below `max_frequency`, after DC removal and a Hann window."""
     centered = samples - samples.mean()
     window = np.hanning(len(centered))

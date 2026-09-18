@@ -254,7 +254,9 @@ class _Writer:
         with self._cond:
             ordered = list(self._ordered)
             self._ordered.clear()
-            buffered = [(key, message) for key, queue in self._buffered.items() for message in queue]
+            buffered = [
+                (key, message) for key, queue in self._buffered.items() for message in queue
+            ]
             self._buffered.clear()
             latest = list(self._latest.items())
             self._latest.clear()
@@ -438,7 +440,9 @@ class Bridge:
             finally:
                 self._discovered.set()
 
-        self._discovery_thread = threading.Thread(target=discover, name="bridge:discovery", daemon=True)
+        self._discovery_thread = threading.Thread(
+            target=discover, name="bridge:discovery", daemon=True
+        )
         self._discovery_thread.start()
 
     def start(self) -> None:
@@ -476,13 +480,24 @@ class Bridge:
                 self._emit_log("warn", driver, f"subscriber of {event!r} failed: {exc!r}", instance)
 
     def _emit_log(self, level: str, source: str, message: str, instance: str | None = None) -> None:
-        payload: JsonDict = {"type": "log", "level": level, "source": source, "message": message, "ts": now_ms()}
+        payload: JsonDict = {
+            "type": "log",
+            "level": level,
+            "source": source,
+            "message": message,
+            "ts": now_ms(),
+        }
         if instance is not None:
             payload["instance"] = instance
         self._post(payload)
 
     def _emit_driver_state(self, instance: str, driver: str, state: str) -> None:
-        payload: JsonDict = {"type": "driver-state", "instance": instance, "driver": driver, "state": state}
+        payload: JsonDict = {
+            "type": "driver-state",
+            "instance": instance,
+            "driver": driver,
+            "state": state,
+        }
         with self._lock:
             runtime = self._runtime_info.get((instance, driver))
         if runtime is not None:
@@ -608,12 +623,16 @@ class Bridge:
                 try:
                     self._stop_driver(instance, name, max(deadline - time.monotonic(), 0.0))
                 except Exception as exc:
-                    self._emit_log("warn", "bridge", f"failed to stop {name} in {instance}: {exc!r}")
+                    self._emit_log(
+                        "warn", "bridge", f"failed to stop {name} in {instance}: {exc!r}"
+                    )
                     with self._lock:
                         self._instances.pop((instance, name), None)
 
             threads = [
-                threading.Thread(target=stop, args=key, name=f"bridge:stop:{key[0]}:{key[1]}", daemon=True)
+                threading.Thread(
+                    target=stop, args=key, name=f"bridge:stop:{key[0]}:{key[1]}", daemon=True
+                )
                 for key in leaves
             ]
             for thread in threads:
@@ -789,7 +808,9 @@ class Bridge:
                     self._respond_error(req_id, "action is required")
                     return
                 data = request.get("data")
-                self._run_queued(queue, req_id, lambda: self._execute(instance, driver, action, data))
+                self._run_queued(
+                    queue, req_id, lambda: self._execute(instance, driver, action, data)
+                )
         else:
             self._respond_error(req_id, f"unknown request type: {req_type!r}")
 
@@ -860,7 +881,9 @@ class Bridge:
                 try:
                     self.handle(request)
                 except Exception as exc:
-                    self._emit_log("error", "bridge", f"unhandled error: {exc!r}\n{traceback.format_exc()}")
+                    self._emit_log(
+                        "error", "bridge", f"unhandled error: {exc!r}\n{traceback.format_exc()}"
+                    )
                 if self._shutdown_requested:
                     break
         except (_TerminateError, KeyboardInterrupt):
@@ -886,7 +909,9 @@ def _install_sigterm_handler() -> Callable[[int, FrameType | None], Any] | int |
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="gosai-bridge", description="Host GOSAI drivers over stdio.")
+    parser = argparse.ArgumentParser(
+        prog="gosai-bridge", description="Host GOSAI drivers over stdio."
+    )
     parser.add_argument(
         "--app-drivers",
         metavar="DIR",

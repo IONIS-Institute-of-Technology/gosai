@@ -163,7 +163,8 @@ class PoseDriver(BaseDriver):
 
         def to_xyv(landmarks: Any) -> list[list[float]]:
             return [
-                [float(x0 + lm.x * w_crop), float(lm.y * h_crop), _visibility(lm)] for lm in landmarks
+                [float(x0 + lm.x * w_crop), float(lm.y * h_crop), _visibility(lm)]
+                for lm in landmarks
             ]
 
         face_mesh = to_xyv(result.face_landmarks)

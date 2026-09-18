@@ -148,7 +148,9 @@ class DriverContext:
     ) -> None:  # pragma: no cover
         raise NotImplementedError
 
-    def subscribe(self, driver: str, event: str, callback: Callable[[Any], None]) -> None:  # pragma: no cover
+    def subscribe(
+        self, driver: str, event: str, callback: Callable[[Any], None]
+    ) -> None:  # pragma: no cover
         """Register a callback for another driver's event.
 
         The bridge calls `callback` on the emitting thread, so it must not block.
@@ -156,7 +158,9 @@ class DriverContext:
         """
         raise NotImplementedError
 
-    def unsubscribe(self, driver: str, event: str, callback: Callable[[Any], None]) -> None:  # pragma: no cover
+    def unsubscribe(
+        self, driver: str, event: str, callback: Callable[[Any], None]
+    ) -> None:  # pragma: no cover
         raise NotImplementedError
 
     def get_event_data(self, driver: str, event: str) -> Any:  # pragma: no cover

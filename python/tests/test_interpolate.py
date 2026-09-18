@@ -21,7 +21,9 @@ def test_steps_move_toward_the_target() -> None:
     result = check_result(
         InterpolateDriver,
         "interpolate_points",
-        driver.execute("interpolate_points", {"name": "p", "points": [[8.0, 16.0]], "factor": 0.5, "amount": 3}),
+        driver.execute(
+            "interpolate_points", {"name": "p", "points": [[8.0, 16.0]], "factor": 0.5, "amount": 3}
+        ),
     )
     wait_until(lambda: len(context.emitted("interpolated_data")) == 4)
 
@@ -34,7 +36,9 @@ def test_steps_move_toward_the_target() -> None:
 def test_a_new_job_cancels_the_one_it_replaces() -> None:
     context = RecordingContext()
     driver = InterpolateDriver(context)
-    driver.execute("interpolate_points", {"name": "p", "points": [1.0], "amount": 1000, "duration": 100})
+    driver.execute(
+        "interpolate_points", {"name": "p", "points": [1.0], "amount": 1000, "duration": 100}
+    )
     wait_until(lambda: len(context.emitted("interpolated_data")) == 1)
     first = _job_threads()
 
@@ -48,8 +52,12 @@ def test_a_new_job_cancels_the_one_it_replaces() -> None:
 
 def test_cleanup_stops_running_jobs() -> None:
     driver = InterpolateDriver(RecordingContext())
-    driver.execute("interpolate_points", {"name": "a", "points": [1.0], "amount": 1000, "duration": 100})
-    driver.execute("interpolate_points", {"name": "b", "points": [1.0], "amount": 1000, "duration": 100})
+    driver.execute(
+        "interpolate_points", {"name": "a", "points": [1.0], "amount": 1000, "duration": 100}
+    )
+    driver.execute(
+        "interpolate_points", {"name": "b", "points": [1.0], "amount": 1000, "duration": 100}
+    )
 
     driver.cleanup()
 

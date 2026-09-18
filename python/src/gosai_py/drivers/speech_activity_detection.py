@@ -85,7 +85,9 @@ class SileroVad:
 
     def _score(self, window: np.ndarray) -> float:
         x = np.concatenate([self._context, window], axis=1)
-        out, self._state = self._session.run(None, {"input": x, "state": self._state, "sr": self._sr})
+        out, self._state = self._session.run(
+            None, {"input": x, "state": self._state, "sr": self._sr}
+        )
         self._context = x[:, -self.CONTEXT :]
         return float(out[0, 0])
 

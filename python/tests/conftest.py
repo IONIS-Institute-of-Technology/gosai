@@ -104,6 +104,7 @@ def _no_leaked_runtime_threads() -> Iterator[None]:
         time.sleep(0.02)
     assert not leaked, f"test left runtime threads running: {[t.name for t in leaked]}"
 
+
 def _varint(value: int) -> bytes:
     out = bytearray()
     while True:
