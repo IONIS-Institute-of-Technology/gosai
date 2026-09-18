@@ -3,6 +3,8 @@
  * sets the reference transform before layers render.
  */
 
+import type { Rect } from './ui.js';
+
 export function fillCircle(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -90,4 +92,29 @@ export function drawText(
   ctx.textAlign = align;
   ctx.textBaseline = baseline;
   ctx.fillText(text, x, y);
+}
+
+/**
+ * Draws a `sw` x `sh` source as large as fits in a `maxW` x `maxH` box centred
+ * on (`cx`, `cy`), keeping its aspect ratio. Returns where it landed, or null
+ * when the source has no size yet.
+ */
+export function drawContain(
+  ctx: CanvasRenderingContext2D,
+  src: CanvasImageSource,
+  sw: number,
+  sh: number,
+  cx: number,
+  cy: number,
+  maxW: number,
+  maxH: number,
+): Rect | null {
+  if (sw <= 0 || sh <= 0) return null;
+  const scale = Math.min(maxW / sw, maxH / sh);
+  const w = sw * scale;
+  const h = sh * scale;
+  const x = cx - w / 2;
+  const y = cy - h / 2;
+  ctx.drawImage(src, x, y, w, h);
+  return { x, y, w, h };
 }

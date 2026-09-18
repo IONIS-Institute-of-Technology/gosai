@@ -10,7 +10,7 @@
  */
 
 import type { LayerDeps } from '../shared/deps.js';
-import { drawText, fillRect } from '../shared/draw.js';
+import { drawContain, drawText, fillRect } from '../shared/draw.js';
 import { createMediaCache, MediaCache } from '../shared/media.js';
 import { SIGN_COUNT_THRESHOLD, SignTracker } from '../shared/sign.js';
 import { REF_HEIGHT, REF_WIDTH, type Layer } from '../shared/types.js';
@@ -39,6 +39,13 @@ interface CharState {
 
 const ADVANCE_COOLDOWN_MS = 1500;
 const POS_X: Record<Pos, number> = { LEFT: 320, CENTER: 540, RIGHT: 760 };
+/**
+ * The box a character's sign clip is fitted into, `dx` from its POS_X. The
+ * clips are cropped closer than the sprites (drawn into 520x760 at y 620), so
+ * this box puts Aria where her sprite stands, at the same height, and the
+ * switch between the two doesn't jump.
+ */
+const ANIM_BOX = { dx: -66, y: 646, width: 169, height: 247 } as const;
 const FONT_FAMILY = 'PressStart2P';
 
 export function createSignGameLayer(deps: LayerDeps): Layer {
@@ -260,8 +267,10 @@ export function createSignGameLayer(deps: LayerDeps): Layer {
       if (!c.visible) continue;
       if (c.anim) {
         const v = media.video(animUrl(name, c.anim));
-        if (media.playing(v))
-          drawContain(ctx, v, v.videoWidth, v.videoHeight, POS_X[c.pos], 560, 460, 460);
+        if (media.playing(v)) {
+          const { dx, y, width, height } = ANIM_BOX;
+          drawContain(ctx, v, v.videoWidth, v.videoHeight, POS_X[c.pos] + dx, y, width, height);
+        }
       } else if (c.sprite) {
         const img = media.image(spriteUrl(name, c.sprite));
         if (MediaCache.imageReady(img))
@@ -408,23 +417,6 @@ function drawTextBox(ctx: CanvasRenderingContext2D): void {
   ctx.strokeStyle = '#ffffff';
   ctx.lineWidth = 4;
   ctx.strokeRect(40, 1450, REF_WIDTH - 80, 410);
-}
-
-function drawContain(
-  ctx: CanvasRenderingContext2D,
-  src: CanvasImageSource,
-  sw: number,
-  sh: number,
-  cx: number,
-  cy: number,
-  maxW: number,
-  maxH: number,
-): void {
-  if (sw <= 0 || sh <= 0) return;
-  const scale = Math.min(maxW / sw, maxH / sh);
-  const w = sw * scale;
-  const h = sh * scale;
-  ctx.drawImage(src, cx - w / 2, cy - h / 2, w, h);
 }
 
 function wrapText(

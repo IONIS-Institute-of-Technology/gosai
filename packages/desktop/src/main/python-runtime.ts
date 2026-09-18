@@ -69,6 +69,8 @@ const TRASH_STALE_MS = 60_000;
 
 /** Never shipped and never hashed. */
 const IGNORED_NAMES = new Set(['.venv', '__pycache__', '.pytest_cache', '.ruff_cache']);
+/** Top-level directories of python/ that don't ship either. */
+const IGNORED_TOP_LEVEL = new Set(['tests']);
 
 export interface PythonRuntimeInfo {
   /** sha256 of the bundled Python tree. */
@@ -86,7 +88,7 @@ export function hashPythonTree(root: string): string {
   const hash = createHash('sha256');
   const walk = (directory: string, prefix: string): void => {
     for (const name of readdirSync(directory).sort()) {
-      if (isIgnored(name)) continue;
+      if (isIgnored(name) || (prefix === '' && IGNORED_TOP_LEVEL.has(name))) continue;
       const path = join(directory, name);
       const relative = prefix ? `${prefix}/${name}` : name;
       const stat = statSync(path);

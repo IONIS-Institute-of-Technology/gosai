@@ -128,8 +128,10 @@ describe('pythonVersionFromPyproject', () => {
 });
 
 describe('hashPythonTree and runtimeName', () => {
-  test('ignore venvs and caches but see source changes', () => {
+  test('ignore venvs, caches and tests but see source changes', () => {
     const before = hashPythonTree(source);
+    mkdirSync(join(source, 'tests', 'data'), { recursive: true });
+    writeFileSync(join(source, 'tests', 'data', 'clip.wav'), 'x');
     mkdirSync(join(source, '.venv', 'bin'), { recursive: true });
     mkdirSync(join(source, 'src', 'gosai_py', '__pycache__'), { recursive: true });
     writeFileSync(join(source, 'src', 'gosai_py', '__pycache__', 'bridge.pyc'), 'x');
