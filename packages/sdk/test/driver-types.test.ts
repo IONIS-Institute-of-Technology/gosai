@@ -223,6 +223,9 @@ describe('typed driver client', () => {
       void drivers.execute('ball', 'set_homography', [1, 0, 0, 0, 1, 0, 0, 0, 1] as const);
       void drivers.execute('camera', 'snapshot');
       void drivers.execute('camera', 'set_mode');
+      // An action with nothing to report resolves with null.
+      const cleared: Promise<null> = drivers.execute('calibration', 'clear');
+      void cleared;
       // @ts-expect-error: set_fps needs a number
       void drivers.execute('camera', 'set_fps');
       // @ts-expect-error: snapshot takes no params

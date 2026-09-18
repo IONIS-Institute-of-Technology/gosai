@@ -109,7 +109,7 @@ def test_compute_needs_enough_markers() -> None:
 
 def test_clear_forgets_detections() -> None:
     driver, _ = _calibrated()
-    assert driver.execute("clear", None) == {"ok": True}
+    assert driver.execute("clear", None) is None
     with pytest.raises(RuntimeError, match="only 0 markers"):
         driver.execute("compute", None)
 

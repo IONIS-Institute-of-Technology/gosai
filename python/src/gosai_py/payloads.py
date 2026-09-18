@@ -21,17 +21,12 @@ Matrix3x3 = Annotated[list[float], Meta(min_length=9, max_length=9)]
 AudioSamples = list[float | list[float]]
 
 
-class Ok(msgspec.Struct, kw_only=True):
-    ok: bool = True
-
-
 class Size(msgspec.Struct, kw_only=True):
     width: PositiveInt
     height: PositiveInt
 
 
 class SizeResult(msgspec.Struct, kw_only=True):
-    ok: bool = True
     width: int
     height: int
 

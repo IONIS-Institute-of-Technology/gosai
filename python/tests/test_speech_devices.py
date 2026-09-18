@@ -164,7 +164,7 @@ def test_vad_predict_and_reset(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(context.emitted("activity")) == 2
     with pytest.raises(ValueError, match="multiple of 512"):
         driver.execute("predict", [0.0] * 600)
-    assert driver.execute("reset", None) == {"ok": True}
+    assert driver.execute("reset", None) is None
     driver.execute("predict", [0.0] * 512)
     assert not session.calls[-1]["input"][:, : SileroVad.CONTEXT].any()
 

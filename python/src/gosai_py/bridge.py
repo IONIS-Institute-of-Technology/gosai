@@ -683,7 +683,6 @@ class Bridge:
 
         listing = devices.audio_devices()
         return {
-            "ok": True,
             "microphones": [
                 {"index": d.index, "label": d.name, "is_default": d.index == listing.default_input}
                 for d in listing.devices

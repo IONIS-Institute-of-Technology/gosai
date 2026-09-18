@@ -68,7 +68,6 @@ class HandPosePayload(msgspec.Struct, kw_only=True):
 
 
 class HomographyResult(msgspec.Struct, kw_only=True):
-    ok: bool = True
     cleared: bool = False
 
 

@@ -81,7 +81,6 @@ def test_microphone_reopens_and_lists_devices(
 
     listing = check_result(MicrophoneDriver, "list_devices", driver.execute("list_devices", None))
     assert listing == {
-        "ok": True,
         "default_input": 1,
         "devices": [
             {"index": 1, "name": "Mic", "max_input_channels": 1, "default_samplerate": 16000.0}
@@ -108,7 +107,7 @@ def test_speaker_plays_queued_samples_across_blocks(sd: FakeSoundDevice) -> None
     try:
         callback = sd.streams[-1].callback
         result = check_result(SpeakerDriver, "play", driver.execute("play", [0.5] * 1500))
-        assert result == {"ok": True, "queued": 2, "queued_samples": 1500}
+        assert result == {"queued": 2, "queued_samples": 1500}
         driver.execute("play", [[0.25, 1.0]] * 100)
 
         out = np.ones((1024, 1), dtype=np.float32)
@@ -118,7 +117,7 @@ def test_speaker_plays_queued_samples_across_blocks(sd: FakeSoundDevice) -> None
         assert (out[:476] == 0.5).all() and (out[476:576] == 0.25).all() and (out[576:] == 0).all()
 
         assert driver.execute("play", [0.1] * 10)["queued_samples"] == 10
-        assert driver.execute("clear", None) == {"ok": True}
+        assert check_result(SpeakerDriver, "clear", driver.execute("clear", None)) is None
         callback(out, 1024, None, SimpleNamespace(output_underflow=False))
         assert not out.any()
         assert context.emitted("underrun")
@@ -254,7 +253,7 @@ def test_speech_to_text_transcribes_buffers(whisper: list[dict[str, Any]]) -> No
     assert driver.execute("transcribe", [[0.0, 1.0]] * 160)["transcription"] == "160 samples."
     with pytest.raises(ValueError, match="needs audio_buffer"):
         driver.execute("transcribe", {})
-    assert driver.execute("set_model", "small.en") == {"model": "small.en", "ok": True}
+    assert driver.execute("set_model", "small.en") == {"model": "small.en"}
     assert [load["size"] for load in whisper] == ["medium.en", "small.en"]
     assert whisper[0]["device"] == "cpu" and whisper[0]["compute_type"] == "int8"
     check_events(SpeechToTextDriver, context)

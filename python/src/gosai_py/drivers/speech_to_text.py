@@ -80,13 +80,8 @@ class TranscribeParams(msgspec.Struct, kw_only=True):
     samples: AudioSamples | None = None
 
 
-class TranscribeResult(TranscriptionPayload, kw_only=True):
-    ok: bool = True
-
-
 class ModelResult(msgspec.Struct, kw_only=True):
     model: str
-    ok: bool
 
 
 class SpeechToTextDriver(BaseDriver):
@@ -110,7 +105,7 @@ class SpeechToTextDriver(BaseDriver):
         self._load_model()
 
     @action("Transcribe 16 kHz mono audio: a sample list, or {audio_buffer} / {samples}.")
-    def transcribe(self, params: TranscribeParams | AudioSamples) -> TranscribeResult:
+    def transcribe(self, params: TranscribeParams | AudioSamples) -> TranscriptionPayload:
         if self._model is None:
             raise RuntimeError("model not loaded")
         if isinstance(params, TranscribeParams):
@@ -130,14 +125,14 @@ class SpeechToTextDriver(BaseDriver):
             "ts": now_ms(),
         }
         self.emit("transcription", payload)
-        return TranscribeResult(**payload)
+        return TranscriptionPayload(**payload)
 
     @action("Load another Whisper model, such as `small.en` or `large-v3`.")
     def set_model(self, model: str) -> ModelResult:
         self._model_size = model
         self._model = None
         self._load_model()
-        return ModelResult(model=self._model_size, ok=self._model is not None)
+        return ModelResult(model=self._model_size)
 
     def _load_model(self) -> None:
         try:

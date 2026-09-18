@@ -32,7 +32,7 @@ from gosai_py.clock import now_ms
 from gosai_py.driver import BaseDriver, DriverContext, Event, action
 from gosai_py.geometry import homography
 from gosai_py.geometry.homography import MarkerPlacement
-from gosai_py.payloads import EpochMs, Ok, Point, PositiveInt, Size
+from gosai_py.payloads import EpochMs, Point, PositiveInt, Size
 from gosai_py.serialization import frame_to_jpeg_base64
 
 ARUCO_DICTIONARY = cv2.aruco.DICT_4X4_50
@@ -88,7 +88,6 @@ class ComputeParams(msgspec.Struct, kw_only=True):
 
 
 class ComputeResult(msgspec.Struct, kw_only=True):
-    ok: bool = True
     matrix: list[float]
     inverse: list[float]
     surface_matrix: list[float] | None
@@ -117,14 +116,12 @@ class RenderMarkerParams(msgspec.Struct, kw_only=True):
 
 
 class MarkerImage(msgspec.Struct, kw_only=True):
-    ok: bool = True
     id: int
     size: int
     png_base64: str
 
 
 class LatestFrame(msgspec.Struct, kw_only=True):
-    ok: bool = True
     jpeg_base64: str
     width: int | None = None
     height: int | None = None
@@ -141,7 +138,6 @@ class ReprojectPointParams(msgspec.Struct, kw_only=True):
 
 
 class ReprojectedPoint(msgspec.Struct, kw_only=True):
-    ok: bool = True
     x: float
     y: float
 
@@ -152,7 +148,6 @@ class ReprojectPointsParams(msgspec.Struct, kw_only=True):
 
 
 class ReprojectedPoints(msgspec.Struct, kw_only=True):
-    ok: bool = True
     # In input order; null where a point maps to infinity.
     points: list[Point | None]
 
@@ -320,11 +315,10 @@ class CalibrationDriver(BaseDriver):
         )
 
     @action("Forget accumulated detections.")
-    def clear(self) -> Ok:
+    def clear(self) -> None:
         with self._lock:
             self._detections.clear()
         self.emit("status", {"stage": "cleared", "message": "accumulated detections cleared"})
-        return Ok()
 
     @action("Render an ArUco marker as a PNG. Accepts {id, size} or a bare id.")
     def render_marker(self, params: RenderMarkerParams | int) -> MarkerImage:

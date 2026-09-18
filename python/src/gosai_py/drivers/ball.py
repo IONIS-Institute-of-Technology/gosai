@@ -61,7 +61,7 @@ from gosai_py.clock import now_ms
 from gosai_py.driver import BaseDriver, DriverContext, Event, action
 from gosai_py.frames import capture_timing, latency_ms
 from gosai_py.geometry import homography
-from gosai_py.payloads import CaptureMs, EpochMs, FpsPayload, Matrix3x3, Ok, Size, SizeResult
+from gosai_py.payloads import CaptureMs, EpochMs, FpsPayload, Matrix3x3, Size, SizeResult
 from gosai_py.runtime import create_onnx_session
 from gosai_py.runtime.models import Model, resolve_model
 from gosai_py.smoothing import lerp
@@ -411,9 +411,8 @@ class BallDriver(BaseDriver):
         self.set_runtime_info(dict(info))
 
     @action("Set the camera->output homography (9 values, row-major).")
-    def set_homography(self, matrix: Matrix3x3) -> Ok:
+    def set_homography(self, matrix: Matrix3x3) -> None:
         self._homography = homography.to_matrix(matrix)
-        return Ok()
 
     @action("Set the output size balls are kept within once a homography is set.")
     def set_output_size(self, size: Size) -> SizeResult:

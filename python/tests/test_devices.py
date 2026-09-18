@@ -33,7 +33,6 @@ def test_bridge_lists_devices(make_bridge: BridgeFactory, monkeypatch: pytest.Mo
 
     assert collector.result("c")["data"] == {"devices": [{"index": 2, "label": "Cam"}]}
     assert collector.result("a")["data"] == {
-        "ok": True,
         "microphones": [{"index": 1, "label": "Mic", "is_default": True}],
         "speakers": [{"index": 0, "label": "Speakers", "is_default": False}],
     }

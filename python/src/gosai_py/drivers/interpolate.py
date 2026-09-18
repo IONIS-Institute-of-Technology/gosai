@@ -22,7 +22,6 @@ import msgspec
 from msgspec import Meta
 
 from gosai_py.driver import BaseDriver, DriverContext, Event, action
-from gosai_py.payloads import Ok
 from gosai_py.smoothing import lerp
 
 JOB_JOIN_TIMEOUT_S = 1.0
@@ -38,7 +37,6 @@ class InterpolateParams(msgspec.Struct, kw_only=True):
 
 
 class InterpolateResult(msgspec.Struct, kw_only=True):
-    ok: bool = True
     name: str
 
 
@@ -83,13 +81,12 @@ class InterpolateDriver(BaseDriver):
         return InterpolateResult(name=params.name)
 
     @action("Forget the last value of one stream, or of every stream when null.")
-    def reset(self, name: str | None) -> Ok:
+    def reset(self, name: str | None) -> None:
         with self._lock:
             if name is None:
                 self._previous.clear()
             else:
                 self._previous.pop(name, None)
-        return Ok()
 
     def cleanup(self) -> None:
         with self._lock:

@@ -150,7 +150,6 @@ class CaptureParams(msgspec.Struct, kw_only=True):
 
 
 class CaptureResult(msgspec.Struct, kw_only=True):
-    ok: bool = True
     samples: int
     landmark: int
     visibility: float
@@ -161,7 +160,6 @@ class SolveParams(msgspec.Struct, kw_only=True):
 
 
 class SolveResult(msgspec.Struct, kw_only=True):
-    ok: bool = True
     tilt_deg: float
     scale: float
     affine: list[float]
@@ -173,7 +171,6 @@ class SolveResult(msgspec.Struct, kw_only=True):
 
 
 class ClearResult(msgspec.Struct, kw_only=True):
-    ok: bool = True
     samples: int
 
 

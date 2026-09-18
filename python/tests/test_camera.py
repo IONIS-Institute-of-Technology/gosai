@@ -114,7 +114,6 @@ def test_list_formats_probes_a_free_device(cameras: FakeCameras) -> None:
     )
 
     assert result == {
-        "ok": True,
         "device": 1,
         "formats": [{"width": 640, "height": 480, "fps": [24, 30, 60]}],
         "in_use": False,

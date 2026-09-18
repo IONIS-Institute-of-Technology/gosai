@@ -68,11 +68,14 @@ def test_emits_balls_with_their_diameter(driver: tuple[BallDriver, RecordingCont
 
 def test_homography_warps_positions_and_sizes(driver: tuple[BallDriver, RecordingContext]) -> None:
     instance, context = driver
-    assert check_result(
-        BallDriver,
-        "set_homography",
-        instance.execute("set_homography", [2, 0, 0, 0, 2, 0, 0, 0, 1]),
-    ) == {"ok": True}
+    assert (
+        check_result(
+            BallDriver,
+            "set_homography",
+            instance.execute("set_homography", [2, 0, 0, 0, 2, 0, 0, 0, 1]),
+        )
+        is None
+    )
     check_result(
         BallDriver,
         "set_output_size",

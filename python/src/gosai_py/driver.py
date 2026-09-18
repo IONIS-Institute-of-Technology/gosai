@@ -26,7 +26,9 @@ Node as JSON Schema (see `gosai_py.schemas`):
 - `@action(description)` on a method makes it an action named after the
   method. The annotation of its only parameter is the type of `data`, decoded
   with `msgspec.convert` before the call; a method without a parameter takes
-  no data. The return annotation is the result type.
+  no data. The return annotation is the result type. An action with nothing
+  to report returns None, which Node receives as null. Results carry no `ok`
+  flag: the bridge's reply already says whether the action succeeded.
 
 Timestamps in payloads are milliseconds since the Unix epoch, from
 `gosai_py.clock.now_ms()`, like the `ts` of the bridge's own messages.

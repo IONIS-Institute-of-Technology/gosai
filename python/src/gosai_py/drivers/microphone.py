@@ -63,7 +63,6 @@ class InputDevice(msgspec.Struct, kw_only=True):
 
 
 class InputDevices(msgspec.Struct, kw_only=True):
-    ok: bool = True
     default_input: int | None
     devices: list[InputDevice]
 

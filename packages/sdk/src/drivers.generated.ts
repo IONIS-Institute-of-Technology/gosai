@@ -35,14 +35,7 @@ export declare namespace DriverTypes {
       height: number;
     }
 
-    export interface Ok {
-      /** @default true */
-      ok: boolean;
-    }
-
     export interface SizeResult {
-      /** @default true */
-      ok: boolean;
       width: number;
       height: number;
     }
@@ -158,8 +151,6 @@ export declare namespace DriverTypes {
     }
 
     export interface ComputeResult {
-      /** @default true */
-      ok: boolean;
       matrix: number[];
       inverse: number[];
       surface_matrix: number[] | null;
@@ -175,22 +166,13 @@ export declare namespace DriverTypes {
       reprojection_error_max: number;
     }
 
-    export interface Ok {
-      /** @default true */
-      ok: boolean;
-    }
-
     export interface MarkerImage {
-      /** @default true */
-      ok: boolean;
       id: number;
       size: number;
       png_base64: string;
     }
 
     export interface LatestFrame {
-      /** @default true */
-      ok: boolean;
       jpeg_base64: string;
       /** @default null */
       width: number | null;
@@ -204,15 +186,11 @@ export declare namespace DriverTypes {
     }
 
     export interface ReprojectedPoint {
-      /** @default true */
-      ok: boolean;
       x: number;
       y: number;
     }
 
     export interface ReprojectedPoints {
-      /** @default true */
-      ok: boolean;
       points: (null | Point)[];
     }
   }
@@ -295,8 +273,6 @@ export declare namespace DriverTypes {
     }
 
     export interface CameraFormats {
-      /** @default true */
-      ok: boolean;
       device: number;
       formats: CameraFormat[];
       /** @default false */
@@ -379,15 +355,11 @@ export declare namespace DriverTypes {
     }
 
     export interface HomographyResult {
-      /** @default true */
-      ok: boolean;
       /** @default false */
       cleared: boolean;
     }
 
     export interface SizeResult {
-      /** @default true */
-      ok: boolean;
       width: number;
       height: number;
     }
@@ -440,14 +412,7 @@ export declare namespace DriverTypes {
     }
 
     export interface InterpolateResult {
-      /** @default true */
-      ok: boolean;
       name: string;
-    }
-
-    export interface Ok {
-      /** @default true */
-      ok: boolean;
     }
   }
 
@@ -479,8 +444,6 @@ export declare namespace DriverTypes {
     }
 
     export interface InputDevices {
-      /** @default true */
-      ok: boolean;
       default_input: number | null;
       devices: InputDevice[];
     }
@@ -630,16 +593,12 @@ export declare namespace DriverTypes {
     }
 
     export interface CaptureResult {
-      /** @default true */
-      ok: boolean;
       samples: number;
       landmark: number;
       visibility: number;
     }
 
     export interface SolveResult {
-      /** @default true */
-      ok: boolean;
       tilt_deg: number;
       scale: number;
       affine: number[];
@@ -651,8 +610,6 @@ export declare namespace DriverTypes {
     }
 
     export interface ClearResult {
-      /** @default true */
-      ok: boolean;
       samples: number;
     }
   }
@@ -662,11 +619,6 @@ export declare namespace DriverTypes {
     export interface SignPayload {
       guessed_sign: string;
       probability: number;
-    }
-
-    export interface Ok {
-      /** @default true */
-      ok: boolean;
     }
   }
 
@@ -692,20 +644,11 @@ export declare namespace DriverTypes {
     }
 
     export interface PlayResult {
-      /** @default true */
-      ok: boolean;
       queued: number;
       queued_samples: number;
     }
 
-    export interface Ok {
-      /** @default true */
-      ok: boolean;
-    }
-
     export interface OutputDevices {
-      /** @default true */
-      ok: boolean;
       default_output: number | null;
       devices: OutputDevice[];
     }
@@ -747,14 +690,7 @@ export declare namespace DriverTypes {
       is_speech: boolean;
       /** Milliseconds since the Unix epoch. */
       ts: number;
-      /** @default true */
-      ok: boolean;
       scores: number[];
-    }
-
-    export interface Ok {
-      /** @default true */
-      ok: boolean;
     }
   }
 
@@ -775,19 +711,8 @@ export declare namespace DriverTypes {
       samples?: (number | number[])[] | null;
     }
 
-    export interface TranscribeResult {
-      transcription: string;
-      audio_duration_s: number;
-      transcription_duration_s: number;
-      /** Milliseconds since the Unix epoch. */
-      ts: number;
-      /** @default true */
-      ok: boolean;
-    }
-
     export interface ModelResult {
       model: string;
-      ok: boolean;
     }
   }
 }
@@ -807,7 +732,7 @@ export interface BuiltinDrivers {
       /** Set the camera->output homography (9 values, row-major). */
       set_homography: {
         params: number[];
-        result: DriverTypes.ball.Ok;
+        result: null;
       };
       /** Set the output size balls are kept within once a homography is set. */
       set_output_size: {
@@ -871,7 +796,7 @@ export interface BuiltinDrivers {
       /** Forget accumulated detections. */
       clear: {
         params: undefined;
-        result: DriverTypes.calibration.Ok;
+        result: null;
       };
       /** Render an ArUco marker as a PNG. Accepts {id, size} or a bare id. */
       render_marker: {
@@ -1036,7 +961,7 @@ export interface BuiltinDrivers {
       /** Forget the last value of one stream, or of every stream when null. */
       reset: {
         params: string | null;
-        result: DriverTypes.interpolate.Ok;
+        result: null;
       };
     };
   };
@@ -1135,7 +1060,7 @@ export interface BuiltinDrivers {
       /** Register the sign labels, in model output order. Selects slr_<count>.onnx. */
       set_actions: {
         params: string[];
-        result: DriverTypes.slr.Ok;
+        result: null;
       };
     };
   };
@@ -1157,7 +1082,7 @@ export interface BuiltinDrivers {
       /** Drop queued audio. */
       clear: {
         params: undefined;
-        result: DriverTypes.speaker.Ok;
+        result: null;
       };
       /** List output devices. */
       list_devices: {
@@ -1192,7 +1117,7 @@ export interface BuiltinDrivers {
       /** Clear the model state and the buffered stream. */
       reset: {
         params: undefined;
-        result: DriverTypes.speech_activity_detection.Ok;
+        result: null;
       };
     };
   };
@@ -1207,7 +1132,7 @@ export interface BuiltinDrivers {
       /** Transcribe 16 kHz mono audio: a sample list, or {audio_buffer} / {samples}. */
       transcribe: {
         params: (number | number[])[] | DriverTypes.speech_to_text.TranscribeParams;
-        result: DriverTypes.speech_to_text.TranscribeResult;
+        result: DriverTypes.speech_to_text.TranscriptionPayload;
       };
       /** Load another Whisper model, such as `small.en` or `large-v3`. */
       set_model: {

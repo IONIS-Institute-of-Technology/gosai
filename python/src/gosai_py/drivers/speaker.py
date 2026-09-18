@@ -28,7 +28,7 @@ from gosai_py import devices
 from gosai_py.clock import now_ms
 from gosai_py.driver import BaseDriver, DriverContext, Event, action
 from gosai_py.drivers.microphone import AudioSettingsPayload, DeviceResult, SamplerateResult
-from gosai_py.payloads import AudioSamples, EpochMs, Ok, mono_samples
+from gosai_py.payloads import AudioSamples, EpochMs, mono_samples
 
 DEFAULT_SAMPLERATE = 44_100
 BLOCKSIZE = 1024
@@ -45,7 +45,6 @@ class UnderrunPayload(msgspec.Struct, kw_only=True):
 
 
 class PlayResult(msgspec.Struct, kw_only=True):
-    ok: bool = True
     # Pending audio in blocks of 1024 samples, rounded up.
     queued: int
     queued_samples: int
@@ -59,7 +58,6 @@ class OutputDevice(msgspec.Struct, kw_only=True):
 
 
 class OutputDevices(msgspec.Struct, kw_only=True):
-    ok: bool = True
     default_output: int | None
     devices: list[OutputDevice]
 
@@ -144,9 +142,8 @@ class SpeakerDriver(BaseDriver):
         return PlayResult(queued=math.ceil(pending / BLOCKSIZE), queued_samples=pending)
 
     @action("Drop queued audio.")
-    def clear(self) -> Ok:
+    def clear(self) -> None:
         self._buffer.clear()
-        return Ok()
 
     @action("List output devices.")
     def list_devices(self) -> OutputDevices:

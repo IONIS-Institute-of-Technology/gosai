@@ -105,7 +105,6 @@ class CameraFormat(msgspec.Struct, kw_only=True):
 
 
 class CameraFormats(msgspec.Struct, kw_only=True):
-    ok: bool = True
     device: int
     formats: list[CameraFormat]
     # True when a camera instance holds the device and the list may be partial.

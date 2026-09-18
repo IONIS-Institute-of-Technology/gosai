@@ -26,6 +26,14 @@ Breaking:
   like `Date.now()`. They were seconds. This covers every `ts` and
   `capture_ts`, `heartbeat.tick`'s `now`, and `camera.frame`'s `capture_perf`,
   which stays a clock of the bridge process but now counts milliseconds too.
+- Built-in driver results no longer carry `ok: true`. A failed action already
+  rejects. Actions with nothing to report resolve with `null`:
+  `ball.set_homography`, `calibration.clear`, `interpolate.reset`,
+  `slr.set_actions`, `speaker.clear` and `speech_activity_detection.reset`.
+  The `DriverTypes.<driver>.Ok` types are gone, and
+  `speech_to_text.transcribe` returns
+  `DriverTypes.speech_to_text.TranscriptionPayload` instead of
+  `TranscribeResult`.
 
 Added:
 

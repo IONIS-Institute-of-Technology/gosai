@@ -29,7 +29,6 @@ import msgspec
 import numpy as np
 
 from gosai_py.driver import BaseDriver, DriverContext, Event, action
-from gosai_py.payloads import Ok
 from gosai_py.runtime import create_onnx_session
 from gosai_py.runtime.models import Model, resolve_model
 
@@ -140,9 +139,8 @@ class SLRDriver(BaseDriver):
         self._frames: deque[list[float]] = deque(maxlen=SEQUENCE_LENGTH)
 
     @action("Register the sign labels, in model output order. Selects slr_<count>.onnx.")
-    def set_actions(self, labels: list[str]) -> Ok:
+    def set_actions(self, labels: list[str]) -> None:
         self._load_model(labels)
-        return Ok()
 
     def _load_model(self, actions: list[str]) -> None:
         model = MODELS.get(len(actions))

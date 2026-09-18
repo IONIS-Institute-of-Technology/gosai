@@ -69,7 +69,7 @@ def test_slr_model_classifies_a_window_on_cpu(
     driver = slr.SLRDriver(context)
     labels = [f"sign_{i}" for i in range(actions)]
 
-    assert driver.execute("set_actions", labels) == {"ok": True}
+    assert driver.execute("set_actions", labels) is None
     assert driver.runtime_info() is not None
     frame = {
         "body_pose": [[320.0, 240.0, 1.0]] * 33,

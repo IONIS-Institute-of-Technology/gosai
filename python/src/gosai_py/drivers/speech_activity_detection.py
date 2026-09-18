@@ -23,7 +23,7 @@ import onnxruntime as ort
 
 from gosai_py.clock import now_ms
 from gosai_py.driver import BaseDriver, DriverContext, Event, action
-from gosai_py.payloads import AudioSamples, EpochMs, Ok, mono_samples
+from gosai_py.payloads import AudioSamples, EpochMs, mono_samples
 from gosai_py.runtime import RuntimeInfo
 from gosai_py.runtime.models import Model, resolve_model
 
@@ -104,7 +104,6 @@ class PredictParams(msgspec.Struct, kw_only=True):
 
 
 class PredictResult(ActivityPayload, kw_only=True):
-    ok: bool = True
     # One score per 512-sample window; `confidence` is the last.
     scores: list[float]
 
@@ -168,9 +167,8 @@ class SpeechActivityDriver(BaseDriver):
         return PredictResult(**payload, scores=scores)
 
     @action("Clear the model state and the buffered stream.")
-    def reset(self) -> Ok:
+    def reset(self) -> None:
         self._require_model().reset()
-        return Ok()
 
     def on_data(self, driver: str, event: str, data: Any) -> None:
         if self._model is None or not isinstance(data, dict):
