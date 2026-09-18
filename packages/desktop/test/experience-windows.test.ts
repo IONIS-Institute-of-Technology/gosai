@@ -6,6 +6,7 @@ import {
   type ExperienceWindowHost,
   type ExperienceWindowServer,
 } from '../src/main/experience-windows.js';
+import { KioskLifecycle, type KioskExit } from '../src/main/kiosk-lifecycle.js';
 import type { OpenAppHostOptions } from '../src/main/windows.js';
 
 class FakeServer {
@@ -49,8 +50,16 @@ class FakeServer {
     experienceSlug: string,
     state: RunningExperience['state'],
     startedAs: RunningExperience['startedAs'] = 'request',
+    error?: string,
   ): void {
-    const payload: RunningExperience = { appSlug, experienceSlug, state, startedAt: 1, startedAs };
+    const payload: RunningExperience = {
+      appSlug,
+      experienceSlug,
+      state,
+      startedAt: 1,
+      startedAs,
+      ...(error !== undefined ? { error } : {}),
+    };
     for (const listener of this.listeners.get('experience:state-changed') ?? []) listener(payload);
   }
 
@@ -143,6 +152,28 @@ describe('ExperienceWindows', () => {
     host.fake.state('pool', 'main', 'crashed');
     expect(host.closed).toEqual(['pool/main']);
     expect(host.windows).toEqual([]);
+  });
+
+  test('a crash the window reported closes it, and a kiosk quits with 1 and shows why', async () => {
+    const { host } = setup();
+    const exits: KioskExit[] = [];
+    const kiosk = new KioskLifecycle({ appSlug: 'pool', graceMs: 0, exit: (e) => exits.push(e) });
+    host.fake.on('experience:state-changed', (e) => kiosk.onExperience(e as RunningExperience));
+    host.fake.state('pool', 'main', 'starting');
+    host.fake.state('pool', 'main', 'running');
+    kiosk.started();
+    await settle();
+    expect(host.windows).toHaveLength(1);
+
+    // What the server sends after the window's runtime stopped with experience:stop and an error.
+    const error = 'The experience stopped after 60 consecutive render errors: boom';
+    host.fake.state('pool', 'main', 'stopping');
+    host.fake.state('pool', 'main', 'crashed', 'request', error);
+    expect(host.closed).toEqual(['pool/main']);
+    await settle();
+    expect(exits).toEqual([
+      { code: 1, reason: 'main crashed and no experience started after it', error },
+    ]);
   });
 
   test("opens on the app's display in its mode, then the global display", async () => {

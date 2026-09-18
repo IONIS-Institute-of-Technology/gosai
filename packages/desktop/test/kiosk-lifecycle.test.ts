@@ -20,7 +20,8 @@ class ManualTimers implements KioskTimers {
   }
 }
 
-function setup(): {
+/** A kiosk whose own start already went through, unless `starting`. */
+function setup({ starting = false } = {}): {
   lifecycle: KioskLifecycle;
   timers: ManualTimers;
   exits: KioskExit[];
@@ -33,6 +34,7 @@ function setup(): {
   const timers = new ManualTimers();
   const exits: KioskExit[] = [];
   const lifecycle = new KioskLifecycle({ appSlug: 'mirror', exit: (e) => exits.push(e), timers });
+  if (!starting) lifecycle.started();
   return {
     lifecycle,
     timers,
@@ -78,6 +80,56 @@ describe('KioskLifecycle', () => {
     state('main', 'crashed');
     timers.fire();
     expect(exits).toEqual([{ code: 1, reason: 'main crashed and no experience started after it' }]);
+  });
+
+  test('passes on the error a crash reported', () => {
+    const { state, timers, exits } = setup();
+    const error = 'The experience stopped after 60 consecutive render errors: boom';
+    state('main', 'running');
+    state('main', 'stopping');
+    state('main', 'crashed', { error });
+    timers.fire();
+    expect(exits).toEqual([
+      { code: 1, reason: 'main crashed and no experience started after it', error },
+    ]);
+  });
+
+  test('ignores failed attempts while its own start retries, then quits with 1', () => {
+    const { lifecycle, state, timers, exits } = setup({ starting: true });
+    const error = 'Python drivers are unavailable: Python is disabled (GOSAI_PYTHON=0)';
+    for (let attempt = 0; attempt < 3; attempt++) {
+      state('main', 'starting');
+      state('main', 'crashed', { error });
+    }
+    expect(timers.pending.size).toBe(0);
+    lifecycle.startFailed({ experienceSlug: 'main', error });
+    expect(exits).toEqual([{ code: 1, reason: 'main could not start', error }]);
+    timers.fire();
+    expect(exits).toHaveLength(1);
+  });
+
+  test('a retry that works keeps the kiosk running', () => {
+    const { lifecycle, state, timers, exits } = setup({ starting: true });
+    state('main', 'starting');
+    state('main', 'crashed', { error: 'Python bridge did not become ready in time' });
+    state('main', 'starting');
+    state('main', 'running');
+    lifecycle.started();
+    timers.fire();
+    expect(exits).toEqual([]);
+  });
+
+  test('counts a crash that came before its start settled', () => {
+    const { lifecycle, state, timers, exits } = setup({ starting: true });
+    state('main', 'starting');
+    state('main', 'running');
+    state('main', 'crashed', { error: 'boom' });
+    expect(timers.pending.size).toBe(0);
+    lifecycle.started();
+    timers.fire();
+    expect(exits).toEqual([
+      { code: 1, reason: 'main crashed and no experience started after it', error: 'boom' },
+    ]);
   });
 
   test('keeps waiting while another requested experience runs', () => {

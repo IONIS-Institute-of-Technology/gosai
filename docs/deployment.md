@@ -167,9 +167,13 @@ At launch the shell:
 
 Closing the window quits the kiosk with exit code 0. So does the app stopping
 all its experiences without starting another within 3 seconds; when the last
-one crashed instead, the kiosk exits with code 1. When the server or a
-window's renderer process dies, the kiosk exits with code 1. Artifacts land
-in `packages/desktop/release/kiosk/<slug>/`.
+one crashed instead, the kiosk exits with code 1. An experience crashes when
+its start fails, for example because the Python drivers it needs are
+unavailable, or when its window stops it after repeated render errors. When
+the kiosk's experience still can't start after three attempts, the kiosk
+exits with code 1 too. In both cases it shows why for 15 seconds first. When
+the server or a window's renderer process dies, the kiosk exits with code 1.
+Artifacts land in `packages/desktop/release/kiosk/<slug>/`.
 
 ### Running and configuring on the kiosk machine
 
@@ -295,4 +299,4 @@ listens on `127.0.0.1` with an ephemeral port.
 | "GOSAI started with problems": Python drivers        | The first-run `uv` install failed, usually without network. Relaunch once online. Logs are in `<GOSAI_HOME>/logs/` and on the terminal that started it. |
 | Launching GOSAI again does nothing                   | Another instance with the same data directory is running; it gets focus instead.                                                                        |
 | App install fails with "git: command not found"      | `git` is not in PATH for the GUI process.                                                                                                               |
-| A kiosk restarts in a loop under systemd with exit 1 | Its server or renderer keeps dying, or its settings are invalid. The kiosk shows the error on screen for 15 seconds before exiting.                     |
+| A kiosk restarts in a loop under systemd with exit 1 | Its server or renderer keeps dying, its app crashes or fails to start, or its settings are invalid. It shows the error for 15 seconds before exiting.   |

@@ -103,8 +103,7 @@ export async function showBootFailure(
   const message = errorMessage(error);
   console.error(`[gosai] boot failed: ${message}`);
   if (mode === 'kiosk') {
-    splash.showError('GOSAI could not start', message);
-    await sleep(KIOSK_ERROR_MS);
+    await showKioskError(splash, 'GOSAI could not start', message);
     return;
   }
   splash.close();
@@ -115,6 +114,16 @@ export async function showBootFailure(
     detail: message,
     buttons: ['Quit'],
   });
+}
+
+/** Shows an error a kiosk exits with on the splash, long enough to read it. */
+export async function showKioskError(
+  splash: SplashWindow,
+  title: string,
+  message: string,
+): Promise<void> {
+  splash.showError(title, message);
+  await sleep(KIOSK_ERROR_MS);
 }
 
 export async function showBootWarnings(
