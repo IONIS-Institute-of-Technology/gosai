@@ -1034,10 +1034,10 @@ Types: `DriverTypes.speech_activity_detection`.
 
 ### Actions
 
-| Action    | Params                                    | Result          | Description                                                        |
-| --------- | ----------------------------------------- | --------------- | ------------------------------------------------------------------ |
-| `predict` | `(number \| number[])[] \| PredictParams` | `PredictResult` | Score 16 kHz mono audio whose length is a multiple of 512 samples. |
-| `reset`   | none                                      | `null`          | Clear the model state and the buffered stream.                     |
+| Action    | Params                                    | Result          | Description                                                                                                                            |
+| --------- | ----------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `predict` | `(number \| number[])[] \| PredictParams` | `PredictResult` | Score 16 kHz mono audio whose length is a multiple of 512 samples, from a fresh state. Leaves the live stream alone and emits nothing. |
+| `reset`   | none                                      | `null`          | Clear the live stream's model state and buffered audio.                                                                                |
 
 ### Types
 

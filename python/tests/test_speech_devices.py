@@ -161,12 +161,42 @@ def test_vad_predict_and_reset(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert result["scores"] == pytest.approx([0.25, 0.25])
     assert result["confidence"] == pytest.approx(0.25) and result["is_speech"] is False
-    assert len(context.emitted("activity")) == 2
+    assert not context.emitted("activity")
     with pytest.raises(ValueError, match="multiple of 512"):
         driver.execute("predict", [0.0] * 600)
+
+    driver.on_data("microphone", "audio_stream", _block(np.ones(700, dtype=np.float32)))
     assert driver.execute("reset", None) is None
-    driver.execute("predict", [0.0] * 512)
-    assert not session.calls[-1]["input"][:, : SileroVad.CONTEXT].any()
+    driver.on_data("microphone", "audio_stream", _block(np.full(512, 2.0, dtype=np.float32)))
+    # The reset dropped the live stream's state, context and 188 buffered samples.
+    last = session.calls[-1]
+    assert not last["state"].any() and not last["input"][:, : SileroVad.CONTEXT].any()
+    assert np.all(last["input"][0, SileroVad.CONTEXT :] == 2.0)
+
+
+def test_vad_predict_leaves_the_live_stream_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = FakeSileroSession()
+    driver, context = _vad_driver(monkeypatch, session)
+    live = np.ones(1024, dtype=np.float32)
+    # One window scored, 188 samples wait for the next block.
+    driver.on_data("microphone", "audio_stream", _block(live[:700]))
+    live_calls = len(session.calls)
+
+    for _ in range(2):
+        driver.execute("predict", [0.25] * 1024)
+        first, second = session.calls[-2:]
+        # Each call starts from a fresh state, then carries it across its windows.
+        assert not first["state"].any() and not first["input"][:, : SileroVad.CONTEXT].any()
+        assert np.array_equal(second["state"], first["state"] + 1)
+
+    driver.on_data("microphone", "audio_stream", _block(live[700:]))
+
+    # The live stream continues from its own state and context, and only it emits.
+    after = session.calls[-1]
+    assert np.array_equal(after["state"], session.calls[live_calls - 1]["state"] + 1)
+    assert np.all(after["input"][0] == 1.0)
+    assert len(context.emitted("activity")) == 2
+    check_events(SpeechActivityDriver, context)
 
 
 def test_vad_state_is_safe_across_threads() -> None:

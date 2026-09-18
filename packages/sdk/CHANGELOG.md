@@ -42,6 +42,9 @@ Breaking:
 - `speaker.underrun` comes at most once a second, with `count`, the number of
   underruns since the previous event. It used to come once per starved audio
   block.
+- `speech_activity_detection.predict` scores from a fresh model state on each
+  call and no longer emits `activity`, so offline audio can't disturb the live
+  microphone stream. `reset` clears only the live stream's state.
 
 Added:
 

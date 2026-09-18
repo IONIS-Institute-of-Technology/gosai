@@ -1111,12 +1111,12 @@ export interface BuiltinDrivers {
       activity: DriverTypes.speech_activity_detection.ActivityPayload;
     };
     actions: {
-      /** Score 16 kHz mono audio whose length is a multiple of 512 samples. */
+      /** Score 16 kHz mono audio whose length is a multiple of 512 samples, from a fresh state. Leaves the live stream alone and emits nothing. */
       predict: {
         params: (number | number[])[] | DriverTypes.speech_activity_detection.PredictParams;
         result: DriverTypes.speech_activity_detection.PredictResult;
       };
-      /** Clear the model state and the buffered stream. */
+      /** Clear the live stream's model state and buffered audio. */
       reset: {
         params: undefined;
         result: null;
