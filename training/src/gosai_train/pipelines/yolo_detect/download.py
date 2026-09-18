@@ -75,7 +75,9 @@ def run(ctx: ModelContext, args: Namespace) -> None:
                 f"{dest} holds version {have}, but datasets.yaml pins {requested}. "
                 "Delete it (or run `gosai-train clean`) and download again."
             )
-        console.print(f"[yellow]skip[/] {name}: version {have if have is not None else '?'} already at {dest}")
+        console.print(
+            f"[yellow]skip[/] {name}: version {have if have is not None else '?'} already at {dest}"
+        )
 
     if not missing:
         console.print(f"[green]done[/] datasets in {ctx.raw_dir}")
@@ -100,7 +102,9 @@ def run(ctx: ModelContext, args: Namespace) -> None:
         version = newest_version(project) if requested == "latest" else int(requested)
         if requested == "latest":
             _warn_unpinned(name, version)
-        console.print(f"[cyan]download[/] {name} ({entry['workspace']}/{entry['project']}) version {version}")
+        console.print(
+            f"[cyan]download[/] {name} ({entry['workspace']}/{entry['project']}) version {version}"
+        )
         project.version(version).download(cfg["format"], location=str(dest))
         (dest / VERSION_FILE).write_text(
             json.dumps(

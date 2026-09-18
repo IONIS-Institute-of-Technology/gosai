@@ -70,9 +70,9 @@ def _dedup(samples: list[Sample]) -> tuple[list[Sample], dict[str, int]]:
             continue
         source_hashes = per_source.setdefault(sample.prefix, [])
         if source_hashes:
-            distances = np.unpackbits(
-                np.bitwise_xor(np.asarray(source_hashes), h), axis=1
-            ).sum(axis=1)
+            distances = np.unpackbits(np.bitwise_xor(np.asarray(source_hashes), h), axis=1).sum(
+                axis=1
+            )
             if int(distances.min()) <= _DUP_THRESHOLD_SAME_SOURCE:
                 dropped[sample.prefix] = dropped.get(sample.prefix, 0) + 1
                 continue
@@ -98,8 +98,9 @@ def _motion_blur_kernel(length: int, angle_deg: float):
     return kernel / total if total > 0 else None
 
 
-def _expand_boxes(lines: list[str], length: int, angle_deg: float,
-                  img_w: int, img_h: int) -> list[str]:
+def _expand_boxes(
+    lines: list[str], length: int, angle_deg: float, img_w: int, img_h: int
+) -> list[str]:
     """Grow boxes along the blur axis (the smear spreads the ball that far)."""
     grow_x = length * abs(math.cos(math.radians(angle_deg))) / max(img_w, 1)
     grow_y = length * abs(math.sin(math.radians(angle_deg))) / max(img_h, 1)
@@ -123,9 +124,7 @@ def _synthesize_motion_blur(ctx: ModelContext, positives: list[Sample], cfg: dic
     kernel_range = cfg.get("kernel", [9, 25])
     k_min, k_max = int(kernel_range[0]), int(kernel_range[1])
 
-    train_pos = sorted(
-        (s for s in positives if s.split == "train"), key=lambda s: s.sort_key
-    )
+    train_pos = sorted((s for s in positives if s.split == "train"), key=lambda s: s.sort_key)
     chosen = train_pos[: int(len(train_pos) * fraction)]
     rng = random.Random(int(cfg.get("seed", 0)))
 
@@ -179,9 +178,7 @@ def _print_stats(samples: list[Sample], dup_dropped: dict[str, int], blurred: in
     for s in samples:
         bucket = per_split.setdefault(s.split, {"pos": 0, "neg": 0})
         bucket["pos" if s.is_positive else "neg"] += 1
-        row = per_source.setdefault(
-            s.prefix, {"pos": 0, "neg": 0, "boxes": 0, "sides": []}
-        )
+        row = per_source.setdefault(s.prefix, {"pos": 0, "neg": 0, "boxes": 0, "sides": []})
         if s.is_positive:
             row["pos"] += 1
             row["boxes"] += len(s.label_lines)
@@ -199,8 +196,12 @@ def _print_stats(samples: list[Sample], dup_dropped: dict[str, int], blurred: in
         sides = sorted(row["sides"])
         median = f"{sides[len(sides) // 2] * 100:.1f}%" if sides else "-"
         table.add_row(
-            prefix, str(row["pos"]), str(row["neg"]), str(row["boxes"]),
-            median, str(dup_dropped.get(prefix, 0)),
+            prefix,
+            str(row["pos"]),
+            str(row["neg"]),
+            str(row["boxes"]),
+            median,
+            str(dup_dropped.get(prefix, 0)),
         )
     console.print(table)
     for split in ("train", "val", "test"):

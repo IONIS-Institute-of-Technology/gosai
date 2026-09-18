@@ -95,7 +95,9 @@ def test_cublas_probe_reports_a_missing_library(monkeypatch: pytest.MonkeyPatch)
     assert speech_to_text.cublas_12_loadable() is False
 
 
-def _vad_driver(monkeypatch: pytest.MonkeyPatch, session: Any) -> tuple[SpeechActivityDriver, RecordingContext]:
+def _vad_driver(
+    monkeypatch: pytest.MonkeyPatch, session: Any
+) -> tuple[SpeechActivityDriver, RecordingContext]:
     context = RecordingContext()
     driver = SpeechActivityDriver(context)
     driver._model = SileroVad(session)
@@ -106,14 +108,20 @@ def _block(samples: np.ndarray) -> dict[str, Any]:
     return {"_block": samples.reshape(-1, 1), "samplerate": 16_000}
 
 
-def test_vad_scores_microphone_blocks_in_512_sample_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_vad_scores_microphone_blocks_in_512_sample_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     session = FakeSileroSession()
     driver, context = _vad_driver(monkeypatch, session)
     audio = np.arange(1024 + 700 + 700, dtype=np.float32)
 
     driver.on_data("microphone", "audio_stream", _block(audio[:1024]))
     driver.on_data("microphone", "audio_stream", _block(audio[1024:1724]))
-    driver.on_data("microphone", "audio_stream", {"block": audio[1724:].reshape(-1, 1).tolist(), "samplerate": 16_000})
+    driver.on_data(
+        "microphone",
+        "audio_stream",
+        {"block": audio[1724:].reshape(-1, 1).tolist(), "samplerate": 16_000},
+    )
 
     # 2424 samples make four full windows; 376 wait for the next block.
     windows = [call["input"][0, SileroVad.CONTEXT :] for call in session.calls]
@@ -130,7 +138,11 @@ def test_vad_resets_when_the_samplerate_changes(monkeypatch: pytest.MonkeyPatch)
     driver, context = _vad_driver(monkeypatch, session)
     driver.on_data("microphone", "audio_stream", _block(np.ones(700, dtype=np.float32)))
 
-    driver.on_data("microphone", "audio_stream", {"_block": np.ones((700, 1), np.float32), "samplerate": 44_100})
+    driver.on_data(
+        "microphone",
+        "audio_stream",
+        {"_block": np.ones((700, 1), np.float32), "samplerate": 44_100},
+    )
     driver.on_data("microphone", "audio_stream", _block(np.full(512, 2.0, dtype=np.float32)))
 
     assert any("44100 Hz" in message for _, message in context.logs)

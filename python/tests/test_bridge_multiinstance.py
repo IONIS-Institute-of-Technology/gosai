@@ -48,7 +48,9 @@ def _request(bridge: Any, collector: Any, req_id: str, **fields: Any) -> dict[st
 
 
 def _start(bridge: Any, collector: Any, req_id: str, instance: str, driver: str) -> None:
-    reply = _request(bridge, collector, req_id, type="start-driver", instance=instance, driver=driver)
+    reply = _request(
+        bridge, collector, req_id, type="start-driver", instance=instance, driver=driver
+    )
     assert reply["ok"], reply
 
 
@@ -68,7 +70,9 @@ def test_exclusive_driver_gets_one_instance_per_binding(make_bridge: BridgeFacto
     b = bridge._instances[("appB", "fakecam")].driver
     assert a is not b
 
-    assert _request(bridge, collector, "3", type="stop-driver", instance="appA", driver="fakecam")["ok"]
+    assert _request(bridge, collector, "3", type="stop-driver", instance="appA", driver="fakecam")[
+        "ok"
+    ]
     assert ("appA", "fakecam") not in bridge._instances
     assert ("appB", "fakecam") in bridge._instances
 
@@ -104,10 +108,26 @@ def test_subscriptions_are_idempotent_per_event(make_bridge: BridgeFactory) -> N
     _start(bridge, collector, "1", "shared", "fakespk")
     # Node reference-counts its own leases and sends one subscribe per event.
     for req_id in ("2", "3"):
-        _request(bridge, collector, req_id, type="subscribe", instance="shared", driver="fakespk", event="level")
+        _request(
+            bridge,
+            collector,
+            req_id,
+            type="subscribe",
+            instance="shared",
+            driver="fakespk",
+            event="level",
+        )
     assert ("shared", "fakespk", "level") in bridge._external_subscriptions
 
-    _request(bridge, collector, "4", type="unsubscribe", instance="shared", driver="fakespk", event="level")
+    _request(
+        bridge,
+        collector,
+        "4",
+        type="unsubscribe",
+        instance="shared",
+        driver="fakespk",
+        event="level",
+    )
     bridge._instances[("shared", "fakespk")].driver.emit("level", {"rms": 0.2})
     bridge._writer.close()
     assert _events(collector) == []
@@ -117,7 +137,9 @@ def test_dependencies_must_run_in_the_same_instance(make_bridge: BridgeFactory) 
     bridge, collector = make_bridge(DRIVERS)
     _start(bridge, collector, "1", "appB", "fakecam")
 
-    reply = _request(bridge, collector, "2", type="start-driver", instance="appA", driver="fakeproc")
+    reply = _request(
+        bridge, collector, "2", type="start-driver", instance="appA", driver="fakeproc"
+    )
     assert not reply["ok"]
     assert "needs fakecam running first" in reply["error"]
     assert ("appA", "fakeproc") not in bridge._instances
@@ -133,11 +155,20 @@ def test_get_data_and_execute_are_instance_scoped(make_bridge: BridgeFactory) ->
     bridge._instances[("appA", "fakecam")].driver.emit("frame", {"who": "A", "_frame": object()})
     bridge._instances[("appB", "fakecam")].driver.emit("frame", {"who": "B"})
 
-    result = _request(bridge, collector, "3", type="get-data", instance="appA", driver="fakecam", event="frame")
+    result = _request(
+        bridge, collector, "3", type="get-data", instance="appA", driver="fakecam", event="frame"
+    )
     assert result["data"] == {"who": "A"}
 
     result = _request(
-        bridge, collector, "4", type="execute", instance="appB", driver="fakecam", action="noop", data=7
+        bridge,
+        collector,
+        "4",
+        type="execute",
+        instance="appB",
+        driver="fakecam",
+        action="noop",
+        data=7,
     )
     assert result["ok"] is True
     assert result["data"] == {"echo": 7}

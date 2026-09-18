@@ -67,7 +67,7 @@ def run(ctx: ModelContext, args: Namespace) -> Path:
         # (CPU-only torch wheels, or an NVIDIA driver too old for the GPU).
         console.print(
             "[bold red]warning[/] no GPU detected, training on CPU will be 20-100x slower.\n"
-            "  Check: uv run python -c \"import torch; print(torch.__version__, torch.cuda.is_available())\"\n"
+            '  Check: uv run python -c "import torch; print(torch.__version__, torch.cuda.is_available())"\n'
             "  A '+cpu' torch on a CUDA machine means the wrong wheel is installed; re-run `uv sync`."
         )
 

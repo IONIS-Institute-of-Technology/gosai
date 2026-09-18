@@ -53,8 +53,13 @@ def run(ctx: ModelContext, args: Namespace) -> None:
     with paths_source("autolabel", images) as source:
         # nms=False runs the NMS-free end-to-end head, the one `export` ships.
         results = model.predict(
-            source=source, conf=args.conf, device=device, nms=False,
-            batch=1, stream=True, verbose=False,
+            source=source,
+            conf=args.conf,
+            device=device,
+            nms=False,
+            batch=1,
+            stream=True,
+            verbose=False,
         )
         for result in results:
             lines: list[str] = []
@@ -76,7 +81,9 @@ def run(ctx: ModelContext, args: Namespace) -> None:
                 draw_detections(img, drawn)
                 cv2.imwrite(str(ctx.custom_previews / f"{stem}.jpg"), img)
 
-    console.print(f"[green]done[/] wrote {labelled} label files ({boxes_total} boxes) to {ctx.custom_labels}")
+    console.print(
+        f"[green]done[/] wrote {labelled} label files ({boxes_total} boxes) to {ctx.custom_labels}"
+    )
     if args.preview:
         console.print(f"        previews in {ctx.custom_previews}")
     console.print(

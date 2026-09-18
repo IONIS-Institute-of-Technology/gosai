@@ -84,7 +84,11 @@ def _finger_extended(landmarks: list[Point], tip: int, pip: int, mcp: int) -> bo
     wrist than both the PIP and MCP joints (relative ordering along the
     finger direction)."""
     wrist = landmarks[WRIST]
-    return _dist(landmarks[tip], wrist) > _dist(landmarks[pip], wrist) > _dist(landmarks[mcp], wrist) * 0.9
+    return (
+        _dist(landmarks[tip], wrist)
+        > _dist(landmarks[pip], wrist)
+        > _dist(landmarks[mcp], wrist) * 0.9
+    )
 
 
 def _thumb_extended(landmarks: list[Point]) -> bool:

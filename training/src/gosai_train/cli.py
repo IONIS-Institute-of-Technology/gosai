@@ -27,7 +27,9 @@ def _add(subparsers, name: str, help_text: str) -> argparse.ArgumentParser:
 
 def _add_formats(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--formats", type=_formats, default="onnx",
+        "--formats",
+        type=_formats,
+        default="onnx",
         help="Comma-separated export formats: onnx,coreml,engine (default: %(default)s).",
     )
 
@@ -35,7 +37,9 @@ def _add_formats(parser: argparse.ArgumentParser) -> None:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="gosai-train", description="Train GOSAI driver models.")
     parser.add_argument(
-        "--model", "-m", default=None,
+        "--model",
+        "-m",
+        default=None,
         help="Model to operate on (a folder under training/models/). "
         "Required when there is more than one.",
     )
@@ -47,34 +51,75 @@ def _build_parser() -> argparse.ArgumentParser:
     _add(sub, "prepare", "Merge sources into a single-class dataset.")
 
     p_frames = _add(sub, "frames", "Extract frames from data/custom/videos.")
-    p_frames.add_argument("--step", type=_positive_int, default=15, help="Keep 1 of every N frames (default: %(default)s).")
+    p_frames.add_argument(
+        "--step",
+        type=_positive_int,
+        default=15,
+        help="Keep 1 of every N frames (default: %(default)s).",
+    )
 
     p_auto = _add(sub, "autolabel", "Auto-draft labels for data/custom/images.")
-    p_auto.add_argument("--weights", default=None, help="Model weights (default: latest best.pt, else a base COCO model).")
-    p_auto.add_argument("--conf", type=float, default=0.25, help="Detection confidence threshold (default: %(default)s).")
     p_auto.add_argument(
-        "--preview", action=argparse.BooleanOptionalAction, default=True,
+        "--weights",
+        default=None,
+        help="Model weights (default: latest best.pt, else a base COCO model).",
+    )
+    p_auto.add_argument(
+        "--conf",
+        type=float,
+        default=0.25,
+        help="Detection confidence threshold (default: %(default)s).",
+    )
+    p_auto.add_argument(
+        "--preview",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Write annotated preview JPEGs to data/custom/previews for review.",
     )
 
     _add(sub, "train", "Fine-tune the model on the merged dataset.")
 
     p_eval = _add(sub, "eval", "Evaluate weights on the test split, golden set, and FP rate.")
-    p_eval.add_argument("--weights", default=None, help="Weights to evaluate (default: latest best.pt).")
-    p_eval.add_argument("--conf", type=float, default=0.25, help="Confidence for the false-positive check (default: %(default)s).")
+    p_eval.add_argument(
+        "--weights", default=None, help="Weights to evaluate (default: latest best.pt)."
+    )
+    p_eval.add_argument(
+        "--conf",
+        type=float,
+        default=0.25,
+        help="Confidence for the false-positive check (default: %(default)s).",
+    )
 
-    p_mine = _add(sub, "mine", "Mine hard negatives: collect frames where the model fires, for review.")
-    p_mine.add_argument("--source", default=None, help="Videos/images to scan (default: data/custom/videos).")
+    p_mine = _add(
+        sub, "mine", "Mine hard negatives: collect frames where the model fires, for review."
+    )
+    p_mine.add_argument(
+        "--source", default=None, help="Videos/images to scan (default: data/custom/videos)."
+    )
     p_mine.add_argument("--weights", default=None, help="Model weights (default: latest best.pt).")
-    p_mine.add_argument("--conf", type=float, default=0.3, help="Detection confidence threshold (default: %(default)s).")
-    p_mine.add_argument("--step", type=_positive_int, default=10, help="Scan 1 of every N video frames (default: %(default)s).")
+    p_mine.add_argument(
+        "--conf",
+        type=float,
+        default=0.3,
+        help="Detection confidence threshold (default: %(default)s).",
+    )
+    p_mine.add_argument(
+        "--step",
+        type=_positive_int,
+        default=10,
+        help="Scan 1 of every N video frames (default: %(default)s).",
+    )
 
     p_export = _add(sub, "export", "Export the trained model (ONNX by default).")
     _add_formats(p_export)
-    p_export.add_argument("--weights", default=None, help="Weights to export (default: latest best.pt).")
+    p_export.add_argument(
+        "--weights", default=None, help="Weights to export (default: latest best.pt)."
+    )
 
     p_install = _add(sub, "install", "Install the exported model into its driver package.")
-    p_install.add_argument("--src", default=None, help="Path to a specific exported file to install.")
+    p_install.add_argument(
+        "--src", default=None, help="Path to a specific exported file to install."
+    )
 
     p_all = _add(sub, "all", "download, negatives, prepare, train, export, install.")
     _add_formats(p_all)
@@ -85,8 +130,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _clean(ctx: ModelContext) -> None:
     generated = (
-        ctx.raw_dir, ctx.merged_dir, ctx.neg_pool_dir, ctx.mining_dir, ctx.custom_previews,
-        ctx.golden_dir / "data.yaml", ctx.golden_dir / "labels.cache", ctx.runs_dir, ctx.exports_dir,
+        ctx.raw_dir,
+        ctx.merged_dir,
+        ctx.neg_pool_dir,
+        ctx.mining_dir,
+        ctx.custom_previews,
+        ctx.golden_dir / "data.yaml",
+        ctx.golden_dir / "labels.cache",
+        ctx.runs_dir,
+        ctx.exports_dir,
     )
     for path in generated:
         if path.is_dir():
@@ -110,7 +162,9 @@ def main(argv: list[str] | None = None) -> int:
         for name in models:
             ctx = load_context(name)
             marker = " [dim](default)[/]" if name == current else ""
-            console.print(f"[cyan]{name}[/] ({ctx.type}) -> {ctx.install_path.relative_to(REPO_ROOT)}{marker}")
+            console.print(
+                f"[cyan]{name}[/] ({ctx.type}) -> {ctx.install_path.relative_to(REPO_ROOT)}{marker}"
+            )
         return 0
 
     name = args.model or default_model()

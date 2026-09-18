@@ -179,8 +179,18 @@ class FakeSoundDevice:
 
     def query_devices(self) -> list[dict[str, Any]]:
         return [
-            {"name": "Speakers", "max_input_channels": 0, "max_output_channels": 2, "default_samplerate": 48000.0},
-            {"name": "Mic", "max_input_channels": 1, "max_output_channels": 0, "default_samplerate": 16000.0},
+            {
+                "name": "Speakers",
+                "max_input_channels": 0,
+                "max_output_channels": 2,
+                "default_samplerate": 48000.0,
+            },
+            {
+                "name": "Mic",
+                "max_input_channels": 1,
+                "max_output_channels": 0,
+                "default_samplerate": 16000.0,
+            },
         ]
 
     def InputStream(self, **kwargs: Any) -> FakeStream:  # noqa: N802 - sounddevice API

@@ -111,7 +111,9 @@ def _send(bridge: Bridge, req_id: str, **fields: Any) -> None:
     bridge.handle({"id": req_id, **fields})
 
 
-def _start(bridge: Bridge, collector: Collector, req_id: str, driver: str, instance: str = "app") -> dict[str, Any]:
+def _start(
+    bridge: Bridge, collector: Collector, req_id: str, driver: str, instance: str = "app"
+) -> dict[str, Any]:
     _send(bridge, req_id, type="start-driver", instance=instance, driver=driver)
     return collector.result(req_id)
 
@@ -146,7 +148,10 @@ def test_failed_start_removes_the_instance_and_can_be_retried(make_bridge: Bridg
 def test_repeated_start_reports_running_again(make_bridge: BridgeFactory) -> None:
     bridge, collector = make_bridge([Source])
     assert _start(bridge, collector, "1", "source")["ok"]
-    assert _start(bridge, collector, "2", "source")["data"] == {"driver": "source", "state": "running"}
+    assert _start(bridge, collector, "2", "source")["data"] == {
+        "driver": "source",
+        "state": "running",
+    }
     assert collector.states("app", "source") == ["starting", "running", "running"]
 
 
@@ -243,9 +248,13 @@ def test_shutdown_stops_drivers_dependents_first(make_bridge: BridgeFactory) -> 
 
     def stdin() -> Any:
         # Node waits for each start reply before starting a dependent.
-        yield msgspec.json.encode({"type": "start-driver", "id": "1", "instance": "app", "driver": "source"})
+        yield msgspec.json.encode(
+            {"type": "start-driver", "id": "1", "instance": "app", "driver": "source"}
+        )
         collector.result("1")
-        yield msgspec.json.encode({"type": "start-driver", "id": "2", "instance": "app", "driver": "sink"})
+        yield msgspec.json.encode(
+            {"type": "start-driver", "id": "2", "instance": "app", "driver": "sink"}
+        )
         collector.result("2")
         yield msgspec.json.encode({"type": "shutdown", "id": "3"})
         yield msgspec.json.encode({"type": "ping", "id": "4"})
@@ -257,7 +266,9 @@ def test_shutdown_stops_drivers_dependents_first(make_bridge: BridgeFactory) -> 
     assert collector.result("3")["ok"]
     assert not [m for m in collector.of_type("pong")]
     states = [
-        (m["driver"], m["state"]) for m in collector.of_type("driver-state") if m["state"] == "available"
+        (m["driver"], m["state"])
+        for m in collector.of_type("driver-state")
+        if m["state"] == "available"
     ]
     assert states == [("sink", "available"), ("source", "available")]
 
@@ -289,7 +300,9 @@ def test_writer_coalesces_events_but_keeps_every_ordered_message() -> None:
 
     messages = [msgspec.json.decode(line) for line in b"".join(written).splitlines()]
     assert [m["data"] for m in messages if m["type"] == "event"] == [0, 4]
-    assert [m["message"] for m in messages if m["type"] == "log"] == [f"log {v}" for v in range(1, 5)]
+    assert [m["message"] for m in messages if m["type"] == "log"] == [
+        f"log {v}" for v in range(1, 5)
+    ]
     assert [m["id"] for m in messages if m["type"] == "result"] == ["r"]
 
 
@@ -315,14 +328,18 @@ def test_write_all_loops_over_partial_writes() -> None:
 
 
 def test_payloads_strip_only_top_level_private_keys_and_encode_numpy() -> None:
-    payload = public_payload({"_frame": object(), "a": {"_nested": 1}, "arr": np.arange(3), "f": np.float32(1.5)})
+    payload = public_payload(
+        {"_frame": object(), "a": {"_nested": 1}, "arr": np.arange(3), "f": np.float32(1.5)}
+    )
     assert set(payload) == {"a", "arr", "f"}
 
     collector = Collector()
     writer = _Writer(collector, _Metrics())
     writer.post_latest(("i", "d", "e"), {"type": "event", "data": payload})
     writer.close()
-    assert collector.messages == [{"type": "event", "data": {"a": {"_nested": 1}, "arr": [0, 1, 2], "f": 1.5}}]
+    assert collector.messages == [
+        {"type": "event", "data": {"a": {"_nested": 1}, "arr": [0, 1, 2], "f": 1.5}}
+    ]
 
 
 def test_events_logs_and_metrics_carry_instance_and_millisecond_timestamps(
@@ -515,7 +532,9 @@ def test_queued_subscriptions_keep_order_and_drop_the_oldest_when_full(
 
         source.emit("value", 0)
         deadline = time.monotonic() + 5.0
-        worker = bridge._instances[("app", "audio_consumer")].driver._subscriptions[("source", "value")]
+        worker = bridge._instances[("app", "audio_consumer")].driver._subscriptions[
+            ("source", "value")
+        ]
         assert isinstance(worker, BoundedQueueWorker)
         while worker._queue and time.monotonic() < deadline:
             time.sleep(0.01)
@@ -527,7 +546,9 @@ def test_queued_subscriptions_keep_order_and_drop_the_oldest_when_full(
         while len(AudioConsumer.received) < 4 and time.monotonic() < deadline:
             time.sleep(0.01)
         assert AudioConsumer.received == [0, 3, 4, 5]
-        warning = collector.wait_for(lambda m: m.get("type") == "log" and "queue is full" in m["message"])
+        warning = collector.wait_for(
+            lambda m: m.get("type") == "log" and "queue is full" in m["message"]
+        )
         assert warning["instance"] == "app"
         metric = collector.wait_for(
             lambda m: m.get("type") == "performance" and m["metric"] == "subscription_dropped", 3.0

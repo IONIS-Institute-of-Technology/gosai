@@ -45,7 +45,12 @@ def driver(monkeypatch: pytest.MonkeyPatch) -> tuple[BallDriver, RecordingContex
 
 def _frame() -> dict[str, Any]:
     # 640x640 frames letterbox without scaling or padding.
-    return {"_frame": np.zeros((*INPUT, 3), dtype=np.uint8), "capture_ts": 1.0, "width": 640, "height": 640}
+    return {
+        "_frame": np.zeros((*INPUT, 3), dtype=np.uint8),
+        "capture_ts": 1.0,
+        "width": 640,
+        "height": 640,
+    }
 
 
 def test_emits_balls_with_their_diameter(driver: tuple[BallDriver, RecordingContext]) -> None:
@@ -64,9 +69,15 @@ def test_emits_balls_with_their_diameter(driver: tuple[BallDriver, RecordingCont
 def test_homography_warps_positions_and_sizes(driver: tuple[BallDriver, RecordingContext]) -> None:
     instance, context = driver
     assert check_result(
-        BallDriver, "set_homography", instance.execute("set_homography", [2, 0, 0, 0, 2, 0, 0, 0, 1])
+        BallDriver,
+        "set_homography",
+        instance.execute("set_homography", [2, 0, 0, 0, 2, 0, 0, 0, 1]),
     ) == {"ok": True}
-    check_result(BallDriver, "set_output_size", instance.execute("set_output_size", {"width": 1920, "height": 1080}))
+    check_result(
+        BallDriver,
+        "set_output_size",
+        instance.execute("set_output_size", {"width": 1920, "height": 1080}),
+    )
 
     instance.on_data("camera", "frame", _frame())
 

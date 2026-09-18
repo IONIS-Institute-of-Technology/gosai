@@ -200,14 +200,18 @@ class CalibrationDriver(BaseDriver):
             self._latest_meta = {k: data.get(k) for k in ("width", "height", "ts")}
         if frame is None and isinstance(encoded, str):
             # An event such as camera.color only carries the JPEG.
-            frame = cv2.imdecode(np.frombuffer(base64.b64decode(encoded), np.uint8), cv2.IMREAD_COLOR)
+            frame = cv2.imdecode(
+                np.frombuffer(base64.b64decode(encoded), np.uint8), cv2.IMREAD_COLOR
+            )
         if frame is not None:
             self._detect(frame)
 
     def _detect(self, frame: Any) -> None:
         corners, ids, _ = self._detector.detectMarkers(frame)
         found = [] if ids is None else [int(i) for i in ids.reshape(-1)]
-        marker_corners = [np.asarray(c, dtype=np.float64).reshape(4, 2) for c in corners[: len(found)]]
+        marker_corners = [
+            np.asarray(c, dtype=np.float64).reshape(4, 2) for c in corners[: len(found)]
+        ]
         with self._lock:
             self._detections.update(zip(found, marker_corners, strict=True))
         self.emit(
@@ -225,10 +229,14 @@ class CalibrationDriver(BaseDriver):
         with self._lock:
             self._layout = layout
             self._detections.clear()
-        self.emit("status", {"stage": "configured", "message": f"layout with {len(layout)} markers"})
+        self.emit(
+            "status", {"stage": "configured", "message": f"layout with {len(layout)} markers"}
+        )
         return LayoutResult(count=len(layout))
 
-    @action("Detect markers in another event with `_frame` or `jpeg_base64` (default camera.frame).")
+    @action(
+        "Detect markers in another event with `_frame` or `jpeg_base64` (default camera.frame)."
+    )
     def set_camera_event(self, params: CameraEventParams | None) -> CameraEventResult:
         previous = self._camera
         driver = params.driver if params and params.driver else previous[0]
@@ -296,7 +304,9 @@ class CalibrationDriver(BaseDriver):
             inverse=inverse,
             surface_matrix=surface,
             surface_inverse=surface_inverse,
-            surface_quad_display=None if quad is None else [Point(x=float(x), y=float(y)) for x, y in quad],
+            surface_quad_display=None
+            if quad is None
+            else [Point(x=float(x), y=float(y)) for x, y in quad],
             surface_size=surface_size,
             frame_size=frame_size,
             samples=result.samples,
@@ -323,7 +333,9 @@ class CalibrationDriver(BaseDriver):
         if not ok:
             raise RuntimeError("PNG encoding failed")
         return MarkerImage(
-            id=params.id, size=params.size, png_base64=base64.b64encode(buf.tobytes()).decode("ascii")
+            id=params.id,
+            size=params.size,
+            png_base64=base64.b64encode(buf.tobytes()).decode("ascii"),
         )
 
     @action("The latest camera frame as a base64 JPEG.")

@@ -160,7 +160,9 @@ def test_list_drivers_reply_carries_schemas_and_static_actions_run_without_an_in
 
     bridge.handle({"type": "list-drivers", "id": "1"})
     bridge.handle({"type": "execute", "id": "2", "driver": "declared", "action": "version"})
-    bridge.handle({"type": "execute", "id": "3", "driver": "declared", "action": "set_level", "data": 1})
+    bridge.handle(
+        {"type": "execute", "id": "3", "driver": "declared", "action": "set_level", "data": 1}
+    )
 
     drivers = {d["name"]: d for d in collector.result("1")["data"]["drivers"]}
     assert drivers["declared"]["schema"] == msgspec.json.decode(
@@ -206,7 +208,9 @@ def test_a_driver_without_a_schema_still_lists(make_bridge: BridgeFactory) -> No
     assert drivers["undescribable"]["schema"] is None
     assert drivers["undescribable"]["actions"] == ["take"]
     assert drivers["legacy"]["schema"] is not None
-    collector.wait_for(lambda m: m.get("type") == "log" and "cannot describe undescribable" in m["message"])
+    collector.wait_for(
+        lambda m: m.get("type") == "log" and "cannot describe undescribable" in m["message"]
+    )
 
 
 def test_event_delivery_matches_the_bridge() -> None:

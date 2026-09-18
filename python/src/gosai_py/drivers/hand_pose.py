@@ -225,6 +225,8 @@ class HandPoseDriver(BaseDriver):
         frame_w, frame_h = self._frame_size or (cam_w, cam_h)
         surface = np.array(self._surface_size, dtype=np.float64)
         return [
-            homography.warp_points(matrix, hand * (frame_w, frame_h)) / surface if len(hand) else hand
+            homography.warp_points(matrix, hand * (frame_w, frame_h)) / surface
+            if len(hand)
+            else hand
             for hand in hands
         ]

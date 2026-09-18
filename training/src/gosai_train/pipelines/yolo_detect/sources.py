@@ -27,13 +27,42 @@ SPLIT_ALIASES = {
 }
 
 _SNOOKER_COLOURS = {
-    "red", "yellow", "green", "brown", "blue", "pink", "black", "white",
-    "orange", "purple", "maroon",
+    "red",
+    "yellow",
+    "green",
+    "brown",
+    "blue",
+    "pink",
+    "black",
+    "white",
+    "orange",
+    "purple",
+    "maroon",
 }
 _DROP_KEYWORDS = (
-    "table", "pocket", "hole", "rail", "cushion", "stick", "cue", "person",
-    "hand", "glove", "arm", "player", "flag", "bag", "marker", "dot",
-    "triangle", "rack", "net", "frame", "wall", "floor", "light",
+    "table",
+    "pocket",
+    "hole",
+    "rail",
+    "cushion",
+    "stick",
+    "cue",
+    "person",
+    "hand",
+    "glove",
+    "arm",
+    "player",
+    "flag",
+    "bag",
+    "marker",
+    "dot",
+    "triangle",
+    "rack",
+    "net",
+    "frame",
+    "wall",
+    "floor",
+    "light",
 )
 
 # Frames extracted by the `frames` stage are named <video-stem>_<000123>.jpg.
@@ -278,7 +307,9 @@ def collect_datasets(
         if excluded:
             notes = f", [yellow]{excluded} unlabelled/unknown frames excluded[/]"
         if unknown_classes:
-            notes += f" [yellow]({unknown_classes} unknown classes -- review runs/classes.lock.yaml)[/]"
+            notes += (
+                f" [yellow]({unknown_classes} unknown classes -- review runs/classes.lock.yaml)[/]"
+            )
         console.print(
             f"[cyan]{dataset_dir.name}[/]: {len(names)} classes, "
             f"{kept_classes} mapped to {ctx.class_name}{capped}{notes}"
@@ -304,8 +335,12 @@ def collect_custom(ctx: ModelContext) -> list[Sample]:
             continue
         lines = [line for parts in read_label_rows(label) if (line := to_bbox_line(parts))]
         samples.append(
-            Sample(image=image, split=assign_split("custom/" + group_key(image)),
-                   prefix="custom", label_lines=lines)
+            Sample(
+                image=image,
+                split=assign_split("custom/" + group_key(image)),
+                prefix="custom",
+                label_lines=lines,
+            )
         )
     return samples
 
@@ -322,7 +357,11 @@ def collect_extra_negatives(ctx: ModelContext) -> list[Sample]:
     for source_dir, prefix in ((ctx.dropin_neg_dir, "neg"), (ctx.neg_pool_dir, "negpool")):
         for image in iter_images(source_dir):
             samples.append(
-                Sample(image=image, split=assign_split(prefix + "/" + image.stem),
-                       prefix=prefix, label_lines=[])
+                Sample(
+                    image=image,
+                    split=assign_split(prefix + "/" + image.stem),
+                    prefix=prefix,
+                    label_lines=[],
+                )
             )
     return samples

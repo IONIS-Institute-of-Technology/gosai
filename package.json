@@ -35,8 +35,8 @@
     "python:sync": "cd python && uv sync",
     "python:lint": "cd python && uv run ruff check .",
     "python:test": "cd python && uv run pytest -q",
-    "python:check": "cd python && uv run ruff check . && uv run pyright && uv run pytest -q",
-    "training:lint": "cd training && uv run --only-group dev ruff check ."
+    "python:check": "cd python && uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest -q",
+    "training:lint": "cd training && uv run --only-group dev ruff check . && uv run --only-group dev ruff format --check ."
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",

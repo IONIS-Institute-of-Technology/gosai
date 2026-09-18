@@ -15,7 +15,10 @@ def driver_classes_in(module: ModuleType) -> list[type[BaseDriver]]:
     return [
         attr
         for attr in vars(module).values()
-        if isinstance(attr, type) and issubclass(attr, BaseDriver) and attr is not BaseDriver and attr.name
+        if isinstance(attr, type)
+        and issubclass(attr, BaseDriver)
+        and attr is not BaseDriver
+        and attr.name
     ]
 
 

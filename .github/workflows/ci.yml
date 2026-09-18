@@ -24,7 +24,16 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: package.json
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: '3.12'
+          enable-cache: true
+          cache-dependency-glob: python/uv.lock
       - run: bun install --frozen-lockfile
+      # The server's bridge contract and app environment tests need
+      # python/.venv and uv, and fail in CI when either is missing.
+      - run: uv sync --locked
+        working-directory: python
       - run: bun run format:check
       - run: bun run lint
       - run: bun run typecheck
@@ -97,6 +106,7 @@ jobs:
           cache-dependency-glob: python/uv.lock
       - run: uv sync --locked
       - run: uv run --locked ruff check .
+      - run: uv run --locked ruff format --check .
       - run: uv run --locked pyright
       - run: uv run --locked pytest -q
 
@@ -115,4 +125,5 @@ jobs:
           python-version: '3.12'
           enable-cache: false
       - run: uv run --locked --only-group dev ruff check .
+      - run: uv run --locked --only-group dev ruff format --check .
       - run: uv run --locked --only-group dev pytest -q

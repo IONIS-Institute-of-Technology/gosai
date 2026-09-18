@@ -86,4 +86,6 @@ def run(ctx: ModelContext, args: Namespace) -> None:
     console.print(f"[green]done[/] {hits}/{scanned} frames had detections")
     console.print(f"  review:    {previews_out}")
     console.print(f"  then move wrong-detection frames from {images_out}")
-    console.print(f"  into {ctx.dropin_neg_dir} and re-run `gosai-train prepare` and `gosai-train train`.")
+    console.print(
+        f"  into {ctx.dropin_neg_dir} and re-run `gosai-train prepare` and `gosai-train train`."
+    )

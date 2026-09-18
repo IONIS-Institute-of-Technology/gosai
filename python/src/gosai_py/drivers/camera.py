@@ -394,8 +394,10 @@ class CameraDriver(BaseDriver):
         )
         self._capture_stop.clear()
         self._capture_thread = threading.Thread(
-            target=self._capture_loop, args=(cap, config.rotation),
-            name=f"camera:{config.device}:capture", daemon=True,
+            target=self._capture_loop,
+            args=(cap, config.rotation),
+            name=f"camera:{config.device}:capture",
+            daemon=True,
         )
         self._capture_thread.start()
         self.log(
@@ -499,7 +501,9 @@ def _safe_read(cap: Any) -> tuple[bool, Any]:
 def _current_fourcc(cap: Any) -> str:
     """Label of the pixel format the capture settled on."""
     raw = int(cap.get(cv2.CAP_PROP_FOURCC))
-    chars = "".join(chr((raw >> (8 * i)) & 0xFF) for i in range(4)).strip("\x00 ") if raw > 0 else ""
+    chars = (
+        "".join(chr((raw >> (8 * i)) & 0xFF) for i in range(4)).strip("\x00 ") if raw > 0 else ""
+    )
     return chars or "native"
 
 
@@ -524,4 +528,3 @@ def _negotiate_mode(cap: Any, width: int, height: int, fps: float) -> tuple[int,
         if size == (width, height):
             break
     return size
-

@@ -71,8 +71,7 @@ def _import_extra(module: str) -> Any:
         return importlib.import_module(module)
     except ModuleNotFoundError as exc:
         raise SystemExit(
-            f"{module} is not installed; external negative sources need "
-            "`uv sync --extra negatives`"
+            f"{module} is not installed; external negative sources need `uv sync --extra negatives`"
         ) from exc
 
 
@@ -126,9 +125,7 @@ def _glare_overlay(ctx: ModelContext, count: int) -> int:
         + list(iter_images(ctx.neg_pool_dir))
     )
     if not bases:
-        console.print(
-            "[yellow]glare[/] no base frames found (run `download` first); skipping"
-        )
+        console.print("[yellow]glare[/] no base frames found (run `download` first); skipping")
         return 0
 
     out = _images_dir(ctx)
@@ -161,7 +158,7 @@ def _glare_overlay(ctx: ModelContext, count: int) -> int:
             glow = np.maximum(glow, streak * rng.uniform(0.5, 0.9))
 
         strength = rng.uniform(0.45, 0.85)
-        glow3 = (glow[:, :, None] * strength)
+        glow3 = glow[:, :, None] * strength
         warm = np.array([235, 245, 255], dtype=np.float32)  # BGR, slightly warm white
         blended = img.astype(np.float32) * (1 - glow3) + warm * glow3
         dst = out / f"{GLARE_PREFIX}__{i:05d}.jpg"

@@ -83,7 +83,9 @@ def test_microphone_reopens_and_lists_devices(
     assert listing == {
         "ok": True,
         "default_input": 1,
-        "devices": [{"index": 1, "name": "Mic", "max_input_channels": 1, "default_samplerate": 16000.0}],
+        "devices": [
+            {"index": 1, "name": "Mic", "max_input_channels": 1, "default_samplerate": 16000.0}
+        ],
     }
 
 
@@ -179,7 +181,9 @@ def test_frequency_analysis_finds_the_peak_below_the_cutoff() -> None:
     # A strong 3 kHz tone above the 2.1 kHz cutoff and a DC offset must not win.
     audio = _audio(16_000, 1.0, (440.0, 0.2), (3000.0, 0.6))
     for block in audio[: 1024 * 8].reshape(8, 1024):
-        driver.on_data("microphone", "audio_stream", {"_block": block.reshape(-1, 1), "samplerate": 16_000})
+        driver.on_data(
+            "microphone", "audio_stream", {"_block": block.reshape(-1, 1), "samplerate": 16_000}
+        )
 
     payload = context.emitted("frequency")[-1]
     assert payload["max_frequency"] == pytest.approx(440.0, abs=16_000 / 8192)
@@ -187,7 +191,11 @@ def test_frequency_analysis_finds_the_peak_below_the_cutoff() -> None:
     check_events(FrequencyAnalysisDriver, context)
 
     assert driver.execute("set_max_frequency", 4000) == {"max_frequency": 4000.0}
-    driver.on_data("microphone", "audio_stream", {"block": audio[:1024].reshape(-1, 1).tolist(), "samplerate": 16_000})
+    driver.on_data(
+        "microphone",
+        "audio_stream",
+        {"block": audio[:1024].reshape(-1, 1).tolist(), "samplerate": 16_000},
+    )
     assert context.emitted("frequency")[-1]["max_frequency"] == pytest.approx(3000.0, abs=2.0)
     assert driver.execute("set_window_size", 0) == {"window_blocks": 1}
 
@@ -198,7 +206,9 @@ def test_frequency_amplitude_keeps_the_unwindowed_scale() -> None:
     hz = 224 * 16_000 / 8192  # centered on an FFT bin of the 8-block window
     audio = _audio(16_000, 1.0, (hz, 0.2))
     for block in audio[: 1024 * 8].reshape(8, 1024):
-        driver.on_data("microphone", "audio_stream", {"_block": block.reshape(-1, 1), "samplerate": 16_000})
+        driver.on_data(
+            "microphone", "audio_stream", {"_block": block.reshape(-1, 1), "samplerate": 16_000}
+        )
 
     # second-self gates on amplitude > 2; a 0.2 sine must stay far above it.
     assert context.emitted("frequency")[-1]["amplitude"] == pytest.approx(0.2 * 8192 / 2, rel=0.02)
@@ -234,7 +244,11 @@ def test_speech_to_text_transcribes_buffers(whisper: list[dict[str, Any]]) -> No
     driver = SpeechToTextDriver(context)
     driver.pre_run()
 
-    result = check_result(SpeechToTextDriver, "transcribe", driver.execute("transcribe", {"audio_buffer": [0.0] * 8000}))
+    result = check_result(
+        SpeechToTextDriver,
+        "transcribe",
+        driver.execute("transcribe", {"audio_buffer": [0.0] * 8000}),
+    )
     assert result["transcription"] == "8000 samples."
     assert result["audio_duration_s"] == 0.5
     assert driver.execute("transcribe", [[0.0, 1.0]] * 160)["transcription"] == "160 samples."

@@ -22,7 +22,7 @@ from gosai_py.bridge import Bridge
 
 TEMPLATE_APP = Path(__file__).resolve().parents[2] / "templates" / "basic"
 
-COUNTER = '''
+COUNTER = """
 from collections.abc import Mapping
 from typing import ClassVar
 
@@ -53,9 +53,9 @@ class Counter(BaseDriver):
     def reset(self, start: int) -> Count:
         self.value = start
         return Count(start)
-'''
+"""
 
-DOUBLER = '''
+DOUBLER = """
 from gosai_py import BaseDriver
 from gosai_py.drivers.heartbeat import HeartbeatDriver  # imported, not defined here
 
@@ -69,7 +69,7 @@ class Doubler(BaseDriver):
 
 class Beat(HeartbeatDriver):
     name = "beat"
-'''
+"""
 
 
 def make_package(root: Path, modules: dict[str, str]) -> Path:
@@ -178,7 +178,9 @@ def test_the_app_bridge_runs_only_the_app_drivers(tmp_path: Path) -> None:
         assert event["driver"] == "counter"
         assert event["data"]["count"] >= 1
 
-        reset = request("4", type="execute", instance="app", driver="counter", action="reset", data=0)
+        reset = request(
+            "4", type="execute", instance="app", driver="counter", action="reset", data=0
+        )
         assert reset["data"] == {"count": 0}
     finally:
         bridge.close(timeout=5.0)

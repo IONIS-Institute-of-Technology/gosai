@@ -29,7 +29,9 @@ def test_classify_name(name: str, expected: str) -> None:
 
 
 def test_to_bbox_line_forces_class_zero() -> None:
-    assert to_bbox_line(["3", "0.5", "0.25", "0.1", "0.2"]) == "0 0.500000 0.250000 0.100000 0.200000"
+    assert (
+        to_bbox_line(["3", "0.5", "0.25", "0.1", "0.2"]) == "0 0.500000 0.250000 0.100000 0.200000"
+    )
 
 
 def test_to_bbox_line_converts_polygon_to_enclosing_box() -> None:

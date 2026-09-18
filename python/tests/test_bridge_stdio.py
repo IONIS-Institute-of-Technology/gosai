@@ -60,7 +60,9 @@ class BridgeProcess:
                 return message
 
     def result(self, req_id: str, timeout: float = 60.0) -> dict[str, Any]:
-        return self.next_message(lambda m: m.get("type") == "result" and m.get("id") == req_id, timeout)
+        return self.next_message(
+            lambda m: m.get("type") == "result" and m.get("id") == req_id, timeout
+        )
 
     def drain(self) -> list[dict[str, Any]]:
         self._reader.join(10.0)
@@ -110,14 +112,18 @@ def test_stdio_round_trip_and_shutdown(bridge_process: BridgeProcess) -> None:
     assert "heartbeat" in names
 
     _start_heartbeat(bridge_process)
-    bridge_process.send(type="subscribe", id="sub", instance="system", driver="heartbeat", event="tick")
+    bridge_process.send(
+        type="subscribe", id="sub", instance="system", driver="heartbeat", event="tick"
+    )
     assert bridge_process.result("sub")["ok"]
     tick = bridge_process.next_message(lambda m: m.get("type") == "event", timeout=10.0)
     assert tick["instance"] == "system"
     assert tick["driver"] == "heartbeat"
     assert tick["ts"] > 1e12  # milliseconds
 
-    bridge_process.send(type="execute", id="echo", instance="system", driver="heartbeat", action="echo", data=[1])
+    bridge_process.send(
+        type="execute", id="echo", instance="system", driver="heartbeat", action="echo", data=[1]
+    )
     assert bridge_process.result("echo")["data"]["echoed"] == [1]
 
     bridge_process.send(type="shutdown", id="bye")

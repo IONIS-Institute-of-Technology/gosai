@@ -81,9 +81,7 @@ def _flatten_xy(
     """
     if landmarks:
         return [
-            coord
-            for lm in landmarks
-            for coord in (float(lm[0]) * s + ox, float(lm[1]) * s + oy)
+            coord for lm in landmarks for coord in (float(lm[0]) * s + ox, float(lm[1]) * s + oy)
         ]
     return [0.0] * (count * 2)
 
@@ -157,7 +155,9 @@ class SLRDriver(BaseDriver):
             raise RuntimeError(f"slr: failed to load {model.filename}: {exc!r}") from exc
 
         inp = session.get_inputs()[0]
-        feature_dim = int(inp.shape[2]) if len(inp.shape) >= 3 and isinstance(inp.shape[2], int) else 158
+        feature_dim = (
+            int(inp.shape[2]) if len(inp.shape) >= 3 and isinstance(inp.shape[2], int) else 158
+        )
         self._session = session
         self._input_name = inp.name
         self._include_face = feature_dim >= 158
@@ -165,7 +165,10 @@ class SLRDriver(BaseDriver):
         self._frames.clear()
         self.set_runtime_info(info)
         self.publish_state("running")
-        self.log("info", f"slr: loaded {model_path.name} (features={feature_dim}, actions={len(actions)})")
+        self.log(
+            "info",
+            f"slr: loaded {model_path.name} (features={feature_dim}, actions={len(actions)})",
+        )
 
     def on_data(self, driver: str, event: str, data: Any) -> None:
         if self._session is None or not isinstance(data, dict):

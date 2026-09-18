@@ -56,7 +56,9 @@ def landmarks(points: Any, count: int = 0, columns: int = 3) -> Array:
     return out
 
 
-def intrinsics(frame_w: ArrayLike, frame_h: ArrayLike, hfov_deg: float) -> tuple[Array, Array, Array]:
+def intrinsics(
+    frame_w: ArrayLike, frame_h: ArrayLike, hfov_deg: float
+) -> tuple[Array, Array, Array]:
     """Focal length (square pixels) and principal point for a frame size."""
     w = np.asarray(frame_w, dtype=np.float64)
     h = np.asarray(frame_h, dtype=np.float64)
@@ -64,7 +66,9 @@ def intrinsics(frame_w: ArrayLike, frame_h: ArrayLike, hfov_deg: float) -> tuple
     return fx, w / 2.0, h / 2.0
 
 
-def deproject(uv: ArrayLike, depth: ArrayLike, fx: ArrayLike, ppx: ArrayLike, ppy: ArrayLike) -> Array:
+def deproject(
+    uv: ArrayLike, depth: ArrayLike, fx: ArrayLike, ppx: ArrayLike, ppy: ArrayLike
+) -> Array:
     """Pinhole back-projection of (..., 2) pixels at `depth` mm into (..., 3) camera mm."""
     uv_arr = np.asarray(uv, dtype=np.float64)
     z = np.asarray(depth, dtype=np.float64)
@@ -109,7 +113,9 @@ def estimate_distance(pose: Array, world: Array, fx: ArrayLike, optics: Optics) 
     meters = np.linalg.norm(world[..., LEFT_SHOULDER, :2] - world[..., RIGHT_SHOULDER, :2], axis=-1)
     with np.errstate(divide="ignore", invalid="ignore"):
         shoulders_z = np.asarray(fx) * (meters * 1000.0) / px * optics.scale
-        shoulders_world_z = (world[..., LEFT_SHOULDER, 2] + world[..., RIGHT_SHOULDER, 2]) / 2.0 * 1000.0
+        shoulders_world_z = (
+            (world[..., LEFT_SHOULDER, 2] + world[..., RIGHT_SHOULDER, 2]) / 2.0 * 1000.0
+        )
         valid = (px > 1.0) & (meters > 0.05) & np.isfinite(shoulders_world_z)
     return np.where(valid, shoulders_z - shoulders_world_z, optics.default_distance_mm)
 
@@ -125,7 +131,9 @@ class BodyFrame:
     eye: Array  # (3,) camera mm
 
     @classmethod
-    def build(cls, pose: Array, world: Array, frame_w: float, frame_h: float, optics: Optics) -> BodyFrame:
+    def build(
+        cls, pose: Array, world: Array, frame_w: float, frame_h: float, optics: Optics
+    ) -> BodyFrame:
         fx, ppx, ppy = (float(v) for v in intrinsics(frame_w, frame_h, optics.hfov_deg))
         distance = float(estimate_distance(pose, world, fx, optics))
         world_z = np.zeros(len(pose))
@@ -146,7 +154,9 @@ class BodyFrame:
         return out
 
 
-def project_part(frame: BodyFrame, part: Array, optics: Optics, anchor: Array | None, own_depths: bool) -> Array:
+def project_part(
+    frame: BodyFrame, part: Array, optics: Optics, anchor: Array | None, own_depths: bool
+) -> Array:
     """Reflect a landmark part into `[x_mm, y_mm, depth_mm, visibility]` rows.
 
     Body landmarks use their own depths (`own_depths`). Hands and face take
@@ -193,10 +203,17 @@ def reflect_landmark(
 
 def stack_frames(frames: Sequence[Mapping[str, Any]]) -> tuple[Array, Array, Array]:
     """Stack raw pose payloads into (F, 33, 3) pose, (F, 33, 3) world and (F, 2) sizes."""
-    pose = np.stack([landmarks(f.get("body_pose"), BODY_LANDMARKS)[:BODY_LANDMARKS] for f in frames])
-    world = np.stack([landmarks(f.get("body_world_pose"), BODY_LANDMARKS)[:BODY_LANDMARKS] for f in frames])
+    pose = np.stack(
+        [landmarks(f.get("body_pose"), BODY_LANDMARKS)[:BODY_LANDMARKS] for f in frames]
+    )
+    world = np.stack(
+        [landmarks(f.get("body_world_pose"), BODY_LANDMARKS)[:BODY_LANDMARKS] for f in frames]
+    )
     sizes = np.array(
-        [[float(f.get("frame_width") or 1280.0), float(f.get("frame_height") or 720.0)] for f in frames]
+        [
+            [float(f.get("frame_width") or 1280.0), float(f.get("frame_height") or 720.0)]
+            for f in frames
+        ]
     )
     return pose, world, sizes
 

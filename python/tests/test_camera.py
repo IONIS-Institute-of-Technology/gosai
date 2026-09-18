@@ -40,7 +40,12 @@ def test_publishes_frames_at_the_negotiated_size(
 
     frame = context.emitted("frame")[-1]
     assert frame["_frame"].shape == (720, 1280, 3)
-    assert context.emitted("frame_size")[0] == {"width": 1280, "height": 720, "fps": 60.0, "codec": "MJPG"}
+    assert context.emitted("frame_size")[0] == {
+        "width": 1280,
+        "height": 720,
+        "fps": 60.0,
+        "codec": "MJPG",
+    }
     snapshot = check_result(CameraDriver, "snapshot", driver.execute("snapshot", None))
     assert snapshot["jpeg_base64"]
     check_events(CameraDriver, context)
@@ -52,13 +57,24 @@ def test_mode_change_releases_the_device_before_reopening(
     driver, context = running
 
     result = check_result(
-        CameraDriver, "set_mode", driver.execute("set_mode", {"width": 640, "height": 480, "rotation": 90})
+        CameraDriver,
+        "set_mode",
+        driver.execute("set_mode", {"width": 640, "height": 480, "rotation": 90}),
     )
 
     # The fake refuses a second handle, so this only works if the first was released.
-    assert result == {"device": 0, "width": 640, "height": 480, "fps": 60.0, "rotation": 90, "codec": "MJPG"}
+    assert result == {
+        "device": 0,
+        "width": 640,
+        "height": 480,
+        "fps": 60.0,
+        "rotation": 90,
+        "codec": "MJPG",
+    }
     assert context.states == ["running"]
-    wait_until(lambda: bool(context.emitted("frame")) and context.emitted("frame")[-1]["width"] == 480)
+    wait_until(
+        lambda: bool(context.emitted("frame")) and context.emitted("frame")[-1]["width"] == 480
+    )
     assert context.emitted("frame_size")[-1]["width"] == 480
     assert list(cameras.open_handles) == [0]
 
@@ -73,7 +89,10 @@ def test_failed_mode_change_restores_the_previous_device(
 
     assert cameras.opens == [0, 5, 0]
     assert list(cameras.open_handles) == [0]
-    assert driver.execute("set_resolution", {"width": 640, "height": 480}) == {"width": 640, "height": 480}
+    assert driver.execute("set_resolution", {"width": 640, "height": 480}) == {
+        "width": 640,
+        "height": 480,
+    }
 
 
 def test_setters_validate_their_data(running: tuple[CameraDriver, RecordingContext]) -> None:
@@ -86,7 +105,9 @@ def test_setters_validate_their_data(running: tuple[CameraDriver, RecordingConte
 
 def test_list_formats_probes_a_free_device(cameras: FakeCameras) -> None:
     result = check_result(
-        CameraDriver, "list_formats", CameraDriver.action_specs()["list_formats"].invoke(CameraDriver, {"device": 1})
+        CameraDriver,
+        "list_formats",
+        CameraDriver.action_specs()["list_formats"].invoke(CameraDriver, {"device": 1}),
     )
 
     assert result == {

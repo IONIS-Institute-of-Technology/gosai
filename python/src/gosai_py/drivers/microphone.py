@@ -174,11 +174,18 @@ class MicrophoneDriver(BaseDriver):
         self._stream, self._worker = stream, worker
         self.emit(
             "settings",
-            {"device": self._device, "samplerate": samplerate, "channels": channels, "blocksize": BLOCKSIZE},
+            {
+                "device": self._device,
+                "samplerate": samplerate,
+                "channels": channels,
+                "blocksize": BLOCKSIZE,
+            },
         )
         self.log("info", f"microphone open device={self._device} sr={samplerate} ch={channels}")
 
-    def _publish(self, item: tuple[np.ndarray, float, str | None], samplerate: int, channels: int) -> None:
+    def _publish(
+        self, item: tuple[np.ndarray, float, str | None], samplerate: int, channels: int
+    ) -> None:
         block, ts, status = item
         if status:
             self.log("warn", f"microphone status: {status}")

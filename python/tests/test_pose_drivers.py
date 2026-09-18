@@ -48,16 +48,22 @@ def pose_driver(monkeypatch: pytest.MonkeyPatch) -> tuple[PoseDriver, RecordingC
         pose_world_landmarks=_landmarks(33),
     )
     monkeypatch.setattr(pose, "resolve_model", lambda model, log: "holistic.task")
-    monkeypatch.setattr(pose, "mediapipe_base_options", lambda *a, **k: (None, {"provider": "CPUDelegate"}))
+    monkeypatch.setattr(
+        pose, "mediapipe_base_options", lambda *a, **k: (None, {"provider": "CPUDelegate"})
+    )
     monkeypatch.setattr(pose.vision, "HolisticLandmarkerOptions", lambda **kwargs: kwargs)
-    monkeypatch.setattr(pose.vision.HolisticLandmarker, "create_from_options", lambda options: FakeDetector(result))
+    monkeypatch.setattr(
+        pose.vision.HolisticLandmarker, "create_from_options", lambda options: FakeDetector(result)
+    )
     context = RecordingContext()
     driver = PoseDriver(context)
     driver.pre_run()
     return driver, context
 
 
-def test_pose_emits_landmarks_in_frame_pixels(pose_driver: tuple[PoseDriver, RecordingContext]) -> None:
+def test_pose_emits_landmarks_in_frame_pixels(
+    pose_driver: tuple[PoseDriver, RecordingContext],
+) -> None:
     driver, context = pose_driver
     driver.execute("set_window", 0.5)
 
@@ -73,9 +79,13 @@ def test_pose_emits_landmarks_in_frame_pixels(pose_driver: tuple[PoseDriver, Rec
     check_events(PoseDriver, context)
 
 
-def test_pose_face_mesh_opt_out_keeps_it_in_process(pose_driver: tuple[PoseDriver, RecordingContext]) -> None:
+def test_pose_face_mesh_opt_out_keeps_it_in_process(
+    pose_driver: tuple[PoseDriver, RecordingContext],
+) -> None:
     driver, context = pose_driver
-    assert check_result(PoseDriver, "set_face_mesh", driver.execute("set_face_mesh", False)) == {"face_mesh": False}
+    assert check_result(PoseDriver, "set_face_mesh", driver.execute("set_face_mesh", False)) == {
+        "face_mesh": False
+    }
 
     driver.on_data("camera", "frame", _frame(640, 480))
 
@@ -100,16 +110,22 @@ def hand_driver(monkeypatch: pytest.MonkeyPatch) -> tuple[HandPoseDriver, Record
         handedness=[[SimpleNamespace(index=0, category_name="Left", score=0.8)]],
     )
     monkeypatch.setattr(hand_pose, "resolve_model", lambda model, log: "hand.task")
-    monkeypatch.setattr(hand_pose, "mediapipe_base_options", lambda *a, **k: (None, {"provider": "CPUDelegate"}))
+    monkeypatch.setattr(
+        hand_pose, "mediapipe_base_options", lambda *a, **k: (None, {"provider": "CPUDelegate"})
+    )
     monkeypatch.setattr(hand_pose.vision, "HandLandmarkerOptions", lambda **kwargs: kwargs)
-    monkeypatch.setattr(hand_pose.vision.HandLandmarker, "create_from_options", lambda options: FakeDetector(result))
+    monkeypatch.setattr(
+        hand_pose.vision.HandLandmarker, "create_from_options", lambda options: FakeDetector(result)
+    )
     context = RecordingContext()
     driver = HandPoseDriver(context)
     driver.pre_run()
     return driver, context
 
 
-def test_hand_pose_emits_normalised_landmarks(hand_driver: tuple[HandPoseDriver, RecordingContext]) -> None:
+def test_hand_pose_emits_normalised_landmarks(
+    hand_driver: tuple[HandPoseDriver, RecordingContext],
+) -> None:
     driver, context = hand_driver
     driver.execute("set_window", 0.5)
 
@@ -121,14 +137,22 @@ def test_hand_pose_emits_normalised_landmarks(hand_driver: tuple[HandPoseDriver,
     check_events(HandPoseDriver, context)
 
 
-def test_hand_pose_warp_follows_the_live_frame_size(hand_driver: tuple[HandPoseDriver, RecordingContext]) -> None:
+def test_hand_pose_warp_follows_the_live_frame_size(
+    hand_driver: tuple[HandPoseDriver, RecordingContext],
+) -> None:
     driver, context = hand_driver
     identity = [1, 0, 0, 0, 1, 0, 0, 0, 1]
-    assert check_result(HandPoseDriver, "set_homography", driver.execute("set_homography", identity)) == {
+    assert check_result(
+        HandPoseDriver, "set_homography", driver.execute("set_homography", identity)
+    ) == {
         "ok": True,
         "cleared": False,
     }
-    check_result(HandPoseDriver, "set_surface_size", driver.execute("set_surface_size", {"width": 400, "height": 300}))
+    check_result(
+        HandPoseDriver,
+        "set_surface_size",
+        driver.execute("set_surface_size", {"width": 400, "height": 300}),
+    )
 
     driver.on_data("camera", "frame", _frame(800, 600))
     driver.on_data("camera", "frame", _frame(400, 300))
@@ -174,12 +198,16 @@ def test_slr_classifies_a_full_window(monkeypatch: pytest.MonkeyPatch) -> None:
             return [logits]
 
     monkeypatch.setattr(slr, "resolve_model", lambda model, log: Path(model.filename))
-    monkeypatch.setattr(slr, "create_onnx_session", lambda path, **_: (Session(), {"backend": "onnxruntime"}))
+    monkeypatch.setattr(
+        slr, "create_onnx_session", lambda path, **_: (Session(), {"backend": "onnxruntime"})
+    )
     context = RecordingContext()
     driver = slr.SLRDriver(context)
     labels = [f"sign_{i}" for i in range(16)]
 
-    assert check_result(slr.SLRDriver, "set_actions", driver.execute("set_actions", labels)) == {"ok": True}
+    assert check_result(slr.SLRDriver, "set_actions", driver.execute("set_actions", labels)) == {
+        "ok": True
+    }
     frame = {"body_pose": [[320.0, 240.0, 1.0]] * 33, "face_mesh": [[1.0, 2.0, 1.0]] * 478}
     for _ in range(slr.SEQUENCE_LENGTH):
         driver.on_data("pose", "raw_data", frame)
@@ -192,7 +220,9 @@ def test_slr_classifies_a_full_window(monkeypatch: pytest.MonkeyPatch) -> None:
         driver.execute("set_actions", ["a", "b", "c"])
 
 
-def test_hand_pose_rate_limits_detection_failures(hand_driver: tuple[HandPoseDriver, RecordingContext]) -> None:
+def test_hand_pose_rate_limits_detection_failures(
+    hand_driver: tuple[HandPoseDriver, RecordingContext],
+) -> None:
     driver, context = hand_driver
 
     class Broken(FakeDetector):
@@ -214,7 +244,9 @@ def test_flip_reads_boolean_strings(pose_driver: tuple[PoseDriver, RecordingCont
     assert driver.execute("set_flip", "true") == {"flip": True}
 
 
-def test_hand_pose_drops_a_hand_at_infinity(hand_driver: tuple[HandPoseDriver, RecordingContext]) -> None:
+def test_hand_pose_drops_a_hand_at_infinity(
+    hand_driver: tuple[HandPoseDriver, RecordingContext],
+) -> None:
     driver, context = hand_driver
     # w = 1 - x / 400 is zero on the column x = 400 px, where the fake hand's landmarks sit.
     driver.execute("set_homography", [1, 0, 0, 0, 1, 0, -1 / 400, 0, 1])
