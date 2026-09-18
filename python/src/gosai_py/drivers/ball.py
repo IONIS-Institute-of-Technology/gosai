@@ -30,7 +30,9 @@ Events and actions are declared with their types on the driver class. Each
 ball has a center ``x, y``, a ``diameter`` and a velocity ``vx, vy`` in px/s.
 
 The letterbox preprocessing mirrors ``training/``'s ONNX export, which is a
-separate package and keeps its own copy.
+separate package and keeps its own copy. Golden-value tests on both sides
+(``tests/test_ball_driver.py`` and ``training/tests/test_yolo_detect.py``)
+fail until the two copies agree.
 
 Environment (optional):
 - ``GOSAI_BALL_CONFIDENCE`` — detection confidence threshold 0..1 (default 0.70);

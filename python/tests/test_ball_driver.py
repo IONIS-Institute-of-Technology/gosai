@@ -109,3 +109,62 @@ def test_drops_balls_that_map_to_infinity(driver: tuple[BallDriver, RecordingCon
     instance.on_data("camera", "frame", _frame())
 
     assert context.emitted("balls")[-1]["balls"] == []
+
+
+# Golden values for `_letterbox`. training/tests/test_yolo_detect.py runs the
+# copy in training's ONNX export on the same image and expects the same pixels,
+# so changing either letterbox fails a test until the other one matches.
+LETTERBOX_IMAGE = [[0, 40, 80, 120, 160, 200], [20, 60, 100, 140, 180, 220]]
+# Target (height, width), the expected image, the scale and the (top, left) padding.
+LETTERBOX_CASES = [
+    # Shrinks by 2/3 and pads rows unevenly.
+    (
+        (4, 4),
+        [
+            [114, 114, 114, 114],
+            [20, 80, 140, 200],
+            [114, 114, 114, 114],
+            [114, 114, 114, 114],
+        ],
+        2 / 3,
+        (1, 0),
+    ),
+    # Already the target height: no resize, one column of padding on each side.
+    (
+        (2, 8),
+        [
+            [114, 0, 40, 80, 120, 160, 200, 114],
+            [114, 20, 60, 100, 140, 180, 220, 114],
+        ],
+        1.0,
+        (0, 1),
+    ),
+    # Grows by 1.5 and pads the last row.
+    (
+        (4, 9),
+        [
+            [0, 20, 47, 73, 100, 127, 153, 180, 200],
+            [10, 30, 57, 83, 110, 137, 163, 190, 210],
+            [20, 40, 67, 93, 120, 146, 173, 200, 220],
+            [114, 114, 114, 114, 114, 114, 114, 114, 114],
+        ],
+        1.5,
+        (0, 0),
+    ),
+]
+
+
+def _three_channels(rows: list[list[int]]) -> np.ndarray:
+    return np.repeat(np.array(rows, dtype=np.uint8)[:, :, None], 3, axis=2)
+
+
+@pytest.mark.parametrize(("size", "expected", "scale", "pad"), LETTERBOX_CASES)
+def test_letterbox_matches_the_training_export(
+    size: tuple[int, int], expected: list[list[int]], scale: float, pad: tuple[int, int]
+) -> None:
+    out, out_scale, out_pad = ball._letterbox(_three_channels(LETTERBOX_IMAGE), size)
+
+    assert out.dtype == np.uint8 and out.shape == (*size, 3)
+    assert np.array_equal(out, _three_channels(expected))
+    assert out_scale == pytest.approx(scale)
+    assert out_pad == pad

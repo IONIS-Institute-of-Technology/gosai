@@ -27,6 +27,11 @@ _IOU_THRESHOLDS = [0.5 + 0.05 * i for i in range(10)]
 
 
 def _letterbox(img: Any, size: tuple[int, int]) -> Any:
+    """Resize with aspect-preserving padding to (height, width), as the ball driver does.
+
+    The driver keeps its own copy in ``python/src/gosai_py/drivers/ball.py``.
+    Golden-value tests on both sides fail until the two agree.
+    """
     import cv2
 
     ih, iw = size
