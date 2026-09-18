@@ -77,7 +77,9 @@ Electron main process follows the server's experience state: when an experience
 runs, main opens its window, and when it stops or crashes, main closes it. That
 also covers experiences started or stopped elsewhere, such as an app calling
 `rt.router.switchTo`. The Experiences tab lists running experiences and the
-windows main has open.
+windows main has open. When an experience crashes, because its start failed
+or its window stopped it after repeated render errors, the app's row says why
+until the app starts again.
 
 The window opens on the app's own display assignment (expand the row, "device
 assignments"), else on the display chosen in the Settings tab, else on the

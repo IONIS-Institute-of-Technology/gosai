@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
+import type { RunningExperience } from '@gosai/shared';
 import { AppManager } from '../src/apps/manager.js';
 import type { DriverManager } from '../src/drivers/manager.js';
 import { EventBus } from '../src/ipc/bus.js';
@@ -254,19 +255,54 @@ describe('app manager lifecycle', () => {
     expect(manager.listRunningExperiences().map((e) => e.experienceSlug)).toEqual(['base']);
   });
 
-  test('publishes a crashed state for a failed start', async () => {
+  test('publishes a crashed state for a failed start, with the reason', async () => {
     const { paths, drivers, bus, create } = setup();
     manifestApp(paths.apps, chain);
     const manager = create();
-    const states: string[] = [];
+    const states: RunningExperience[] = [];
     bus.on('experience:state-changed', (_event, payload) => {
-      const state = payload as { experienceSlug: string; state: string };
-      states.push(`${state.experienceSlug}:${state.state}`);
+      states.push(payload as RunningExperience);
     });
     drivers.failing.add('camera');
     await expect(manager.startExperience('pool', 'base')).rejects.toThrow();
-    expect(states).toEqual(['base:starting', 'base:crashed']);
-    expect(manager.getApp('pool')?.state).toBe('crashed');
+    expect(states.map((s) => `${s.experienceSlug}:${s.state}`)).toEqual([
+      'base:starting',
+      'base:crashed',
+    ]);
+    expect(states[0]).not.toHaveProperty('error');
+    expect(states[1]?.error).toBe('camera failed to start');
+    expect(manager.getApp('pool')).toMatchObject({
+      state: 'crashed',
+      crash: { experienceSlug: 'base', error: 'camera failed to start' },
+    });
+
+    drivers.failing.clear();
+    await manager.startExperience('pool', 'base');
+    expect(manager.getApp('pool')?.state).toBe('running');
+    expect(manager.getApp('pool')).not.toHaveProperty('crash');
+  });
+
+  test('a stop with an error ends crashed and keeps the error on the app', async () => {
+    const { paths, drivers, bus, create } = setup();
+    manifestApp(paths.apps, chain);
+    const manager = create();
+    await manager.startExperience('pool', 'base');
+    const states: RunningExperience[] = [];
+    bus.on('experience:state-changed', (_event, payload) => {
+      states.push(payload as RunningExperience);
+    });
+
+    const error = 'The experience stopped after 60 consecutive render errors: boom';
+    await manager.stopExperience('pool', 'base', { error });
+
+    expect(states.map((s) => s.state)).toEqual(['stopping', 'crashed']);
+    expect(states[1]).toMatchObject({ experienceSlug: 'base', startedAs: 'request', error });
+    expect(manager.listRunningExperiences()).toEqual([]);
+    expect(drivers.leases.size).toBe(0);
+    expect(manager.getApp('pool')).toMatchObject({
+      state: 'crashed',
+      crash: { experienceSlug: 'base', error },
+    });
   });
 
   test('auto-starts the startup experiences, or the default one', async () => {

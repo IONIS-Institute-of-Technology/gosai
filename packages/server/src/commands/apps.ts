@@ -73,8 +73,8 @@ export function appCommands({
         experienceSlug,
         driverBinding === undefined ? {} : { driverBinding },
       ),
-    'experience:stop': async ({ appSlug, experienceSlug }) => {
-      await apps.stopExperience(appSlug, experienceSlug);
+    'experience:stop': async ({ appSlug, experienceSlug, error }) => {
+      await apps.stopExperience(appSlug, experienceSlug, error === undefined ? {} : { error });
       return { ok: true };
     },
 

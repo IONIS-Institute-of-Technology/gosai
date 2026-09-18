@@ -47,6 +47,16 @@ Added:
   `Unknown driver` or `Python bridge is not running`. `SystemStats`, the
   `system:stats` payload, carries the reason as `pythonUnavailable`, or `null`
   when they can run.
+- When the runtime stops an experience after repeated render errors, it tells
+  the server why with `experience:stop` and its new optional `error`, at most
+  2000 characters. The server then reports the experience `crashed` instead of
+  `idle`, so the desktop app closes its windows and a kiosk exits with code 1.
+  The runtime also tries when the server it reconnected to speaks another
+  protocol version.
+- A `crashed` `RunningExperience`, as `rt.router.onStateChange` passes it,
+  carries `error`: why its start failed, or what its window reported.
+  `InstalledApp` carries `crash`, an `ExperienceCrash` with the experience and
+  the error, while its state is `crashed`.
 
 ## 0.1.0
 

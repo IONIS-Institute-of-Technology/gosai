@@ -19,6 +19,9 @@ import type { DriverEventPayload, DriverRuntimeInfo } from './types.js';
 
 export const PROTOCOL_VERSION = 1;
 
+/** Longest `error` an `experience:stop` request may carry. Clients shorten longer ones. */
+export const MAX_EXPERIENCE_ERROR_LENGTH = 2000;
+
 export interface MessageEnvelope<TType extends string = string, TPayload = unknown> {
   readonly v: typeof PROTOCOL_VERSION;
   readonly id?: string;
