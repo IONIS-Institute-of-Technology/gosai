@@ -291,6 +291,10 @@ These apply to the packaged desktop app and kiosks. See
 `GOSAI_PORT` and `GOSAI_HOST` don't change the embedded server, which always
 listens on `127.0.0.1` with an ephemeral port.
 
+With `GOSAI_AUTOSTART_SERVER=0`, start the separate server with
+`GOSAI_ALLOWED_ORIGINS=gosai://dashboard`, the origin the packaged dashboard
+loads from, and give both processes the same `GOSAI_DASHBOARD_TOKEN`.
+
 ## Troubleshooting
 
 | Symptom                                              | Likely cause                                                                                                                                            |
