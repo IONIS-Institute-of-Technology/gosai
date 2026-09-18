@@ -849,6 +849,7 @@ export const systemStatsSchema: z.ZodType<SystemStats> = z.object({
   memoryBytes: z.number(),
   memoryTotalBytes: z.number(),
   uptimeMs: z.number(),
+  pythonUnavailable: z.string().nullable(),
 });
 
 // ── Errors ─────────────────────────────────────────────────────────────────

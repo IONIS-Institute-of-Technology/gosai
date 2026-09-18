@@ -442,4 +442,9 @@ export interface SystemStats {
   readonly memoryBytes: number;
   readonly memoryTotalBytes: number;
   readonly uptimeMs: number;
+  /**
+   * Why the built-in Python drivers can't run, such as a missing Python
+   * environment. Their calls fail with it. Null when they can run.
+   */
+  readonly pythonUnavailable: string | null;
 }

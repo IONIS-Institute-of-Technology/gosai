@@ -18,6 +18,8 @@ import { uvCacheDir } from './python-bootstrap.js';
 
 export interface ServerRunnerOptions {
   readonly pythonDir?: string;
+  /** Why the Python runtime could not be installed. The server reports it for Python drivers. */
+  readonly pythonSetupError?: string;
   readonly builtinAppsDir?: string;
   readonly homeDir?: string;
   /** Dashboard token for this launch, passed to the server. */
@@ -83,6 +85,9 @@ export class ServerRunner {
         .join(','),
     };
     if (this.options.pythonDir) env.GOSAI_PYTHON_DIR = this.options.pythonDir;
+    if (this.options.pythonSetupError) {
+      env.GOSAI_PYTHON_SETUP_ERROR = this.options.pythonSetupError;
+    }
     if (this.options.builtinAppsDir) env.GOSAI_BUILTIN_APPS = this.options.builtinAppsDir;
     if (this.options.homeDir) env.GOSAI_HOME = this.options.homeDir;
     if (app.isPackaged && !env.GOSAI_SDK_DIR) {

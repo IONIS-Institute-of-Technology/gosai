@@ -41,6 +41,12 @@ Added:
 - The desktop app and kiosks open and close windows as experiences start and
   stop, so `rt.router.switchTo` replaces the app's window with the next
   experience's.
+- When Python drivers can't run, for example because the Python environment
+  is missing, every call to them rejects with
+  `Python drivers are unavailable: <reason>`. It used to reject with
+  `Unknown driver` or `Python bridge is not running`. `SystemStats`, the
+  `system:stats` payload, carries the reason as `pythonUnavailable`, or `null`
+  when they can run.
 
 ## 0.1.0
 

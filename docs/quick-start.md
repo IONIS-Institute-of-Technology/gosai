@@ -122,6 +122,7 @@ refuses to install an app whose range doesn't include the SDK it serves.
 | `GOSAI_PYTHON_DIR`         | Override the Python source/venv directory. Skips the packaged first-run Python install.             |
 | `GOSAI_BUILTIN_APPS`       | Override the built-in apps discovery root.                                                          |
 | `GOSAI_PYTHON=0`           | Disable the Python bridge entirely.                                                                 |
+| `GOSAI_PYTHON_SETUP_ERROR` | Set by the desktop app for its server: why the Python runtime could not be installed.               |
 | `GOSAI_UV`                 | uv used to build the Python environments of apps with drivers (default: bundled, or `uv` on PATH).  |
 | `GOSAI_UV_CACHE_DIR`       | uv cache for those environments (default: uv's own; `~/.gosai-runtime/uv-cache` when packaged).     |
 | `GOSAI_SDK_DIR`            | Directory of the built SDK bundle the server serves under `/sdk/<version>/`.                        |

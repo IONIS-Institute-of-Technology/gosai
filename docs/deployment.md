@@ -112,9 +112,12 @@ doesn't already cover. Both use uv's cache in `~/.gosai-runtime/uv-cache`.
 
 If the Python runtime can't be installed, GOSAI still starts and says so: a
 warning dialog on the desktop, a message on the status window for a few
-seconds in a kiosk. Apps without Python drivers keep working. If the server
-can't start, the desktop shows an error dialog and a kiosk shows the error
-for 15 seconds, then both exit with code 1.
+seconds in a kiosk. Apps without Python drivers keep working. The server gets
+the reason: the dashboard's status bar shows it, and Python driver calls fail
+with `Python drivers are unavailable: <reason>`, so an app that needs them
+fails to start with that message. If the server can't start, the desktop
+shows an error dialog and a kiosk shows the error for 15 seconds, then both
+exit with code 1.
 
 The server watches a pipe from the desktop app. When the app exits for any
 reason, including a crash, the server stops its Python bridge and exits, so

@@ -110,6 +110,12 @@ export interface DriverHubOptions {
   readonly createBridge?: DriverBridgeFactory;
   /** Without it, apps' drivers don't run and their names are unknown. */
   readonly apps?: AppBridgeProvider;
+  /**
+   * Why Python drivers can't run here at all, such as a missing Python
+   * environment. The built-in bridge then never starts, and calls to built-in
+   * drivers, or to app drivers when there is no `apps`, reject with it.
+   */
+  readonly unavailable?: string;
   readonly supervisorTiming?: Partial<SupervisorTiming>;
   readonly bridgeReadyWaitMs?: number;
   /**
@@ -140,6 +146,8 @@ export class DriverHub implements DriverService, AppDriverHosts {
   private readonly builtin: DriverManager;
   private readonly hosts = new Map<string, AppHost>();
   private active = false;
+  /** Why the built-in bridge's first start failed. It counts until the bridge comes up. */
+  private builtinStartError: string | null = null;
 
   constructor(private readonly options: DriverHubOptions) {
     this.log = options.logger.child('drivers');
@@ -152,12 +160,32 @@ export class DriverHub implements DriverService, AppDriverHosts {
 
   /**
    * Starts the built-in bridge and the bridges of known apps. Rejects when the
-   * built-in bridge's first attempt fails; every bridge keeps retrying.
+   * built-in bridge's first attempt fails; every bridge keeps retrying. The
+   * built-in bridge doesn't start when Python drivers are `unavailable`.
    */
   async start(): Promise<void> {
     this.active = true;
     for (const host of this.hosts.values()) void this.launch(host);
-    await this.builtin.start();
+    if (this.options.unavailable !== undefined) return;
+    try {
+      await this.builtin.start();
+    } catch (err) {
+      this.builtinStartError = err instanceof Error ? err.message : String(err);
+      throw err;
+    }
+  }
+
+  /**
+   * Why the built-in drivers can't be used: the `unavailable` option, or the
+   * error of the built-in bridge's first start until the bridge comes up.
+   * Null when they can, including while the bridge starts.
+   */
+  unavailableReason(): string | null {
+    if (this.options.unavailable !== undefined) return this.options.unavailable;
+    if (this.builtinStartError !== null && !this.builtin.hasStarted()) {
+      return this.builtinStartError;
+    }
+    return null;
   }
 
   /** Stops every bridge, and kills environment builds and waits for them to end. */
@@ -370,9 +398,17 @@ export class DriverHub implements DriverService, AppDriverHosts {
   }
 
   private route(driver: string): { manager: DriverManager; host: AppHost | null } {
+    const unavailable = this.unavailableFor(driver);
+    if (unavailable !== null) throw new Error(`Python drivers are unavailable: ${unavailable}`);
     const found = this.find(driver);
     if (!found) throw new Error(`Unknown driver: ${driver}`);
     return found;
+  }
+
+  /** Why `driver` can't run at all. App drivers only depend on the Python toolchain. */
+  private unavailableFor(driver: string): string | null {
+    if (splitDriverName(driver).app === null) return this.unavailableReason();
+    return this.options.apps ? null : (this.options.unavailable ?? null);
   }
 
   private broadcastList(): void {
