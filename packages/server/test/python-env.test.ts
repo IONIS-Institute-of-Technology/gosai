@@ -61,7 +61,7 @@ describe('app python environments', () => {
     const constraints = join(envDir, 'constraints.txt');
     expect(fake.calls()).toEqual([
       `venv --no-project --python ${basePython} ${join(envDir, '.venv')}`,
-      `pip install --python ${python} -r ${join(appDir, 'requirements.txt')} -c ${constraints}`,
+      `pip install --python ${python} -r ${join(realpathSync(appDir), 'requirements.txt')} -c ${constraints}`,
     ]);
     // gosai-py comes from the base environment and is never a constraint.
     expect(readFileSync(constraints, 'utf8')).toBe('numpy==2.3.1\n');
