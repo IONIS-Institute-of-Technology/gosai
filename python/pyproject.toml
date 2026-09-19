@@ -11,7 +11,11 @@ dependencies = [
     "numpy>=2.5.0",
     "msgspec>=0.21.1",
     "opencv-contrib-python>=5.0.0",
-    "mediapipe>=1.0.1",
+    # Not 1.0.1: on macOS its CPU delegate aborts the process in
+    # TensorsToDetectionsCalculator, which wants a Metal graph service a CPU
+    # graph never has. The holistic landmarker only runs on that delegate,
+    # because its blendshapes graph cannot bind Metal buffers on the GPU one.
+    "mediapipe>=1.0.0,!=1.0.1",
     "sounddevice>=0.5.0",
 ]
 
