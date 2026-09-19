@@ -148,11 +148,19 @@ command with `{ "appSlug": "second-self", "values": { "projection.mode":
 Everything else adapts by itself:
 
 - **Webcam resolution/aspect** is detected automatically (the `pose` driver
-  reports the frame size).
+  reports the frame size). Direct mode center-crops the frame to the portrait
+  reference space (`fit: cover`) instead of letterboxing it into it, so a hand
+  can reach every position on the display. A landscape webcam keeps its full
+  height and roughly its central third (31% of the width at 16:9, 42% at 4:3);
+  a portrait-rotated camera is used whole. Stand centered: outstretched arms
+  leave the crop, and the `body` overlay's corner arrows point the way back.
 - **Screen size/orientation**: experiences are authored in a fixed portrait
   `1080x1920` reference space that is aspect-preserving (`contain`) fit onto the
-  window — any 9:16 display (1080x1920, WQHD 1440x2560, 4K portrait) fills
-  edge-to-edge, other aspects letterbox without distortion.
+  window. Any 9:16 display (1080x1920, WQHD 1440x2560, 4K portrait) fills
+  edge-to-edge; other aspects letterbox without distortion. On a landscape
+  screen, a laptop running `bun run dev` for instance, the app is a portrait
+  strip centered between black bars, laid out and proportioned exactly as it is
+  on the mirror, and all of it stays reachable.
 - **Mirror projection** (reflection mode) is _fitted_, not typed in — see below.
 
 ## Setting up a physical mirror rig

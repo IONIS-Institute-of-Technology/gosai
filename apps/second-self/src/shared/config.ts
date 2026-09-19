@@ -133,6 +133,18 @@ export function mergeConfig(base: SecondSelfConfig, override: unknown): SecondSe
 }
 
 /**
+ * How the camera frame fills the portrait reference space in direct mode.
+ *
+ * `cover` crops the frame to the display's aspect instead of letterboxing it,
+ * so a hand can reach every on-screen position. Under `contain` a landscape
+ * webcam only ever lands in a band across the middle of the portrait space,
+ * leaving the menu button and anything else near an edge untouchable, which is
+ * what a landscape test window looks like. Reflection mode ignores this: there
+ * the calibration fits the mapping.
+ */
+const CAMERA_FIT = 'cover';
+
+/**
  * The `set_mirror_config` update for the projection settings plus the fitted
  * profile. Without a profile the driver drops any fitted affine.
  */
@@ -143,6 +155,7 @@ export function toMirrorDriverConfig(
   return {
     mode: cfg.projection.mode,
     mirror: cfg.projection.mirror,
+    fit: CAMERA_FIT,
     width: REF_WIDTH,
     height: REF_HEIGHT,
     ...(profile

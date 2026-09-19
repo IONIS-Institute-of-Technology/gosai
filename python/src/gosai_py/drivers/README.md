@@ -72,6 +72,12 @@ Reflection-mode geometry is therefore _fitted_ by the second-self in-app
 wizard, never measured by hand; the legacy mm config keys remain only as the
 fallback used to derive the affine when no fit has been applied.
 
+In direct mode, `fit` decides what gives when the camera and the screen
+disagree on aspect. `contain` (the default) keeps the whole frame and leaves a
+band of the screen that no landmark can reach; `cover` crops the frame to the
+screen so every on-screen position stays reachable. Apps whose UI is touched by
+hand, second-self among them, ask for `cover`.
+
 **Webcam-only (no RealSense).** The legacy driver needed an Intel RealSense
 depth camera. We drop that hardware: MediaPipe Holistic already produces metric
 3D (`body_world_pose`, meters), and absolute camera distance is recovered with a

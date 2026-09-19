@@ -25,6 +25,7 @@ describe('Projection', () => {
       params: {
         mode: 'direct',
         mirror: true,
+        fit: 'cover',
         width: 1080,
         height: 1920,
         tilt_deg: 17,

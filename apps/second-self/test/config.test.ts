@@ -82,6 +82,9 @@ describe('toMirrorDriverConfig', () => {
     expect(toMirrorDriverConfig(DEFAULT_CONFIG, null)).toEqual({
       mode: 'direct',
       mirror: true,
+      // Letterboxing the camera instead would leave the top and bottom of the
+      // display outside the tracked band, out of reach of any hand.
+      fit: 'cover',
       width: 1080,
       height: 1920,
       affine: null,
