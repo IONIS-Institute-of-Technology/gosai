@@ -5,6 +5,7 @@
  */
 
 import type { LayerDefinition, LayerManager } from '@gosai/sdk';
+import type { LayerGuide } from './guide.js';
 import type { FrameContext } from './types.js';
 
 export interface MenuOption {
@@ -20,6 +21,8 @@ export interface LayerDef extends LayerDefinition<FrameContext> {
   readonly inMenu: boolean;
   /** Passive overlays that run at startup. The menu shows its hint while only these run. */
   readonly overlay?: boolean;
+  /** What the layer tells the user when it starts. Layers without one stay silent. */
+  readonly guide?: LayerGuide;
   readonly options?: readonly MenuOption[];
 }
 

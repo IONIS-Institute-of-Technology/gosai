@@ -5,6 +5,7 @@
  */
 
 import type { ExperienceRuntimeContext, FullscreenCanvas } from '@gosai/sdk';
+import type { AssetRegistry } from './assets.js';
 import type { MirrorFeed } from './feed.js';
 import type { Layers, MenuOptions } from './layers.js';
 import type { Projection } from './projection.js';
@@ -27,4 +28,9 @@ export interface LayerDeps {
   setFaceMesh(stream: 'raw' | 'mirrored', enabled: boolean): void;
   /** URL of a file under the app's `assets/` directory. */
   asset(path: string): string;
+  /**
+   * Where a layer declares, in `preload`, the assets it can't work without.
+   * Anything broken is shown on the mirror instead of failing silently.
+   */
+  readonly assets: AssetRegistry;
 }

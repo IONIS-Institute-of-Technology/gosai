@@ -67,17 +67,19 @@ train future driver models) with the multi-model pipeline in
 
 ## Requirements
 
-| Tool       | Min version | Notes                                |
-| ---------- | ----------- | ------------------------------------ |
-| **Bun**    | 1.4.2       | TypeScript runtime + bundler         |
-| **uv**     | 0.5         | Python package + virtual env manager |
-| **Node**   | 22.12       | Electron requires it                 |
-| **Python** | 3.12        | The drivers target 3.12+             |
-| **git**    | -           | For cloning external apps            |
+| Tool        | Min version | Notes                                |
+| ----------- | ----------- | ------------------------------------ |
+| **Bun**     | 1.4.2       | TypeScript runtime + bundler         |
+| **uv**      | 0.5         | Python package + virtual env manager |
+| **Node**    | 22.12       | Electron requires it                 |
+| **Python**  | 3.12        | The drivers target 3.12+             |
+| **git**     | -           | For cloning external apps            |
+| **git-lfs** | -           | The models and media are LFS objects |
 
 ## Quick Start
 
 ```bash
+git lfs install && git lfs pull   # models, avatars, videos and art are LFS objects
 bun install
 bun run python:sync          # creates python/.venv with uv (CV + audio included)
 bun run python:sync -- --extra gpu --no-group cpu # CUDA onnxruntime on NVIDIA GPUs
@@ -86,6 +88,10 @@ bun run build:sdk           # builds the SDK bundle served to app windows
 bun run build:apps          # builds built-in app entry bundles
 bun run dev
 ```
+
+Without the `git lfs pull`, every binary asset in the repository is a
+130-byte pointer stub: the ONNX drivers refuse to start, and Second Self shows
+an empty avatar, an empty dance and a black sign game.
 
 Two processes start:
 

@@ -102,6 +102,7 @@ export function createDanceLayer(deps: LayerDeps): Layer {
 
   return {
     async preload(): Promise<void> {
+      await deps.assets.require('dance', ['dance/dance02.json', 'dance/dance02.webp']);
       const referenceUrl = deps.asset('dance/dance02.webp');
       try {
         choreography = parseChoreography(await fetchOk(deps.asset('dance/dance02.json'), 'json'));

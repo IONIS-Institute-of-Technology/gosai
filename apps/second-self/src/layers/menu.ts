@@ -1,14 +1,20 @@
 /**
- * Gesture-driven launcher menu.
+ * Gesture-driven launcher menu, and the guide overlay that goes with it.
  *
  * An index fingertip is the cursor. Dwelling on the central button opens the
  * launcher; dwelling on a row toggles a layer, fires or toggles one of its
  * options, or runs one of the actions listed after the layers. Running layers
  * are highlighted, and the options of a running layer show beneath it.
+ *
+ * While the launcher is closed the layer's guide shows instead: an intro card
+ * when a layer has just started, then a hint line along the bottom edge. This
+ * layer draws it because it is persistent and on top of everything, so no
+ * scene can cover the instructions for driving it.
  */
 
 import type { LayerDeps } from '../shared/deps.js';
-import { drawText, fillCircle, strokeCircle } from '../shared/draw.js';
+import { fillCircle, strokeCircle } from '../shared/draw.js';
+import { GuideOverlay } from '../shared/guide.js';
 import type { MenuOption } from '../shared/layers.js';
 import { REF_WIDTH, type Layer } from '../shared/types.js';
 import {
@@ -40,6 +46,9 @@ const LIST_TOP = BUTTON_Y + BUTTON_R + 40;
 const ORANGE = '#ff8100';
 const WHITE = '#ffffff';
 
+/** The hint shown while nothing but the passive overlays run. */
+const IDLE_HINT = 'Raise a hand and hold your index fingertip over the menu button';
+
 /** A menu row that runs something other than a layer, such as the calibration. */
 export interface MenuAction {
   readonly id: string;
@@ -59,6 +68,7 @@ interface Row {
 
 export function createMenuLayer(deps: LayerDeps, actions: readonly MenuAction[] = []): Layer {
   const cursorPicker = new CursorPicker();
+  const guide = new GuideOverlay(deps.layers, deps.assets, IDLE_HINT);
   /** Per-row dwell progress in milliseconds. */
   const dwell = new Map<string, number>();
   const cooldownUntil = new Map<string, number>();
@@ -73,6 +83,7 @@ export function createMenuLayer(deps: LayerDeps, actions: readonly MenuAction[] 
     buttonCooldownUntil = 0;
     open = false;
     cursorPicker.reset();
+    guide.reset();
   }
 
   function buildRows(): Row[] {
@@ -111,6 +122,9 @@ export function createMenuLayer(deps: LayerDeps, actions: readonly MenuAction[] 
     start: reset,
 
     render({ ctx, timestamp, deltaMs }): void {
+      // Tracked every frame, so a layer that starts while the launcher is open
+      // still has its card waiting when the launcher closes.
+      guide.update(timestamp);
       const cursor = cursorPicker.pick(deps.feed.mirror.data, timestamp);
 
       const buttonRadius = BUTTON_R + (buttonMs > 0 ? HYSTERESIS_PX : 0);
@@ -125,8 +139,7 @@ export function createMenuLayer(deps: LayerDeps, actions: readonly MenuAction[] 
       drawButton(ctx, open, buttonMs / OPEN_DWELL_MS);
 
       if (!open) {
-        const { layers } = deps;
-        if (layers.running().every((slug) => layers.definition(slug)?.overlay)) drawHint(ctx);
+        guide.render(ctx, timestamp);
         return;
       }
 
@@ -216,17 +229,4 @@ function drawButton(ctx: CanvasRenderingContext2D, open: boolean, progress: numb
       lineWidth: 5,
     });
   }
-}
-
-function drawHint(ctx: CanvasRenderingContext2D): void {
-  drawText(
-    ctx,
-    'Raise a hand and hold your index over the menu button',
-    REF_WIDTH / 2,
-    BUTTON_Y + BUTTON_R + 70,
-    34,
-    'rgba(255,255,255,0.6)',
-    'center',
-    'middle',
-  );
 }

@@ -37,6 +37,16 @@ relationships (ported from the legacy `processing.py` app-manager rules); the
 menu is `persistent`. Per-layer menu options (the old `sub-menu.json` toggles)
 live in `src/shared/layers.ts`.
 
+Every layer introduces itself. Nothing here has a label on it (the only input
+is your body in front of a camera), so a layer that explains nothing is a layer
+nobody can play. Each one declares a `guide` in `main.ts`: a card with its name
+and one or two lines about what to do, shown in the middle of the mirror for
+seven seconds when the layer starts, then a single hint line along the bottom
+edge for as long as it runs. Starting Dance introduces the dance, not the Body
+overlay it pulls in with it. While nothing but the overlays run, the hint is
+the one for the menu itself. `src/shared/guide.ts` holds the overlay; the menu
+layer draws it, being persistent and above everything else.
+
 The mirror calibration is a second experience, `calibrate`, rather than a
 layer: see [Setting up a physical mirror rig](#setting-up-a-physical-mirror-rig).
 The menu's last row, **Calibrate**, switches to it.
@@ -49,6 +59,40 @@ The menu's last row, **Calibrate**, switches to it.
 | `pose_to_mirror`     | Projects landmarks into mirror pixel space (`mirrored_data`)                                 |
 | `frequency_analysis` | Microphone pitch/amplitude/FFT (`frequency`)                                                 |
 | `slr`                | Sign-language recognition over a 30-frame window (`new_sign`)                                |
+
+The `slr` driver runs its 30-frame window on every camera frame, so it guesses
+about 30 times a second, and those guesses are noisy in both directions: they
+drop out in the middle of a sign being performed correctly, and they land
+confidently on a sign nobody is making when the hand landmarks are poor. No
+layer acts on a guess. `SignTracker` keeps **evidence** per sign, in
+milliseconds: time recognised as a sign adds to that sign's budget, time
+recognised as something else drains the others but slowly, and a sign is acted
+on at `SIGN_EVIDENCE_MS`. A sign seen most of the time therefore still adds up,
+while one seen a quarter of the time never does. Two gates sit in front of it:
+nothing counts while no hand is tracked (without hands the recogniser is
+classifying zero-padded input, and it is confident about it), and nothing
+counts until the tracker is **armed**, which takes a moment of hands at rest.
+Arming is what stops hands that happen to be up when a question appears from
+answering it: a recogniser stuck on one sign then fails safe, doing nothing,
+rather than picking for you. The layers draw the evidence as a bar on the clip
+being copied, and say "hands down" while they are waiting to arm.
+
+Two more rules come from the vocabulary itself. A layer declares which signs it
+will act on (`setCandidates`), so a guess outside that set is noise: it barely
+drains the sign being attempted and can never be committed. That matters
+because the recogniser wanders, and "television" landing in the middle of
+someone signing "left" used to cost them their progress. And the leader must be
+clearly ahead of the runner-up before it counts: several signs look alike to
+the model, "left" and "right" worst of all, and committing whichever crossed
+the line first would be a coin toss in a game about learning which is which.
+Lookalikes therefore commit to nothing, and `sign-game` uses `contested()` to
+say "too alike" rather than leave the screen silently refusing to move.
+
+Choices are answered by signing and nothing else. A fingertip dwell on the
+columns, the launcher's interaction, was tried as a way out of an unanswerable
+choice and removed: a hand performing signs passes over the columns constantly,
+so it fired by accident while someone was signing. Anything added here has to
+survive a hand that is already moving all over the screen.
 
 `pose_to_mirror` and `slr` are **new built-in drivers** added to `gosai/python`
 for this app (the legacy platform had them; the new one did not). They are
@@ -87,7 +131,9 @@ mic ────────────▶ frequency_analysis (frequency)──
 - `src/calibrate.ts`: the calibration experience. `src/calibration/` holds the
   mirror wizard and the control window GOSAI opens next to it.
 - `src/shared/`: `types.ts` (driver payload types come from the SDK),
-  `feed.ts`, `layers.ts` (layer definitions and menu options), `deps.ts`,
+  `feed.ts`, `layers.ts` (layer definitions, menu options and guides),
+  `guide.ts` (the intro card and hint line), `assets.ts` (asset health),
+  `deps.ts`,
   `config.ts` (settings), `projection.ts` (mirror projection),
   `calibration.ts` (the calibration profile, and entering and leaving the
   calibration), `draw.ts`, `ui.ts` (cursor, dwell buttons, progress rings),
@@ -202,8 +248,53 @@ No millimetres, offsets, FOVs or tilt angles are ever entered by hand.
   is missing it renders a labelled placeholder instead of failing.
 - `sign-game` / `sign-training` require the SLR ONNX models bundled with the
   `slr` driver; the 16-sign action set is configured by `main.ts`.
+- `sign-training`'s correction references in `assets/sign-training/slr_samples/`
+  are 30 recorded frames per sign, and how much they move varies a lot: some
+  are real animations (`goodbye`'s hand travels 3374 px), while others are
+  effectively a held pose (`ok` travels 16 px, `television` 24 px). The step is
+  therefore presented as a pose to move onto rather than a motion to follow,
+  with per-joint marks and per-part bars showing what is still off. The
+  tolerances are a fraction of each reference's own nose-to-hip distance
+  (`BODY_TOLERANCE`, `HAND_TOLERANCE`), because the samples were recorded at
+  different distances from the camera and a fixed pixel tolerance made some
+  signs stricter than others. A reference frame with no hand is stored as all
+  zeros; that hand is skipped rather than counted as a miss.
 - Large media (sign videos, sprites, backgrounds, the dance animation and the
-  VRM model) is stored with Git LFS.
+  VRM model) is stored with Git LFS. **Run `git lfs install && git lfs pull`
+  in the GOSAI repository before running the app.** Without it every one of
+  those files is a 130-byte pointer stub that fetches with a 200 and decodes
+  into nothing: Aria has no model, Dance has no dancer, and the sign modules
+  have no clips to copy. The `slr` driver's ONNX models are LFS objects too,
+  so sign recognition does not run at all.
+- Layers declare the files they cannot work without through
+  `deps.assets.require(...)` in `preload`. Anything missing, or still a Git LFS
+  pointer, is logged and shown on the mirror on the layer's card, with the
+  command that fixes it, instead of the layer drawing an empty screen.
+- `sign-game`'s character sprites in `assets/sign-game/characters/*/sprites/`
+  are cropped to one box shared by every character, so a single draw box lands
+  them all on the same ground line at the same scale and nobody shifts when the
+  sprite changes. They were exported as 1920x1080 frames with the character
+  filling a small part of the canvas, which drew every character at about a
+  quarter of their intended size. A new sprite exported the same way joins them
+  with:
+
+  ```python
+  # Run from python/ with `./.venv/bin/python`. The crop box is the union of
+  # every sprite's alpha bounding box; re-run over all of them when adding art
+  # that falls outside it, or the characters stop lining up.
+  from PIL import Image
+  import glob
+  files = sorted(glob.glob('../apps/second-self/assets/sign-game/characters/*/sprites/*.png'))
+  boxes = [Image.open(f).convert('RGBA').getbbox() for f in files]
+  crop = (min(b[0] for b in boxes), min(b[1] for b in boxes),
+          max(b[2] for b in boxes), max(b[3] for b in boxes))
+  for f in files:
+      Image.open(f).convert('RGBA').crop(crop).save(f, optimize=True)
+  ```
+
+- The `sign-game` backgrounds are wide (up to 3:1) and the mirror is portrait,
+  so they are drawn cropped to fill (`drawCover`) rather than squeezed into the
+  frame, which distorted every one of them.
 - Aria's sign clips in `assets/signs/Aria/` are cropped to the area she uses
   across all of them, at 444x648 with alpha and no audio, so she fills the
   boxes that sign-game and sign-training draw them in. A new clip recorded at

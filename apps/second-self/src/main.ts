@@ -23,6 +23,7 @@ import {
   type FullscreenCanvas,
 } from '@gosai/sdk';
 
+import { AssetRegistry } from './shared/assets.js';
 import { loadMirrorProfile, openCalibration, shouldCalibrateFirst } from './shared/calibration.js';
 import { DEFAULT_CONFIG, loadConfig, mergeConfig } from './shared/config.js';
 import type { LayerDeps } from './shared/deps.js';
@@ -78,6 +79,10 @@ const LAYERS: readonly LayerSpec[] = [
     zIndex: 60,
     inMenu: true,
     overlay: true,
+    guide: {
+      lines: ['Your hands, drawn as the 21 points the camera tracks on each.'],
+      hint: 'Hand tracking: 21 points per hand',
+    },
     factory: createHandsLayer,
   },
   {
@@ -86,6 +91,13 @@ const LAYERS: readonly LayerSpec[] = [
     zIndex: 50,
     inMenu: true,
     overlay: true,
+    guide: {
+      lines: [
+        'Your skeleton, drawn as the 33 points the camera tracks.',
+        'Step back until all of you fits: arrows point the way if you drift out.',
+      ],
+      hint: 'Body tracking: 33 points. Step back to fit in frame.',
+    },
     factory: createBodyLayer,
   },
   {
@@ -94,6 +106,10 @@ const LAYERS: readonly LayerSpec[] = [
     zIndex: 55,
     inMenu: true,
     overlay: true,
+    guide: {
+      lines: ['A mesh over your face, following your features as you move.'],
+      hint: 'Face tracking: a live mesh over your features',
+    },
     factory: createFaceLayer,
   },
 
@@ -104,6 +120,10 @@ const LAYERS: readonly LayerSpec[] = [
     inMenu: true,
     exclusive: true,
     allowed: ['face', 'body', 'hands', 'aria', 'bounce', 'poke-it'],
+    guide: {
+      lines: ['The time, as four arcs: hours, minutes, seconds, milliseconds.'],
+      hint: 'Four arcs: hours, minutes, seconds, milliseconds',
+    },
     factory: createClockLayer,
   },
   {
@@ -113,6 +133,13 @@ const LAYERS: readonly LayerSpec[] = [
     inMenu: true,
     exclusive: true,
     allowed: ['face', 'body', 'hands', 'aria', 'clock', 'bounce'],
+    guide: {
+      lines: [
+        'Touch the ball with either index fingertip to score a point.',
+        'A new ball appears wherever you hit one. Rounds last 20 seconds.',
+      ],
+      hint: 'Touch the ball with an index fingertip. 20 seconds a round.',
+    },
     factory: createPokeItLayer,
   },
   {
@@ -122,6 +149,13 @@ const LAYERS: readonly LayerSpec[] = [
     inMenu: true,
     exclusive: true,
     allowed: ['face', 'body', 'hands', 'aria', 'clock', 'poke-it'],
+    guide: {
+      lines: [
+        'Keep the falling ball off the floor by hitting it with either hand.',
+        'Your hand is the paddle: tilt it to steer where the ball goes.',
+      ],
+      hint: 'Hit the ball with either hand. Tilt your hand to aim.',
+    },
     factory: createBounceLayer,
   },
   {
@@ -129,9 +163,26 @@ const LAYERS: readonly LayerSpec[] = [
     label: 'Frequency',
     zIndex: 32,
     inMenu: true,
+    guide: {
+      lines: [
+        'What the microphone hears, as a live spectrum along the bottom.',
+        'Sing, whistle or clap: the loudest pitch prints in the middle.',
+      ],
+      hint: 'Make a sound: the spectrum is your microphone, live',
+    },
     factory: createShowFrequencyLayer,
   },
-  { slug: 'show-ping', label: 'Ping', zIndex: 33, inMenu: true, factory: createShowPingLayer },
+  {
+    slug: 'show-ping',
+    label: 'Ping',
+    zIndex: 33,
+    inMenu: true,
+    guide: {
+      lines: ['Round-trip time between this display and the GOSAI server.'],
+      hint: 'Round trip to the server, measured four times a second',
+    },
+    factory: createShowPingLayer,
+  },
   {
     slug: 'theremine',
     label: 'Theremine',
@@ -139,6 +190,13 @@ const LAYERS: readonly LayerSpec[] = [
     inMenu: true,
     exclusive: true,
     required: ['hands'],
+    guide: {
+      lines: [
+        'An instrument you play with both hands, touching nothing.',
+        'Right hand left and right picks the note; left hand up and down the volume.',
+      ],
+      hint: 'Right hand picks the note, left hand the volume',
+    },
     options: [{ name: 'Sound', type: 'toggle', default: true }],
     factory: createTheremineLayer,
   },
@@ -149,6 +207,13 @@ const LAYERS: readonly LayerSpec[] = [
     inMenu: true,
     exclusive: true,
     required: ['hands'],
+    guide: {
+      lines: [
+        'Sing or hum: your pitch moves the cursor along the keyboard.',
+        'Open the menu and pick "Play La Vie En Rose" for notes to chase.',
+      ],
+      hint: 'Sing to move the cursor. Menu > Play La Vie En Rose for notes.',
+    },
     options: [
       { name: 'Show bars', type: 'toggle', default: true },
       { name: 'Play La Vie En Rose', type: 'button' },
@@ -164,6 +229,13 @@ const LAYERS: readonly LayerSpec[] = [
     exclusive: true,
     allowed: ['face', 'hands', 'clock'],
     required: ['body'],
+    guide: {
+      lines: [
+        'Copy the dancer drawn over you. Each pose you hold unlocks the next.',
+        'Stand back until your whole body fits: the bar on the left is your time.',
+      ],
+      hint: "Match the dancer's pose to move on to the next one",
+    },
     factory: createDanceLayer,
   },
   {
@@ -173,6 +245,14 @@ const LAYERS: readonly LayerSpec[] = [
     inMenu: true,
     exclusive: true,
     required: ['hands'],
+    guide: {
+      lines: [
+        'A story you answer in sign language, with your hands in view.',
+        'Copy the "ok" clip by the text to read on; at a choice, copy the one you pick.',
+        'Drop your hands between signs: a sign only counts once you start from rest.',
+      ],
+      hint: 'Copy the "ok" clip to read on. Hands down between signs.',
+    },
     factory: createSignGameLayer,
   },
   {
@@ -182,6 +262,14 @@ const LAYERS: readonly LayerSpec[] = [
     inMenu: true,
     exclusive: true,
     required: ['face', 'body', 'hands'],
+    guide: {
+      lines: [
+        'Copy the sign playing in the clip, top right, until the bar under it fills.',
+        'A reference skeleton then appears: match it to finish the sign.',
+        'Drop your hands between signs: a sign only counts once you start from rest.',
+      ],
+      hint: 'Copy the clip until its bar fills, then match the skeleton',
+    },
     factory: createSignTrainingLayer,
   },
   {
@@ -191,6 +279,13 @@ const LAYERS: readonly LayerSpec[] = [
     inMenu: true,
     exclusive: true,
     allowed: ['hands', 'bounce', 'clock', 'poke-it', 'show-ping'],
+    guide: {
+      lines: [
+        'An avatar that copies you: your head, your face, your hands, your arms.',
+        'Stand where the camera sees you and move.',
+      ],
+      hint: 'Aria copies your head, face, hands and arms',
+    },
     factory: createAriaLayer,
   },
 ];
@@ -240,6 +335,13 @@ export default defineExperience<State>({
       rt.log.warn('second-self: layer error', { slug, phase, err: String(err) });
     const synth = new Synth(rt.audio);
     const options = new MenuOptions(LAYERS, onError);
+    const asset = (path: string): string => rt.assets.url(`assets/${path}`);
+    const assets = new AssetRegistry(asset, (slug, problems) =>
+      rt.log.error('second-self: layer assets are unusable', {
+        slug,
+        problems: problems.map((p) => `${p.path} (${p.fault})`),
+      }),
+    );
     let layers: Layers | null = null;
     const deps: LayerDeps = {
       rt,
@@ -260,7 +362,8 @@ export default defineExperience<State>({
             ? rt.drivers.execute('pose', 'set_face_mesh', enabled)
             : rt.drivers.execute('pose_to_mirror', 'set_mirror_config', { face_mesh: enabled }),
         ),
-      asset: (path) => rt.assets.url(`assets/${path}`),
+      asset,
+      assets,
     };
     layers = new LayerManager<FrameContext, LayerDef>(
       LAYERS.map(({ factory, ...spec }) => ({ ...spec, create: () => factory(deps) })),

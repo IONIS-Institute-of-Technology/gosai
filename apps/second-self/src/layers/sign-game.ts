@@ -2,18 +2,19 @@
  * Sign Game: a sign-language visual novel.
  *
  * The story is authored in a small scripting language (`$bg`, `$show`, `$menu`,
- * `$if`, dialog lines, ...). The player advances dialog by making the "ok"
- * sign and picks menu choices by performing the matching sign; the avatar
- * demonstrates each option via its sign-animation videos.
+ * `$if`, dialog lines, ...). The player advances dialog by holding the "ok"
+ * sign and picks menu choices by holding the matching sign; the avatar
+ * demonstrates each one, and a bar fills as the hold builds up.
  *
  * The engine keeps the legacy script format and sign-driven interaction.
  */
 
 import type { LayerDeps } from '../shared/deps.js';
-import { drawContain, drawText, fillRect } from '../shared/draw.js';
+import { drawContain, drawCover, drawText, fillRect, strokeRect } from '../shared/draw.js';
 import { createMediaCache, MediaCache } from '../shared/media.js';
-import { SIGN_COUNT_THRESHOLD, SignTracker } from '../shared/sign.js';
+import { SignTracker } from '../shared/sign.js';
 import { REF_HEIGHT, REF_WIDTH, type Layer } from '../shared/types.js';
+import type { Rect } from '../shared/ui.js';
 
 type Pos = 'LEFT' | 'CENTER' | 'RIGHT';
 
@@ -39,13 +40,40 @@ interface CharState {
 
 const ADVANCE_COOLDOWN_MS = 1500;
 const POS_X: Record<Pos, number> = { LEFT: 320, CENTER: 540, RIGHT: 760 };
+/** The dialogue box, and the ground the characters stand on just above it. */
+const TEXT_BOX = { x: 40, y: 1450, w: REF_WIDTH - 80, h: 410 } as const;
+const GROUND_Y = TEXT_BOX.y - 20;
+/**
+ * The box a character's sprite is fitted into. Every sprite is cropped to the
+ * same shared box (see the app README), so one box lands every character on
+ * the same ground line at the same scale, whatever their pose.
+ */
+const SPRITE_BOX = { y: GROUND_Y - 400, width: 520, height: 800 } as const;
 /**
  * The box a character's sign clip is fitted into, `dx` from its POS_X. The
- * clips are cropped closer than the sprites (drawn into 520x760 at y 620), so
- * this box puts Aria where her sprite stands, at the same height, and the
- * switch between the two doesn't jump.
+ * clips frame Aria closer than her sprites do, so this box is fitted to make
+ * her body the same size as her sprite's, standing on the same ground line:
+ * the switch between the two doesn't jump.
  */
-const ANIM_BOX = { dx: -66, y: 646, width: 169, height: 247 } as const;
+const ANIM_BOX = { dx: 54, y: GROUND_Y - 449, width: 615, height: 897 } as const;
+/**
+ * The sign that turns a page of dialogue. Its clip plays in the corner of the
+ * text box: naming a sign only helps someone who already knows it. It is drawn
+ * framed and captioned so it reads as a button, not as a second character.
+ */
+const ADVANCE_SIGN = 'ok';
+const ADVANCE_BOX = { x: 790, y: 1478, w: 230, h: 310 } as const;
+/** Dialogue wraps before the clip, leaving a gutter between the two. */
+const DIALOG_TEXT_WIDTH = ADVANCE_BOX.x - 80 - 40;
+/** The sign clips, whose portrait shape sets the height of a choice column. */
+const CLIP_WIDTH = 444;
+const CLIP_HEIGHT = 648;
+/** The choice columns: as wide as they fit, stacked just above the text box. */
+const MENU_WIDTH = REF_WIDTH - 80;
+const MENU_GAP = 20;
+const MENU_LABEL_H = 64;
+const MENU_MAX_COLUMN_W = 425;
+const MENU_BOTTOM = TEXT_BOX.y - 50;
 const FONT_FAMILY = 'PressStart2P';
 
 export function createSignGameLayer(deps: LayerDeps): Layer {
@@ -151,11 +179,17 @@ export function createSignGameLayer(deps: LayerDeps): Layer {
           applyDialogCmd(el);
           lastDialog = { name: el.name, text: el.text };
           mode = 'dialog';
+          tracker.setCandidates([ADVANCE_SIGN]);
           return;
         case 'menu':
           currentMenu = el.items;
           currentMenuChar = el.char;
           mode = 'menu';
+          // Only the answers on offer count; everything else the recogniser
+          // wanders onto is noise. Hands already up must come back to rest
+          // before they can answer the question they were up for.
+          tracker.setCandidates(el.items.map((item) => item.sign));
+          tracker.consume();
           return;
         case 'end':
           mode = 'end';
@@ -177,12 +211,15 @@ export function createSignGameLayer(deps: LayerDeps): Layer {
   function onAdvanceDialog(now: number): void {
     if (now - lastInteraction < ADVANCE_COOLDOWN_MS) return;
     lastInteraction = now;
+    // Still holding the sign that turned this page must not turn the next one.
+    tracker.consume();
     index++;
     advance();
   }
 
   function chooseMenu(item: { sign: string; tag: string }, now: number): void {
     lastInteraction = now;
+    tracker.consume();
     index = tagMap.get(item.tag) ?? program.length;
     currentMenu = [];
     advance();
@@ -194,6 +231,12 @@ export function createSignGameLayer(deps: LayerDeps): Layer {
 
   return {
     async preload(): Promise<void> {
+      // The story, and the clip of the sign that turns its pages. The
+      // backgrounds and sprites the script names are checked as it runs.
+      await deps.assets.require('sign-game', [
+        'sign-game/script.txt',
+        `signs/Aria/${ADVANCE_SIGN}.webm`,
+      ]);
       try {
         const resp = await fetch(deps.asset('sign-game/script.txt'));
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -221,24 +264,22 @@ export function createSignGameLayer(deps: LayerDeps): Layer {
       resetStory();
     },
 
-    render({ ctx, timestamp }): void {
-      if (tracker.update(deps.feed)) {
-        if (mode === 'dialog' && tracker.held('ok')) onAdvanceDialog(timestamp);
-        else if (mode === 'menu') {
-          for (const item of currentMenu) {
-            if (tracker.held(item.sign)) {
-              chooseMenu(item, timestamp);
-              break;
-            }
-          }
-        }
-      }
+    render({ ctx, timestamp, deltaMs }): void {
+      // Holds are measured in wall-clock time, so they advance every frame,
+      // not only when the recogniser produces a guess.
+      tracker.update(deps.feed, deltaMs, timestamp);
+      if (mode === 'dialog' && tracker.held(ADVANCE_SIGN)) onAdvanceDialog(timestamp);
+      else if (mode === 'menu') updateMenu(timestamp);
 
-      // Background.
+      // Background. The art is wide (up to 3:1) and the mirror is portrait, so
+      // it is cropped to fill rather than squeezed into the frame.
       if (bg) {
         const img = media.image(bg);
-        if (MediaCache.imageReady(img)) ctx.drawImage(img, 0, 0, REF_WIDTH, REF_HEIGHT);
-        else fillRect(ctx, 0, 0, REF_WIDTH, REF_HEIGHT, '#101018');
+        if (MediaCache.imageReady(img)) {
+          drawCover(ctx, img, img.naturalWidth, img.naturalHeight, 0, 0, REF_WIDTH, REF_HEIGHT);
+        } else {
+          fillRect(ctx, 0, 0, REF_WIDTH, REF_HEIGHT, '#101018');
+        }
       } else {
         fillRect(ctx, 0, 0, REF_WIDTH, REF_HEIGHT, '#000000');
       }
@@ -246,7 +287,7 @@ export function createSignGameLayer(deps: LayerDeps): Layer {
       drawCharacters(ctx);
 
       if (mode === 'menu') drawMenu(ctx);
-      else if (mode === 'dialog') drawDialog(ctx, timestamp);
+      else if (mode === 'dialog') drawDialog(ctx);
       else if (mode === 'end') drawEnd(ctx);
       media.pauseUnused();
     },
@@ -273,13 +314,24 @@ export function createSignGameLayer(deps: LayerDeps): Layer {
         }
       } else if (c.sprite) {
         const img = media.image(spriteUrl(name, c.sprite));
-        if (MediaCache.imageReady(img))
-          drawContain(ctx, img, img.naturalWidth, img.naturalHeight, POS_X[c.pos], 620, 520, 760);
+        if (MediaCache.imageReady(img)) {
+          const { y, width, height } = SPRITE_BOX;
+          drawContain(
+            ctx,
+            img,
+            img.naturalWidth,
+            img.naturalHeight,
+            POS_X[c.pos],
+            y,
+            width,
+            height,
+          );
+        }
       }
     }
   }
 
-  function drawDialog(ctx: CanvasRenderingContext2D, now: number): void {
+  function drawDialog(ctx: CanvasRenderingContext2D): void {
     if (!lastDialog) return;
     drawTextBox(ctx);
     const named = lastDialog.name !== 'N';
@@ -298,50 +350,88 @@ export function createSignGameLayer(deps: LayerDeps): Layer {
       );
       y += 60;
     }
-    wrapText(ctx, lastDialog.text, 80, y, REF_WIDTH - 160, 44, 26, '#fff', font());
-
-    if (now - lastInteraction > 4000) {
-      drawText(
-        ctx,
-        'Make the "ok" sign to continue',
-        80,
-        1820,
-        22,
-        'rgb(235,52,198)',
-        'left',
-        'top',
-        font(),
-      );
-    }
+    wrapText(ctx, lastDialog.text, 80, y, DIALOG_TEXT_WIDTH, 44, 26, '#fff', font());
+    drawAdvanceHint(ctx);
     drawSignProgress(ctx);
   }
 
+  /** Aria performing the sign that turns the page, with how far the hold has got. */
+  function drawAdvanceHint(ctx: CanvasRenderingContext2D): void {
+    const { x, y, w, h } = ADVANCE_BOX;
+    const progress = tracker.progressFor(ADVANCE_SIGN);
+    const color = progress > 0 ? '#ff8100' : 'rgb(235,52,198)';
+    // Framed and captioned, in the same shape as a choice: the clip is a
+    // button showing the sign that turns the page, not a character.
+    fillRect(ctx, x, y, w, h, 'rgba(0,0,0,0.45)');
+    strokeRect(ctx, x, y, w, h, 3, color);
+    const video = media.video(animUrl('Aria', ADVANCE_SIGN));
+    if (media.playing(video)) {
+      drawContain(ctx, video, video.videoWidth, video.videoHeight, x + w / 2, y + h / 2, w, h);
+    }
+    if (progress > 0) fillRect(ctx, x, y, w * progress, 10, '#ff8100');
+    const caption = tracker.armed() ? 'copy to go on' : 'lower hands';
+    drawText(ctx, caption, x + w / 2, y + h + 32, 18, color, 'center', 'middle', font());
+  }
+
+  interface Column {
+    readonly item: { sign: string; tag: string };
+    readonly rect: Rect;
+    readonly clipH: number;
+  }
+
+  /** The choice columns: as wide as they fit, stacked just above the text box. */
+  function menuColumns(): Column[] {
+    const n = currentMenu.length;
+    // A column is never wider than its clip: one choice shouldn't become a
+    // letterboxed wall. The row of them is centred on whatever is left over.
+    const w = Math.min((MENU_WIDTH - (n - 1) * MENU_GAP) / n, MENU_MAX_COLUMN_W);
+    const clipH = w * (CLIP_HEIGHT / CLIP_WIDTH);
+    const top = MENU_BOTTOM - clipH - MENU_LABEL_H;
+    const left = (REF_WIDTH - (n * w + (n - 1) * MENU_GAP)) / 2;
+    return currentMenu.map((item, i) => ({
+      item,
+      clipH,
+      rect: { x: left + i * (w + MENU_GAP), y: top, w, h: clipH + MENU_LABEL_H },
+    }));
+  }
+
+  function updateMenu(timestamp: number): void {
+    for (const { item } of menuColumns()) {
+      if (tracker.held(item.sign)) {
+        chooseMenu(item, timestamp);
+        return;
+      }
+    }
+  }
+
   function drawMenu(ctx: CanvasRenderingContext2D): void {
+    // The choices are a modal over the scene: everything behind them dims,
+    // and the line that asked the question stays lit.
+    fillRect(ctx, 0, 0, REF_WIDTH, REF_HEIGHT, 'rgba(0,0,0,0.55)');
     if (lastDialog) {
       drawTextBox(ctx);
       wrapText(ctx, lastDialog.text, 80, 1500, REF_WIDTH - 160, 44, 26, '#fff', font());
     }
-    const n = currentMenu.length;
-    const w = (REF_WIDTH - 80) / n - 20;
-    for (let i = 0; i < n; i++) {
-      const item = currentMenu[i]!;
-      const x = 60 + i * ((REF_WIDTH - 80) / n);
-      const matching = tracker.sign === item.sign;
-      const progress = matching ? Math.min(1, tracker.count / SIGN_COUNT_THRESHOLD) : 0;
 
-      ctx.strokeStyle = matching ? '#ff8100' : '#ffffff';
-      ctx.lineWidth = 4;
-      ctx.strokeRect(x, 950, w, 360);
-      fillRect(ctx, x, 950, w * progress, 8, '#ff8100');
+    const columns = menuColumns();
+    for (const { item, rect, clipH } of columns) {
+      const { x, y, w, h } = rect;
+      const progress = tracker.progressFor(item.sign);
+      const matching = progress > 0;
+
+      fillRect(ctx, x, y, w, h, 'rgba(0,0,0,0.8)');
+      strokeRect(ctx, x, y, w, h, 4, matching ? '#ff8100' : '#ffffff');
+      fillRect(ctx, x, y, w * progress, 14, '#ff8100');
 
       const vid = media.video(animUrl(currentMenuChar, item.sign));
-      if (media.playing(vid))
-        drawContain(ctx, vid, vid.videoWidth, vid.videoHeight, x + w / 2, 1110, w - 30, 280);
+      if (media.playing(vid)) {
+        drawContain(ctx, vid, vid.videoWidth, vid.videoHeight, x + w / 2, y + clipH / 2, w, clipH);
+      }
       drawText(
         ctx,
         item.sign,
         x + w / 2,
-        1290,
+        y + clipH + MENU_LABEL_H / 2,
         30,
         matching ? '#ff8100' : '#fff',
         'center',
@@ -349,18 +439,27 @@ export function createSignGameLayer(deps: LayerDeps): Layer {
         font(),
       );
     }
+
     drawText(
       ctx,
-      'Perform a sign to choose',
+      menuPrompt(),
       REF_WIDTH / 2,
-      900,
+      (columns[0]?.rect.y ?? MENU_BOTTOM) - 44,
       30,
-      'rgba(255,255,255,0.8)',
+      'rgba(255,255,255,0.85)',
       'center',
       'middle',
       font(),
     );
     drawSignProgress(ctx);
+  }
+
+  /** Kept short: the pixel font is monospaced and the screen is 1080 wide. */
+  function menuPrompt(): string {
+    if (!tracker.armed()) return 'Hands down, then copy a sign';
+    // Lookalikes commit to nothing, which is silent without saying why.
+    if (tracker.contested()) return 'Too alike: sign one more clearly';
+    return 'Copy a sign to choose';
   }
 
   function drawEnd(ctx: CanvasRenderingContext2D): void {
@@ -392,7 +491,7 @@ export function createSignGameLayer(deps: LayerDeps): Layer {
     if (!tracker.sign) return;
     drawText(
       ctx,
-      `sign: ${tracker.sign} (${tracker.count}/${SIGN_COUNT_THRESHOLD})`,
+      `sign: ${tracker.sign}`,
       REF_WIDTH - 60,
       60,
       24,
@@ -413,10 +512,9 @@ export function createSignGameLayer(deps: LayerDeps): Layer {
 // ---------------------------------------------------------------------------
 
 function drawTextBox(ctx: CanvasRenderingContext2D): void {
-  fillRect(ctx, 40, 1450, REF_WIDTH - 80, 410, 'rgba(0,0,0,0.7)');
-  ctx.strokeStyle = '#ffffff';
-  ctx.lineWidth = 4;
-  ctx.strokeRect(40, 1450, REF_WIDTH - 80, 410);
+  const { x, y, w, h } = TEXT_BOX;
+  fillRect(ctx, x, y, w, h, 'rgba(0,0,0,0.7)');
+  strokeRect(ctx, x, y, w, h, 4, '#ffffff');
 }
 
 function wrapText(

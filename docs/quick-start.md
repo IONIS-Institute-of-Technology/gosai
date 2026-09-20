@@ -8,11 +8,17 @@ minutes.
 ```bash
 git clone https://github.com/IONIS-Institute-of-Technology/gosai ~/Repos/gosai
 cd ~/Repos/gosai
+git lfs install && git lfs pull    # the ONNX models and app media are LFS objects
 bun install
 bun run python:sync                # builds python/.venv with uv
 bun run build:sdk                  # builds the SDK bundle served to app windows
 bun run build:apps                 # builds built-in app entry bundles
 ```
+
+Skipping the `git lfs pull` leaves 130-byte pointer stubs where the binary
+files should be. Drivers that load an ONNX model then refuse to start, and apps
+draw blank where their media should be, so do it before anything else. A
+checkout made before git-lfs was installed needs `git lfs pull` to repair it.
 
 All Python driver dependencies (OpenCV, MediaPipe, ONNX Runtime, audio) are
 installed automatically by `python:sync`, with the CPU build of ONNX Runtime

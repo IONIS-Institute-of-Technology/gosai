@@ -47,6 +47,7 @@ interface Rotation {
 type HandSide = 'left' | 'right';
 type HandBones = ReadonlyArray<readonly [Kalidokit.HandKeys<Kalidokit.Side>, VRMHumanBoneName]>;
 
+const MODEL_PATH = 'aria/models/papa_de_him_chan.vrm';
 /** Feed considered stale after this long without a pose update. */
 const STALE_MS = 1000;
 /** Lerp used to ease bones back to the rest pose when tracking is lost. */
@@ -277,8 +278,9 @@ export function createAriaLayer(deps: LayerDeps): Layer {
 
       const loader = new GLTFLoader();
       loader.register((parser) => new VRMLoaderPlugin(parser));
+      await deps.assets.require('aria', [MODEL_PATH]);
       try {
-        const gltf = await loader.loadAsync(deps.asset('aria/models/papa_de_him_chan.vrm'));
+        const gltf = await loader.loadAsync(deps.asset(MODEL_PATH));
         const loaded: VRM | undefined = gltf.userData.vrm;
         if (!loaded) throw new Error('the file holds no VRM');
         loaded.scene.rotation.y = Math.PI;
@@ -398,7 +400,9 @@ function clampUnit(v: number): number {
 
 function drawPlaceholder(ctx: CanvasRenderingContext2D): void {
   const x = REF_WIDTH / 2;
-  const y = REF_HEIGHT / 2;
+  // Above centre: a broken-asset card from the guide overlay sits in the
+  // middle of the screen and would land right on top of this.
+  const y = REF_HEIGHT / 4;
   drawText(ctx, 'Aria', x, y - 30, 64, 'rgba(255,255,255,0.85)', 'center', 'middle');
   drawText(
     ctx,

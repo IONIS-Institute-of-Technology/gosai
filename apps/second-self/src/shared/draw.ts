@@ -95,6 +95,28 @@ export function drawText(
 }
 
 /**
+ * Draws a `sw` x `sh` source filling the `w` x `h` box at (`x`, `y`), keeping
+ * its aspect ratio and cropping whatever overflows, centred. Use it for
+ * backgrounds, where stretching to the box distorts the picture.
+ */
+export function drawCover(
+  ctx: CanvasRenderingContext2D,
+  src: CanvasImageSource,
+  sw: number,
+  sh: number,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): void {
+  if (sw <= 0 || sh <= 0) return;
+  const scale = Math.max(w / sw, h / sh);
+  const cropW = w / scale;
+  const cropH = h / scale;
+  ctx.drawImage(src, (sw - cropW) / 2, (sh - cropH) / 2, cropW, cropH, x, y, w, h);
+}
+
+/**
  * Draws a `sw` x `sh` source as large as fits in a `maxW` x `maxH` box centred
  * on (`cx`, `cy`), keeping its aspect ratio. Returns where it landed, or null
  * when the source has no size yet.
