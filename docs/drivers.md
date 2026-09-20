@@ -21,6 +21,7 @@ see the [SDK README](../packages/sdk/README.md#driver-data).
 - [`heartbeat`](#heartbeat): Emits a periodic tick event for plumbing tests.
 - [`interpolate`](#interpolate): Smoothly interpolate any numeric stream over time.
 - [`microphone`](#microphone): Audio input via sounddevice.
+- [`mirror_calibration`](#mirror_calibration): Lens and mirror-rig calibration from the printed ChArUco board.
 - [`pose`](#pose): Body, face and hand landmarks (MediaPipe Holistic Landmarker).
 - [`pose_to_mirror`](#pose_to_mirror): Map MediaPipe landmarks onto an augmented mirror (webcam-only).
 - [`slr`](#slr): Sign-language recognition from pose sequences (ONNX).
@@ -712,6 +713,374 @@ export interface SamplerateResult {
 }
 ```
 
+## mirror_calibration
+
+Lens and mirror-rig calibration from the printed ChArUco board.
+
+Starts `camera`, `pose` first. Exclusive: each app binding gets its own instance.
+
+Types: `DriverTypes.mirror_calibration`.
+
+### Events
+
+| Event           | Payload               | Delivery | Description                                          |
+| --------------- | --------------------- | -------- | ---------------------------------------------------- |
+| `board`         | `BoardPayload`        | latest   | The printed board in the latest frame, outside idle. |
+| `lens_progress` | `LensProgressPayload` | latest   | Lens capture progress, in the lens stage.            |
+
+### Actions
+
+| Action              | Params                              | Result                   | Description                                                                        |
+| ------------------- | ----------------------------------- | ------------------------ | ---------------------------------------------------------------------------------- |
+| `configure`         | `null \| CalibrationSettingsUpdate` | `CalibrationSettings`    | Change settings and return all of them. New optics drop the recent history.        |
+| `set_stage`         | `StageParams`                       | `StageResult`            | Detect the board only outside 'idle'. Changing stage drops the recent history.     |
+| `reset_lens`        | none                                | `null`                   | Forget the collected lens views.                                                   |
+| `solve_lens`        | none                                | `LensResult`             | Solve the lens from the collected views; it also becomes the current lens setting. |
+| `capture_alignment` | `CaptureAlignmentParams`            | `CaptureAlignmentResult` | Record one alignment from the window ending now. Raises with a reason code.        |
+| `remove_alignment`  | `RemoveAlignmentParams`             | `AlignmentsResult`       | Drop one alignment by its index.                                                   |
+| `clear_alignments`  | none                                | `AlignmentsResult`       | Drop every alignment.                                                              |
+| `list_alignments`   | none                                | `AlignmentList`          | Every stored alignment, in capture order.                                          |
+| `solve_rig`         | `SolveRigParams`                    | `SolveRigResult`         | Fit the mirror rig from the stored alignments.                                     |
+| `suggest_targets`   | `SuggestTargetsParams`              | `SuggestTargetsResult`   | Which targets the operator can reach from where they stand, board still in view.   |
+| `check_rig`         | `CheckRigParams`                    | `CheckRigResult`         | Residuals of every stored alignment against a given rig.                           |
+
+### Types
+
+```ts
+/**
+ * The printed board in the latest processed frame, in unflipped camera pixels.
+ *
+ * The pose fields are null when the board was not detected or its pose could
+ * not be estimated. `distance_mm` is the range from the camera to the
+ * designated corner, and `sharpness` only compares with other frames of the
+ * same session.
+ */
+export interface BoardPayload {
+  detected: boolean;
+  corners: number;
+  marker_count: number;
+  hull_px: number[][];
+  frame_width: number;
+  frame_height: number;
+  sharpness: number;
+  point_mm: number[] | null;
+  distance_mm: number | null;
+  rms_px: number | null;
+  ambiguity_mm: number | null;
+  tilt_deg: number | null;
+  /** When the camera captured the frame, in milliseconds since the Unix epoch. */
+  capture_ts: number;
+  /** Milliseconds since the Unix epoch. */
+  ts: number;
+}
+
+/** How far the lens capture has got. `hint` is what is missing next. */
+export interface LensProgressPayload {
+  views: number;
+  coverage: number;
+  tilted_views: number;
+  progress: number;
+  hint: string;
+  accepted: boolean;
+  /** Milliseconds since the Unix epoch. */
+  ts: number;
+}
+
+/** Settings to change; omitted fields keep their value. `lens: null` drops the lens. */
+export interface CalibrationSettingsUpdate {
+  lens?: null | LensProfile;
+  hfov_deg?: number;
+  /** Interpupillary distance of the operator, in mm. */
+  ipd_mm?: number;
+  eye?: 'left' | 'right';
+}
+
+/** Camera intrinsics for unflipped frames of `width` x `height`, after the camera's rotation. */
+export interface LensProfile {
+  width: number;
+  height: number;
+  fx: number;
+  fy: number;
+  cx: number;
+  cy: number;
+  /**
+   * OpenCV order: k1, k2, p1, p2, k3, ...
+   * @default []
+   */
+  dist?: number[];
+  /** @default null */
+  rms_px?: number | null;
+}
+
+export interface StageParams {
+  stage: 'align' | 'idle' | 'lens';
+}
+
+export interface CaptureAlignmentParams {
+  /** [x, y] of the target on the canvas, in pixels. */
+  target_px: number[];
+  /** [width, height] of the canvas, in pixels. */
+  canvas_px: number[];
+  /**
+   * Keep this alignment out of the fit, to check it afterwards.
+   * @default false
+   */
+  holdout?: boolean;
+  /**
+   * Length of the window ending at this call.
+   * @default 600
+   */
+  window_ms?: number;
+}
+
+export interface RemoveAlignmentParams {
+  index: number;
+}
+
+export interface SolveRigParams {
+  /** Physical width the canvas pixels cover. */
+  width_mm: number;
+  /** Physical height the canvas pixels cover. */
+  height_mm: number;
+  /**
+   * Mirror surface to pixel plane.
+   * @default 0
+   */
+  gap_mm?: number;
+  /**
+   * Rough camera position (u, v, w) to start the fit from.
+   * @default null
+   */
+  camera_in_screen_mm?: number[] | null;
+  /**
+   * Camera lens above the floor. Stored in the rig profile, where it lets a visitor's visible feet set their depth without knowing their size.
+   * @default null
+   */
+  camera_height_mm?: number | null;
+}
+
+export interface SuggestTargetsParams {
+  /** Canvas pixels to test. */
+  candidates_px: number[][];
+  canvas_px: number[];
+  /** Physical width the canvas pixels cover. */
+  width_mm: number;
+  /** Physical height the canvas pixels cover. */
+  height_mm: number;
+  /** @default 0 */
+  gap_mm?: number;
+  /**
+   * Rough camera position (u, v, w); ignored with `rig`.
+   * @default null
+   */
+  camera_in_screen_mm?: number[] | null;
+  /**
+   * A fitted rig, once there is one; else a nominal one.
+   * @default null
+   */
+  rig?: null | RigProfile;
+  /**
+   * How far in front of the eye the board is held.
+   * @default 350
+   */
+  reach_mm?: number;
+}
+
+/** Pose of the canvas behind the mirror in camera coordinates. See `geometry.mirror_rig`. */
+export interface RigProfile {
+  /** Rotation vector; columns of the matrix are u, v, w. */
+  rotation: number[];
+  /** Canvas center in camera millimeters. */
+  center_mm: number[];
+  /** Physical width the canvas pixels cover. */
+  width_mm: number;
+  /** Physical height the canvas pixels cover. */
+  height_mm: number;
+  /**
+   * Mirror surface to pixel plane.
+   * @default 0
+   */
+  gap_mm?: number;
+  /**
+   * Camera lens above the floor, for a plumb mirror. Lets visible feet set a visitor's depth without knowing their size. Null turns that cue off.
+   * @default null
+   */
+  camera_height_mm?: number | null;
+  /**
+   * Iris diameter to ASSUME on this camera, not anybody's real iris: the generic 11.7 mm times what this camera's landmark model reads it as. Measured on the operator during the rig calibration, so it travels with the rig.
+   * @default 11.7
+   */
+  iris_mm?: number;
+}
+
+export interface CheckRigParams {
+  rig: RigProfile;
+}
+
+/**
+ * Every setting of the driver. Distances are millimeters.
+ *
+ * `ipd_mm` and `eye` describe the calibration operator, who is not a member
+ * of the public: they are given per run and never reach `pose_to_mirror`.
+ */
+export interface CalibrationSettings {
+  /** @default null */
+  lens: null | LensProfile;
+  /**
+   * Fallback field of view when `lens` is unusable.
+   * @default 60
+   */
+  hfov_deg: number;
+  /**
+   * Interpupillary distance of the operator, in mm.
+   * @default 63
+   */
+  ipd_mm: number;
+  /**
+   * The eye the operator keeps open.
+   * @default "right"
+   */
+  eye: 'left' | 'right';
+}
+
+export interface StageResult {
+  stage: 'align' | 'idle' | 'lens';
+}
+
+export interface LensResult {
+  lens: LensProfile;
+  rms_px: number;
+  views: number;
+  hfov_deg: number;
+}
+
+export interface CaptureAlignmentResult {
+  index: number;
+  samples: number;
+  holdouts: number;
+  point_mm: number[];
+  eye_mm: number[];
+  board_spread_mm: number;
+  eye_spread_mm: number;
+  board_distance_mm: number;
+  eye_distance_mm: number;
+  /** Iris diameter the landmarks show for the operator, whose eye depth is metric because their pupil spacing was measured. Null when no iris was large enough in the image to read. */
+  iris_mm: number | null;
+}
+
+export interface AlignmentsResult {
+  samples: number;
+  holdouts: number;
+}
+
+export interface AlignmentList {
+  alignments: AlignmentSample[];
+  samples: number;
+  holdouts: number;
+}
+
+export interface AlignmentSample {
+  index: number;
+  target_px: number[];
+  canvas_px: number[];
+  holdout: boolean;
+  point_mm: number[];
+  eye_mm: number[];
+  board_spread_mm: number;
+  eye_spread_mm: number;
+  board_distance_mm: number;
+  eye_distance_mm: number;
+  /** Iris diameter the landmarks show for the operator, whose eye depth is metric because their pupil spacing was measured. Null when no iris was large enough in the image to read. */
+  iris_mm: number | null;
+  ambiguity_mm: number;
+  /** Milliseconds since the Unix epoch. */
+  ts: number;
+}
+
+/**
+ * The fitted rig and how much to trust it.
+ *
+ * `predicted_error_mm` and `condition` are null when the alignments leave the
+ * pose entirely undetermined, which also makes `quality` poor.
+ */
+export interface SolveRigResult {
+  rig: RigProfile;
+  rms_mm: number;
+  residuals_mm: SampleResidual[];
+  predicted_error_mm: number | null;
+  condition: number | null;
+  quality: 'fair' | 'good' | 'poor';
+  tilt_deg: number;
+  camera_in_screen_mm: number[];
+  distances_mm: number[];
+  holdout: null | HoldoutReport;
+  iris: IrisReport;
+}
+
+/** Distance on the screen between where the rig draws the corner and its target. */
+export interface SampleResidual {
+  index: number;
+  error_mm: number | null;
+}
+
+export interface HoldoutReport {
+  count: number;
+  mean_mm: number | null;
+  max_mm: number | null;
+  residuals_mm: SampleResidual[];
+}
+
+/**
+ * What the operator's irises read, and whether the reading depends on their range.
+ *
+ * `apparent_mm` is the median over every alignment that carried one, fitted
+ * and holdout alike; the rig's `iris_mm` is that median shrunk toward the
+ * population average. `near_mm` and `far_mm` split the same readings at their
+ * median eye distance. A gap between them would mean the landmark model reads
+ * an iris differently as it shrinks in the image, which only a rig trial can
+ * show; nothing here corrects for it.
+ */
+export interface IrisReport {
+  apparent_mm: number | null;
+  near_mm: number | null;
+  far_mm: number | null;
+  /** Alignments that carried an iris reading. */
+  samples: number;
+}
+
+/**
+ * `reason` says why nothing could be tested: no face seen yet, or the
+ * operator stands too close for a board held in front of them.
+ */
+export interface SuggestTargetsResult {
+  targets: TargetSuggestion[];
+  eye_distance_mm: number | null;
+  /** @default null */
+  reason: 'no_face' | 'too_close' | null;
+}
+
+/**
+ * Whether the camera would still see the whole board with its corner on this target.
+ *
+ * `hold` says how to hold the sheet: `corner_up` is upright, the marked
+ * corner at the top left; `corner_down` is the sheet turned half a turn, which
+ * reaches targets low on the screen.
+ */
+export interface TargetSuggestion {
+  target_px: number[];
+  reachable: boolean;
+  hold: 'corner_down' | 'corner_up' | null;
+}
+
+export interface CheckRigResult {
+  samples: number;
+  rms_mm: number | null;
+  mean_mm: number | null;
+  max_mm: number | null;
+  residuals_mm: SampleResidual[];
+}
+```
+
 ## pose
 
 Body, face and hand landmarks (MediaPipe Holistic Landmarker).
@@ -749,8 +1118,8 @@ export interface PoseConfig {
 }
 
 /**
- * Landmarks `[x_px, y_px, visibility]` in the full camera frame.
- * `body_world_pose` rows are `[x_m, y_m, z_m, visibility]` from the hips.
+ * Landmarks `[x_px, y_px, visibility]` in the full camera frame, mirrored when
+ * `flipped`. `body_world_pose` rows are `[x_m, y_m, z_m, visibility]` from the hips.
  */
 export interface RawPosePayload {
   face_mesh: number[][];
@@ -760,9 +1129,15 @@ export interface RawPosePayload {
   body_world_pose: number[][];
   frame_width: number;
   frame_height: number;
+  /** Whether the landmarks sit in a horizontally flipped frame. */
+  flipped: boolean;
   /** Milliseconds since the Unix epoch. */
   ts: number;
+  /** When the camera captured the frame, in milliseconds since the Unix epoch. */
+  capture_ts: number;
   inference_ms: number;
+  frame_age_ms: number;
+  latency_ms: number;
 }
 
 export interface FlipResult {
@@ -788,26 +1163,32 @@ Types: `DriverTypes.pose_to_mirror`.
 
 ### Events
 
-| Event            | Payload           | Delivery | Description                                                |
-| ---------------- | ----------------- | -------- | ---------------------------------------------------------- |
-| `mirrored_data`  | `MirroredPayload` | latest   | Landmarks in screen pixels, smoothed.                      |
-| `projected_data` | `MirroredPayload` | latest   | Reflection mode only: landmarks on the mirror plane in mm. |
+| Event            | Payload           | Delivery | Description                                                       |
+| ---------------- | ----------------- | -------- | ----------------------------------------------------------------- |
+| `mirrored_data`  | `MirroredPayload` | latest   | Landmarks in screen pixels, smoothed.                             |
+| `projected_data` | `MirroredPayload` | latest   | Reflection mode only: landmarks in millimeters, before smoothing. |
+| `viewer`         | `ViewerPayload`   | latest   | Reflection mode only: the viewer the projection assumes.          |
 
 ### Actions
 
-| Action                       | Params                         | Result           | Description                                                   |
-| ---------------------------- | ------------------------------ | ---------------- | ------------------------------------------------------------- |
-| `set_mirror_config`          | `null \| MirrorSettingsUpdate` | `MirrorSettings` | Change settings and return all of them.                       |
-| `capture_calibration_sample` | `CaptureParams`                | `CaptureResult`  | Record recent pose frames for one calibration target.         |
-| `solve_calibration`          | `null \| SolveParams`          | `SolveResult`    | Fit tilt, scale and the pixel affine to the captured samples. |
-| `clear_calibration_samples`  | none                           | `ClearResult`    | Drop all captured calibration samples.                        |
+| Action              | Params                         | Result           | Description                                         |
+| ------------------- | ------------------------------ | ---------------- | --------------------------------------------------- |
+| `set_mirror_config` | `null \| MirrorSettingsUpdate` | `MirrorSettings` | Change settings and return all of them.             |
+| `reset_viewer`      | none                           | `null`           | Forget the viewer's body scale and smoothing state. |
 
 ### Types
 
 ```ts
 /**
- * Landmarks as `[x, y, depth_mm, visibility]`: pixels for `mirrored_data`,
- * mirror-plane millimeters for `projected_data`. Direct mode reports depth 0.
+ * Landmarks as `[x, y, depth_mm, visibility]`.
+ *
+ * `mirrored_data` is canvas pixels, with `(-1, -1)` where the projection has
+ * no answer. `depth_mm` is the distance in front of the mirror; direct mode
+ * reports 0. A row with no answer reads `-1` in all three, because a depth
+ * that is not a number cannot travel as one.
+ *
+ * `projected_data` carries the same rows as canvas-centered screen
+ * millimeters, before `trim_px`.
  */
 export interface MirroredPayload {
   body_pose: number[][];
@@ -817,39 +1198,106 @@ export interface MirroredPayload {
   body_world_pose: number[][];
   /** Milliseconds since the Unix epoch. */
   ts: number;
+  /** @default null */
+  capture_ts?: number | null;
+  /**
+   * Milliseconds from capture to this payload.
+   * @default null
+   */
+  latency_ms?: number | null;
 }
 
-/** Settings to change; omitted fields keep their value. `affine: null` drops the fit. */
+/** Who the projection thinks is standing there. Diagnostics for the calibration wizard. */
+export interface ViewerPayload {
+  /** Viewer's left pupil in camera millimeters. */
+  left_eye_mm: number[] | null;
+  right_eye_mm: number[] | null;
+  eye_source: 'body' | 'face' | 'none';
+  /** This visitor's size against MediaPipe's average body. */
+  body_scale: number;
+  scale_cues: ScaleCues;
+  /** Eye midpoint in front of the mirror, in millimeters. */
+  distance_mm: number | null;
+  capture_ts: number | null;
+  /** Milliseconds since the Unix epoch. */
+  ts: number;
+}
+
+/** Each size cue's median over its window, null while it has too few frames. */
+export interface ScaleCues {
+  /** From the pupil spacing assumed in `ipd_mm`. */
+  eyes: number | null;
+  /** From the apparent size of the irises, at the diameter the rig profile says to assume. Null when no iris is large enough in the image to read. */
+  iris: number | null;
+  /** From the visible feet standing on the known floor. */
+  floor: number | null;
+}
+
+/**
+ * Settings to change; omitted fields keep their value.
+ *
+ * `lens: null` and `rig: null` drop the calibration.
+ */
 export interface MirrorSettingsUpdate {
   mode?: 'direct' | 'reflection';
   fit?: 'contain' | 'cover';
   mirror?: boolean;
-  affine?: number[] | null;
   face_mesh?: boolean;
-  x_offset?: number;
-  y_offset?: number;
-  screen_width_mm?: number;
-  screen_height_mm?: number;
   width?: number;
   height?: number;
-  tilt_deg?: number;
-  mirror_offset_mm?: number;
   hfov_deg?: number;
-  scale?: number;
   default_distance_mm?: number;
   zoom?: number;
+  lens?: null | LensProfile;
+  rig?: null | RigProfile;
+  /** Assumed pupil spacing of the viewer, in mm. The population prior: the calibration operator pushes their own measured value while checking a fit. */
+  ipd_mm?: number;
+  /** [dx, dy] added to every projected pixel. */
+  trim_px?: number[];
 }
 
-export interface CaptureParams {
-  /** [x_px, y_px] */
-  target: number[];
+/** Camera intrinsics for unflipped frames of `width` x `height`, after the camera's rotation. */
+export interface LensProfile {
+  width: number;
+  height: number;
+  fx: number;
+  fy: number;
+  cx: number;
+  cy: number;
+  /**
+   * OpenCV order: k1, k2, p1, p2, k3, ...
+   * @default []
+   */
+  dist?: number[];
   /** @default null */
-  landmark?: number | null;
+  rms_px?: number | null;
 }
 
-export interface SolveParams {
-  /** @default true */
-  apply?: boolean;
+/** Pose of the canvas behind the mirror in camera coordinates. See `geometry.mirror_rig`. */
+export interface RigProfile {
+  /** Rotation vector; columns of the matrix are u, v, w. */
+  rotation: number[];
+  /** Canvas center in camera millimeters. */
+  center_mm: number[];
+  /** Physical width the canvas pixels cover. */
+  width_mm: number;
+  /** Physical height the canvas pixels cover. */
+  height_mm: number;
+  /**
+   * Mirror surface to pixel plane.
+   * @default 0
+   */
+  gap_mm?: number;
+  /**
+   * Camera lens above the floor, for a plumb mirror. Lets visible feet set a visitor's depth without knowing their size. Null turns that cue off.
+   * @default null
+   */
+  camera_height_mm?: number | null;
+  /**
+   * Iris diameter to ASSUME on this camera, not anybody's real iris: the generic 11.7 mm times what this camera's landmark model reads it as. Measured on the operator during the rig calibration, so it travels with the rig.
+   * @default 11.7
+   */
+  iris_mm?: number;
 }
 
 /** Every setting of the driver. Distances are millimeters. */
@@ -860,55 +1308,29 @@ export interface MirrorSettings {
   fit: 'contain' | 'cover';
   /** @default true */
   mirror: boolean;
-  /** @default null */
-  affine: number[] | null;
   /** @default true */
   face_mesh: boolean;
-  /** @default -230 */
-  x_offset: number;
-  /** @default 100 */
-  y_offset: number;
-  /** @default 392.85 */
-  screen_width_mm: number;
-  /** @default 698.4 */
-  screen_height_mm: number;
   /** @default 1080 */
   width: number;
   /** @default 1920 */
   height: number;
-  /** @default 17 */
-  tilt_deg: number;
-  /** @default 0 */
-  mirror_offset_mm: number;
   /** @default 60 */
   hfov_deg: number;
-  /** @default 1 */
-  scale: number;
   /** @default 1500 */
   default_distance_mm: number;
   /** @default 1 */
   zoom: number;
-}
-
-export interface CaptureResult {
-  samples: number;
-  landmark: number;
-  visibility: number;
-}
-
-export interface SolveResult {
-  tilt_deg: number;
-  scale: number;
-  affine: number[];
-  residual_px_mean: number;
-  residual_px_max: number;
-  residuals_px: number[];
-  samples: number;
-  applied: boolean;
-}
-
-export interface ClearResult {
-  samples: number;
+  /** @default null */
+  lens: null | LensProfile;
+  /** @default null */
+  rig: null | RigProfile;
+  /**
+   * Assumed pupil spacing of the viewer, in mm. The population prior: the calibration operator pushes their own measured value while checking a fit.
+   * @default 63
+   */
+  ipd_mm: number;
+  /** [dx, dy] added to every projected pixel. */
+  trim_px: number[];
 }
 ```
 

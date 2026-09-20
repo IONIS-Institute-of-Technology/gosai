@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from fakes import RecordingContext, check_events, check_result
+from gosai_py.bridge import public_payload
 from gosai_py.clock import now_ms
 from gosai_py.drivers import hand_pose, pose, slr
 from gosai_py.drivers.hand_pose import HandPoseDriver
@@ -49,6 +50,8 @@ def pose_driver(monkeypatch: pytest.MonkeyPatch) -> tuple[PoseDriver, RecordingC
         left_hand_landmarks=_landmarks(21, x=0.1),
         right_hand_landmarks=_landmarks(21, x=0.9),
         pose_world_landmarks=_landmarks(33),
+        left_hand_world_landmarks=_landmarks(21, x=-0.1),
+        right_hand_world_landmarks=_landmarks(21, x=0.2),
     )
     monkeypatch.setattr(pose, "resolve_model", lambda model, log: "holistic.task")
     monkeypatch.setattr(
@@ -97,6 +100,88 @@ def test_pose_face_mesh_opt_out_keeps_it_in_process(
     assert len(payload["_face_mesh"]) == 478
     # slr still sees the face landmarks.
     assert _adapt_frame(payload, include_face=True)[:2] != [0.0, 0.0]
+    check_events(PoseDriver, context)
+
+
+def test_pose_times_frames_from_the_capture(
+    pose_driver: tuple[PoseDriver, RecordingContext],
+) -> None:
+    driver, context = pose_driver
+    captured = now_ms() - 40.0
+
+    driver.on_data("camera", "frame", {**_frame(640, 480), "capture_ts": captured})
+    driver.execute("set_flip", True)
+    driver.on_data("camera", "frame", {**_frame(640, 480), "capture_ts": captured + 33.0})
+
+    first, second = context.emitted("raw_data")
+    assert first["capture_ts"] == captured
+    assert 40.0 <= first["frame_age_ms"] <= first["latency_ms"] < 1_000.0
+    assert captured < first["ts"] <= now_ms()
+    assert first["flipped"] is False and second["flipped"] is True
+    # MediaPipe's video timestamps follow the capture time.
+    assert driver._landmarker.timestamps == [int(captured), int(captured + 33.0)]
+    check_events(PoseDriver, context)
+
+
+def test_pose_face_xyz_keeps_depth_in_frame_pixels(
+    pose_driver: tuple[PoseDriver, RecordingContext],
+) -> None:
+    driver, context = pose_driver
+    driver.execute("set_window", 0.5)
+    driver.execute("set_face_mesh", False)
+
+    driver.on_data("camera", "frame", _frame(800, 400))
+
+    payload = context.emitted("raw_data")[0]
+    face_xyz = payload["_face_xyz"]
+    assert face_xyz.dtype == np.float64 and face_xyz.shape == (478, 3)
+    # x and y are the face_mesh pixels; z shares the scale of x, so it uses the crop width.
+    assert face_xyz[0] == pytest.approx([400.0, 100.0, 0.1 * 400])
+    # The mesh is off for Node, but geometry still gets it.
+    assert payload["face_mesh"] == [] and payload["_face_mesh"][0][:2] == [400.0, 100.0]
+    assert [key for key in public_payload(payload) if key.startswith("_")] == []
+    check_events(PoseDriver, context)
+
+
+def test_pose_hand_world_landmarks_follow_the_key_swap(
+    pose_driver: tuple[PoseDriver, RecordingContext],
+) -> None:
+    driver, context = pose_driver
+
+    driver.on_data("camera", "frame", _frame(640, 480))
+
+    payload = context.emitted("raw_data")[0]
+    left, right = payload["_left_hand_world"], payload["_right_hand_world"]
+    assert left.shape == (21, 3) and left.dtype == np.float64
+    # The model's right hand is the driver's left, as for the 2D keys.
+    assert left[0] == pytest.approx([0.2, 0.25, 0.1])
+    assert right[0] == pytest.approx([-0.1, 0.25, 0.1])
+    assert payload["left_hand_pose"][0][0] == pytest.approx(0.9 * 640)
+    check_events(PoseDriver, context)
+
+
+def test_pose_in_process_keys_are_none_without_a_detection(
+    pose_driver: tuple[PoseDriver, RecordingContext],
+) -> None:
+    driver, context = pose_driver
+    driver._landmarker = FakeDetector(
+        SimpleNamespace(
+            face_landmarks=[],
+            pose_landmarks=[],
+            left_hand_landmarks=[],
+            right_hand_landmarks=[],
+            pose_world_landmarks=[],
+            left_hand_world_landmarks=[],
+            right_hand_world_landmarks=[],
+        )
+    )
+
+    driver.on_data("camera", "frame", _frame(640, 480))
+
+    payload = context.emitted("raw_data")[0]
+    assert payload["_face_xyz"] is None
+    assert payload["_left_hand_world"] is None and payload["_right_hand_world"] is None
+    assert [key for key in public_payload(payload) if key.startswith("_")] == []
     check_events(PoseDriver, context)
 
 

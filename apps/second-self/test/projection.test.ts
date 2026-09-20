@@ -1,23 +1,59 @@
 import { describe, expect, test } from 'bun:test';
-import { DEFAULT_CONFIG, mergeConfig, type MirrorProfile } from '../src/shared/config.js';
+import { LENS_PROFILE_KEY } from '../src/shared/calibration.js';
+import {
+  DEFAULT_CONFIG,
+  DRIVER_IPD_MM,
+  mergeConfig,
+  type MirrorProfile,
+  type StoredLens,
+} from '../src/shared/config.js';
 import { MenuOptions } from '../src/shared/layers.js';
 import { Projection } from '../src/shared/projection.js';
 import { FakeRuntime, type FakeRuntimeOptions } from './fakes.js';
 
-const DRIVER_SETTINGS = { mode: 'direct', tilt_deg: 17, scale: 1, affine: null, face_mesh: true };
+/** The driver's defaults, as `set_mirror_config` reports them back. */
+const DRIVER_SETTINGS = {
+  mode: 'direct',
+  face_mesh: true,
+  rig: null,
+  lens: null,
+  trim_px: [0, 0],
+  ipd_mm: DRIVER_IPD_MM,
+};
 
 function fakeRuntime(options: FakeRuntimeOptions = {}): FakeRuntime {
   return new FakeRuntime({ driver: { ...DRIVER_SETTINGS }, ...options });
 }
 
-const PROFILE: MirrorProfile = { tilt_deg: 9, scale: 1.2, affine: [1, 2, 3, 4] };
+const RIG_PROFILE: MirrorProfile = {
+  version: 2,
+  rig: {
+    rotation: [0, 0.1, 0],
+    center_mm: [0, -40, 1200],
+    width_mm: 392.85,
+    height_mm: 698.4,
+    gap_mm: 6,
+    camera_height_mm: 1700,
+  },
+  trim_px: [2, -2],
+  measurements: { screen_width_mm: 392.85, screen_height_mm: 698.4, gap_mm: 6 },
+  fit: { rms_mm: 2.5, predicted_error_mm: 4, quality: 'good', samples: 8 },
+  updatedAt: 5,
+};
+
+const LENS: StoredLens = {
+  lens: { width: 1280, height: 720, fx: 900, fy: 900, cx: 640, cy: 360, dist: [], rms_px: 0.3 },
+  updatedAt: 3,
+};
+
+const REFLECTION = mergeConfig(DEFAULT_CONFIG, { projection: { mode: 'reflection' } });
 
 describe('Projection', () => {
-  test('restore drops an unsaved fit and brings back the earlier tilt and scale', async () => {
+  test('restore drops an unsaved fit when there was nothing to go back to', async () => {
     const { rt, executed } = fakeRuntime();
     const projection = new Projection(rt, DEFAULT_CONFIG, null);
     await projection.apply();
-    // The wizard's solve changes the driver's fit behind the projection's back.
+    // The wizard's solve changes the driver's rig behind the projection's back.
     await projection.restore();
     expect(executed.at(-1)).toEqual({
       driver: 'pose_to_mirror',
@@ -28,31 +64,39 @@ describe('Projection', () => {
         fit: 'cover',
         width: 1080,
         height: 1920,
-        tilt_deg: 17,
-        scale: 1,
-        affine: null,
+        ipd_mm: DRIVER_IPD_MM,
+        rig: null,
       },
     });
   });
 
-  test('restore without a profile uses the snapshot taken when the wizard started', async () => {
-    // The startup apply never completed, but the driver holds a fit.
-    const driver = { ...DRIVER_SETTINGS, tilt_deg: 12, scale: 1.3, affine: [5, 6, 7, 8] };
+  test('restore without a profile brings back the rig the baseline was on', async () => {
+    const driver = {
+      ...DRIVER_SETTINGS,
+      rig: RIG_PROFILE.rig,
+      lens: LENS.lens,
+      trim_px: [7, 8],
+    };
     const { rt, executed } = fakeRuntime({ driver });
-    const projection = new Projection(rt, DEFAULT_CONFIG, null);
+    const projection = new Projection(rt, REFLECTION, null);
     await projection.snapshot();
     expect(executed.at(-1)).toEqual({
       driver: 'pose_to_mirror',
       action: 'set_mirror_config',
       params: undefined,
     });
-    // The wizard's solve replaces the fit.
-    Object.assign(driver, { tilt_deg: 30, scale: 2, affine: [0, 0, 0, 0] });
+    // The wizard fits another rig, nudges the trim and previews its own pupils.
+    Object.assign(driver, {
+      rig: { ...RIG_PROFILE.rig, gap_mm: 99 },
+      trim_px: [0, 0],
+      ipd_mm: 71,
+    });
     await projection.restore();
     expect(executed.at(-1)?.params).toMatchObject({
-      tilt_deg: 12,
-      scale: 1.3,
-      affine: [5, 6, 7, 8],
+      rig: RIG_PROFILE.rig,
+      lens: LENS.lens,
+      trim_px: [7, 8],
+      ipd_mm: DRIVER_IPD_MM,
     });
   });
 
@@ -65,33 +109,78 @@ describe('Projection', () => {
       true,
     );
     expect(projection.config.projection.mirror).toBe(false);
+    expect(
+      projection.configure(mergeConfig(sleepier, { projection: { mode: 'reflection' } })),
+    ).toBe(true);
   });
 
-  test('restore puts the saved profile back', async () => {
+  test('restore puts the saved rig, its lens and the assumed pupil distance back', async () => {
     const { rt, executed } = fakeRuntime();
-    const reflection = mergeConfig(DEFAULT_CONFIG, { projection: { mode: 'reflection' } });
-    await new Projection(rt, reflection, PROFILE).restore();
+    const projection = new Projection(rt, REFLECTION, RIG_PROFILE, LENS);
+    await projection.apply();
+    // The verify screen previews the operator's own eyes and a trim.
+    await projection.preview({ trim_px: [40, 40], ipd_mm: 71 });
+    await projection.restore();
     expect(executed.at(-1)?.params).toMatchObject({
       mode: 'reflection',
-      tilt_deg: 9,
-      scale: 1.2,
-      affine: [1, 2, 3, 4],
+      rig: RIG_PROFILE.rig,
+      trim_px: [2, -2],
+      lens: LENS.lens,
+      ipd_mm: DRIVER_IPD_MM,
     });
+  });
+
+  test('preview pushes unsaved wizard state and nothing else', async () => {
+    const { rt, executed } = fakeRuntime();
+    const projection = new Projection(rt, REFLECTION, null);
+    await projection.preview({ rig: RIG_PROFILE.rig, trim_px: [3, 4] });
+    expect(executed).toEqual([
+      {
+        driver: 'pose_to_mirror',
+        action: 'set_mirror_config',
+        params: { rig: RIG_PROFILE.rig, trim_px: [3, 4] },
+      },
+    ]);
+    expect(projection.profile).toBeNull();
+  });
+
+  test('saveLens stores the intrinsics apart from the mirror profile', async () => {
+    const fake = fakeRuntime();
+    const projection = new Projection(fake.rt, REFLECTION, RIG_PROFILE);
+    expect(await projection.saveLens(LENS)).toBe(true);
+    expect(fake.storage.get(LENS_PROFILE_KEY)).toEqual(LENS);
+    expect(fake.profile).toBeNull();
+    expect(projection.lens).toEqual(LENS);
+    // The next apply carries it to the driver.
+    await projection.apply();
+    expect(fake.executed.at(-1)?.params).toMatchObject({ lens: LENS.lens });
+
+    const aborted = AbortSignal.abort();
+    const fresh = fakeRuntime();
+    expect(await new Projection(fresh.rt, REFLECTION, null).saveLens(LENS, aborted)).toBe(false);
+    expect(fresh.storage.has(LENS_PROFILE_KEY)).toBe(false);
   });
 
   test('saving a calibration stores it, switches to reflection and applies it', async () => {
     const fake = fakeRuntime();
     const { rt, executed, settings } = fake;
-    const projection = new Projection(rt, DEFAULT_CONFIG, null);
-    await projection.saveCalibration(PROFILE);
-    expect(fake.profile).toMatchObject({ kind: 'mirror-reflection', data: PROFILE });
+    const projection = new Projection(rt, DEFAULT_CONFIG, null, LENS);
+    expect(await projection.saveCalibration(RIG_PROFILE)).toBe(true);
+    expect(fake.profile).toMatchObject({ kind: 'mirror-reflection', data: RIG_PROFILE });
     expect(settings).toEqual([{ 'projection.mode': 'reflection' }]);
     expect(projection.config.projection.mode).toBe('reflection');
     expect(DEFAULT_CONFIG.projection.mode).toBe('direct');
-    expect(executed.at(-1)?.params).toMatchObject({ mode: 'reflection', tilt_deg: 9 });
+    expect(executed.at(-1)?.params).toMatchObject({
+      mode: 'reflection',
+      rig: RIG_PROFILE.rig,
+      trim_px: [2, -2],
+      lens: LENS.lens,
+      // Whatever the verify screen previewed, what is saved draws for the public.
+      ipd_mm: DRIVER_IPD_MM,
+    });
 
     // Already in reflection mode: only the profile changes.
-    await projection.saveCalibration({ ...PROFILE, scale: 2 });
+    await projection.saveCalibration({ ...RIG_PROFILE, trim_px: [0, 0] });
     expect(settings).toHaveLength(1);
   });
 
@@ -100,11 +189,11 @@ describe('Projection', () => {
     const fake = fakeRuntime();
     const { rt, executed, settings } = fake;
     const projection = new Projection(rt, DEFAULT_CONFIG, null);
-    const saving = projection.saveCalibration(PROFILE, controller.signal);
+    const saving = projection.saveCalibration(RIG_PROFILE, controller.signal);
     // Leaving while the profile saves.
     controller.abort();
     expect(await saving).toBe(false);
-    expect(fake.profile?.data).toEqual(PROFILE);
+    expect(fake.profile?.data).toEqual(RIG_PROFILE);
     expect(settings).toEqual([]);
     expect(executed).toEqual([]);
     expect(projection.config.projection.mode).toBe('direct');
@@ -113,7 +202,10 @@ describe('Projection', () => {
     aborted.abort();
     const fresh = fakeRuntime();
     expect(
-      await new Projection(fresh.rt, DEFAULT_CONFIG, null).saveCalibration(PROFILE, aborted.signal),
+      await new Projection(fresh.rt, DEFAULT_CONFIG, null).saveCalibration(
+        RIG_PROFILE,
+        aborted.signal,
+      ),
     ).toBe(false);
     expect(fresh.profile).toBeNull();
   });

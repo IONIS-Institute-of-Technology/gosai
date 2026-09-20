@@ -3,12 +3,15 @@
  * calibration experience (src/calibrate.ts) and saved as the app's
  * calibration profile, which holds a {@link MirrorProfile}.
  *
- * Two ways lead into the experience:
+ * GOSAI opens it from the dashboard's Calibrate button, in two windows: the
+ * projector window on the mirror and a control window with the keyboard. The
+ * flow ends with `finishCalibration`, and GOSAI closes both. Nothing in the
+ * app walks into the calibration by itself: a mirror with no rig draws
+ * directly and says so.
  *
- * - GOSAI opens it for the dashboard's Calibrate button or a kiosk. The flow
- *   ends with `finishCalibration`, and GOSAI closes its windows.
- * - The menu, and main starting on a mirror rig without a profile, switch to
- *   it with `rt.router.switchTo`. It switches back to main when it ends.
+ * The camera intrinsics are saved beside it, under the app's own
+ * {@link LENS_PROFILE_KEY}, because they belong to the camera and outlive any
+ * one mirror calibration.
  */
 
 import {
@@ -20,19 +23,22 @@ import {
   type ExperienceRuntimeContext,
 } from '@gosai/sdk';
 import manifest from '../../gosai.app.json';
-import { parseMirrorProfile, type MirrorProfile, type SecondSelfConfig } from './config.js';
+import {
+  parseMirrorProfile,
+  parseStoredLens,
+  type MirrorProfile,
+  type StoredLens,
+} from './config.js';
 
 /** The profile kind and the experience that runs the calibration. */
 export const MIRROR_CALIBRATION = manifest.calibration;
 
-/** Where the profile lived before calibration profiles. The first read converts it. */
-export const LEGACY_PROFILE_KEY = 'mirror_calibration';
-
 /**
- * Set when the user leaves the calibration without saving, however it was
- * opened, so main's next start doesn't send them straight back into it.
+ * Where the camera intrinsics live, in the app's own storage rather than in
+ * the calibration profile: they belong to the camera, so a new mirror
+ * calibration reuses them and only a camera change invalidates them.
  */
-export const CALIBRATION_LEFT_KEY = 'calibration_left';
+export const LENS_PROFILE_KEY = 'lens_profile';
 
 export const CALIBRATION_CANCELLED: CalibrationResult = {
   ok: false,
@@ -41,17 +47,21 @@ export const CALIBRATION_CANCELLED: CalibrationResult = {
 };
 
 /**
- * The saved mirror profile, or `null`. An install calibrated before
- * calibration profiles has it under {@link LEGACY_PROFILE_KEY}: the first read
- * saves it as the profile and removes the old key.
+ * The saved mirror profile, or `null`. A profile written by an older
+ * calibration no longer describes a rig this app can project through, so it is
+ * ignored with one warning: the mirror counts as uncalibrated.
  */
 export async function loadMirrorProfile(
   rt: ExperienceRuntimeContext,
 ): Promise<MirrorProfile | null> {
   try {
     const saved = await loadCalibrationProfile(rt, { kind: MIRROR_CALIBRATION.kind });
-    if (saved) return parseMirrorProfile(saved.data);
-    return await convertLegacyProfile(rt);
+    if (!saved) return null;
+    const profile = parseMirrorProfile(saved.data);
+    if (!profile) {
+      rt.log.warn('second-self: the saved mirror profile is unusable, calibrate the rig again');
+    }
+    return profile;
   } catch (err) {
     rt.log.warn('second-self: failed to read the mirror profile', { err: String(err) });
     return null;
@@ -65,68 +75,41 @@ export async function saveMirrorProfile(
   await saveCalibrationProfile(rt, { kind: MIRROR_CALIBRATION.kind, data: profile });
 }
 
-async function convertLegacyProfile(rt: ExperienceRuntimeContext): Promise<MirrorProfile | null> {
-  const legacy = parseMirrorProfile(await rt.storage.get(LEGACY_PROFILE_KEY));
-  if (!legacy) return null;
+/**
+ * The saved camera intrinsics, or `null` when none were saved or what was
+ * saved no longer parses. A missing lens is normal on a first run: the wizard
+ * then calibrates one.
+ */
+export async function loadLensProfile(rt: ExperienceRuntimeContext): Promise<StoredLens | null> {
   try {
-    await saveMirrorProfile(rt, legacy);
-    await rt.storage.remove(LEGACY_PROFILE_KEY);
-    rt.log.info('second-self: converted the stored mirror calibration into a profile');
+    const saved = await rt.storage.get(LENS_PROFILE_KEY);
+    if (saved === undefined) return null;
+    const lens = parseStoredLens(saved);
+    if (!lens) rt.log.warn('second-self: the saved lens profile is unusable, ignoring it');
+    return lens;
   } catch (err) {
-    // The old key still works; the next start tries again.
-    rt.log.warn('second-self: could not convert the stored mirror calibration', {
-      err: String(err),
-    });
+    rt.log.warn('second-self: failed to read the lens profile', { err: String(err) });
+    return null;
   }
-  return legacy;
 }
 
-/** Leaves main for the calibration experience. */
-export function openCalibration(rt: ExperienceRuntimeContext): void {
-  rt.router.switchTo(MIRROR_CALIBRATION.experience).catch((err: unknown) => {
-    rt.log.error('second-self: could not start the calibration', { err: String(err) });
-  });
+export async function saveLensProfile(
+  rt: ExperienceRuntimeContext,
+  stored: StoredLens,
+): Promise<void> {
+  await rt.storage.set(LENS_PROFILE_KEY, stored);
 }
 
 /**
- * Ends the calibration experience. GOSAI's flow gets the result and closes
- * the windows; a run the app started goes back to main. When nothing was
- * saved, main is told not to send the user straight back.
+ * Ends the calibration experience. GOSAI's flow gets the result and closes the
+ * windows; a run that was started some other way goes back to main, which is
+ * also how the notice about starting it from the dashboard ends.
  */
 export async function endCalibration(
   rt: ExperienceRuntimeContext,
   launch: CalibrationLaunch,
   result: CalibrationResult,
 ): Promise<void> {
-  if (!result.ok) {
-    await rt.storage.set(CALIBRATION_LEFT_KEY, true).catch((err: unknown) => {
-      rt.log.warn('second-self: could not note that the calibration was left', {
-        err: String(err),
-      });
-    });
-  }
   if (launch.managed) await finishCalibration(rt, result);
   else await rt.router.switchTo(manifest.default);
-}
-
-/**
- * Whether main should switch to the calibration as it starts: a mirror rig
- * without a profile can't line the skeleton up with the reflection. Not right
- * after the user left the calibration without saving; that note is used up.
- */
-export async function shouldCalibrateFirst(
-  rt: ExperienceRuntimeContext,
-  config: SecondSelfConfig,
-  profile: MirrorProfile | null,
-): Promise<boolean> {
-  let left = false;
-  try {
-    left = (await rt.storage.get(CALIBRATION_LEFT_KEY)) !== undefined;
-    if (left) await rt.storage.remove(CALIBRATION_LEFT_KEY);
-  } catch (err) {
-    rt.log.warn('second-self: could not read whether the calibration was left', {
-      err: String(err),
-    });
-  }
-  return !left && config.projection.mode === 'reflection' && profile === null;
 }

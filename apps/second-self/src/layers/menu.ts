@@ -49,13 +49,6 @@ const WHITE = '#ffffff';
 /** The hint shown while nothing but the passive overlays run. */
 const IDLE_HINT = 'Raise a hand and hold your index fingertip over the menu button';
 
-/** A menu row that runs something other than a layer, such as the calibration. */
-export interface MenuAction {
-  readonly id: string;
-  readonly label: string;
-  run(): void;
-}
-
 interface Row {
   readonly id: string;
   readonly label: string;
@@ -66,7 +59,7 @@ interface Row {
   fire(): void;
 }
 
-export function createMenuLayer(deps: LayerDeps, actions: readonly MenuAction[] = []): Layer {
+export function createMenuLayer(deps: LayerDeps): Layer {
   const cursorPicker = new CursorPicker();
   const guide = new GuideOverlay(deps.layers, deps.assets, IDLE_HINT);
   /** Per-row dwell progress in milliseconds. */
@@ -104,16 +97,6 @@ export function createMenuLayer(deps: LayerDeps, actions: readonly MenuAction[] 
       for (const option of def.options ?? []) {
         rows.push(optionRow(deps, def.slug, option));
       }
-    }
-    for (const action of actions) {
-      rows.push({
-        id: `action:${action.id}`,
-        label: action.label,
-        active: false,
-        indent: false,
-        closesMenu: true,
-        fire: () => action.run(),
-      });
     }
     return rows;
   }

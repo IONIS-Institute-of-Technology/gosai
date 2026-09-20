@@ -10,8 +10,11 @@
  * - Keeps the overlays (menu, hands, body, face) running and lets the gesture
  *   menu launch the rest.
  * - Suspends every layer while the display sleeps.
- * - Switches to the calibration experience (src/calibrate.ts) from the menu,
- *   and as it starts on a mirror rig without a profile.
+ *
+ * It never starts the calibration itself. The mirror stands in a public space
+ * with no keyboard, and the calibration needs one, so it is run from the
+ * GOSAI dashboard; reflection mode without a fitted rig falls back to the
+ * webcam overlay and says so once.
  */
 
 import {
@@ -24,8 +27,8 @@ import {
 } from '@gosai/sdk';
 
 import { AssetRegistry } from './shared/assets.js';
-import { loadMirrorProfile, openCalibration, shouldCalibrateFirst } from './shared/calibration.js';
-import { DEFAULT_CONFIG, loadConfig, mergeConfig } from './shared/config.js';
+import { loadLensProfile, loadMirrorProfile } from './shared/calibration.js';
+import { DEFAULT_CONFIG, loadConfig, mergeConfig, type SecondSelfConfig } from './shared/config.js';
 import type { LayerDeps } from './shared/deps.js';
 import { createMirrorFeed, keepLatest, type MirrorFeed } from './shared/feed.js';
 import { MenuOptions, type LayerDef, type Layers } from './shared/layers.js';
@@ -66,12 +69,9 @@ const LAYERS: readonly LayerSpec[] = [
     inMenu: false,
     overlay: true,
     persistent: true,
-    // Always offers the mirror calibration: a running kiosk has no dashboard,
-    // so the menu is its way into reflection mode.
-    factory: (deps) =>
-      createMenuLayer(deps, [
-        { id: 'calibrate', label: 'Calibrate', run: () => openCalibration(deps.rt) },
-      ]),
+    // The menu is what the public touches, so it offers experiences and
+    // nothing else. The calibration is run from the dashboard.
+    factory: createMenuLayer,
   },
   {
     slug: 'hands',
@@ -313,19 +313,32 @@ export default defineExperience<State>({
   },
 
   async start(rt, state): Promise<void> {
-    const [config, profile] = await Promise.all([loadConfig(rt), loadMirrorProfile(rt)]);
+    const [saved, profile, lens] = await Promise.all([
+      loadConfig(rt),
+      loadMirrorProfile(rt),
+      loadLensProfile(rt),
+    ]);
     rt.log.info('second-self: starting', {
-      mode: config.projection.mode,
+      mode: saved.projection.mode,
       calibrated: profile !== null,
+      lens: lens !== null,
     });
-    if (await shouldCalibrateFirst(rt, config, profile)) {
-      rt.log.info('second-self: no mirror calibration profile, starting the calibration');
-      openCalibration(rt);
-      return;
-    }
+    let warnedUncalibrated = false;
+    const drawable = (config: SecondSelfConfig): SecondSelfConfig => {
+      if (config.projection.mode !== 'reflection' || profile !== null) return config;
+      if (!warnedUncalibrated) {
+        warnedUncalibrated = true;
+        rt.log.warn(
+          'second-self: reflection mode has no fitted rig, drawing directly. ' +
+            'Run Calibrate from the GOSAI dashboard.',
+        );
+      }
+      return { ...config, projection: { ...config.projection, mode: 'direct' } };
+    };
+    const config = drawable(saved);
 
     subscribeDrivers(rt, state.feed);
-    const projection = new Projection(rt, config, profile);
+    const projection = new Projection(rt, config, profile, lens);
     warnOnFailure(rt, 'set_mirror_config', projection.apply());
     warnOnFailure(rt, 'slr set_actions', rt.drivers.execute('slr', 'set_actions', SIGN_ACTIONS));
     // Only the avatar needs the raw face mesh; it asks for it while it runs.
@@ -374,7 +387,7 @@ export default defineExperience<State>({
 
     // Follow changes made from the dashboard while the experience runs.
     rt.settings.onChange((values) => {
-      const next = mergeConfig(DEFAULT_CONFIG, values);
+      const next = drawable(mergeConfig(DEFAULT_CONFIG, values));
       sleep.configure(next.sleep);
       if (projection.configure(next)) warnOnFailure(rt, 'set_mirror_config', projection.apply());
     });

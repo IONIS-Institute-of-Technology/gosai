@@ -3,18 +3,44 @@ import { readCalibrationLaunch } from '@gosai/sdk';
 import manifest from '../gosai.app.json';
 import {
   CALIBRATION_CANCELLED,
-  CALIBRATION_LEFT_KEY,
-  LEGACY_PROFILE_KEY,
+  LENS_PROFILE_KEY,
   endCalibration,
+  loadLensProfile,
   loadMirrorProfile,
-  openCalibration,
-  shouldCalibrateFirst,
+  saveLensProfile,
 } from '../src/shared/calibration.js';
-import { DEFAULT_CONFIG, mergeConfig, type MirrorProfile } from '../src/shared/config.js';
+import type { MirrorProfile, StoredLens } from '../src/shared/config.js';
 import { FakeRuntime } from './fakes.js';
 
-const PROFILE: MirrorProfile = { tilt_deg: 9, scale: 1.2, affine: [1, 2, 3, 4], updatedAt: 7 };
-const REFLECTION = mergeConfig(DEFAULT_CONFIG, { projection: { mode: 'reflection' } });
+const RIG_PROFILE: MirrorProfile = {
+  version: 2,
+  rig: {
+    rotation: [0, 0.1, 0],
+    center_mm: [0, -40, 1200],
+    width_mm: 392.85,
+    height_mm: 698.4,
+    gap_mm: 6,
+    camera_height_mm: 1700,
+    iris_mm: 12.32,
+  },
+  trim_px: [0, 0],
+  measurements: {
+    screen_width_mm: 392.85,
+    screen_height_mm: 698.4,
+    gap_mm: 6,
+    camera_height_mm: 1700,
+  },
+  fit: { rms_mm: 2.5, predicted_error_mm: 4, quality: 'fair', samples: 8 },
+  updatedAt: 7,
+};
+
+/** What the fingertip calibration used to save. */
+const OLD_FORMAT = { tilt_deg: 9, scale: 1.2, affine: [1, 2, 3, 4], updatedAt: 7 };
+
+const LENS: StoredLens = {
+  lens: { width: 1280, height: 720, fx: 900, fy: 900, cx: 640, cy: 360, dist: [], rms_px: 0.3 },
+  updatedAt: 3,
+};
 
 describe('the manifest', () => {
   test('declares the mirror calibration as an exclusive experience of the app', () => {
@@ -22,55 +48,73 @@ describe('the manifest', () => {
     const experience = manifest.experiences.find((e) => e.slug === 'calibrate');
     expect(experience).toMatchObject({ entry: 'dist/calibrate.js', exclusive: true });
   });
+
+  test('keeps the drivers the calibration needs running', () => {
+    const experience = manifest.experiences.find((e) => e.slug === 'calibrate');
+    expect(experience?.drivers).toEqual(['pose', 'pose_to_mirror', 'camera', 'mirror_calibration']);
+  });
 });
 
 describe('loadMirrorProfile', () => {
   test('reads the calibration profile', async () => {
     const fake = new FakeRuntime();
-    fake.profile = { version: 1, savedAt: 1, kind: 'mirror-reflection', data: PROFILE };
-    fake.storage.set(LEGACY_PROFILE_KEY, { ...PROFILE, scale: 5 });
-    expect(await loadMirrorProfile(fake.rt)).toEqual(PROFILE);
-    // A saved profile wins over the old key, which stays as it is.
-    expect(fake.storage.has(LEGACY_PROFILE_KEY)).toBe(true);
+    fake.profile = { version: 1, savedAt: 1, kind: 'mirror-reflection', data: RIG_PROFILE };
+    expect(await loadMirrorProfile(fake.rt)).toEqual(RIG_PROFILE);
+    expect(fake.warnings).toEqual([]);
   });
 
-  test('converts the profile an older install kept under mirror_calibration', async () => {
+  test('ignores a profile from an older calibration, with one warning', async () => {
     const fake = new FakeRuntime();
-    fake.storage.set('mirror_calibration', PROFILE);
-    expect(await loadMirrorProfile(fake.rt)).toEqual(PROFILE);
-    expect(fake.profile).toMatchObject({ kind: 'mirror-reflection', data: PROFILE });
-    expect(fake.storage.has('mirror_calibration')).toBe(false);
-    // Converted once: the next read finds the profile.
-    expect(await loadMirrorProfile(fake.rt)).toEqual(PROFILE);
-  });
-
-  test('keeps the old key when the conversion fails', async () => {
-    const fake = new FakeRuntime({ failSave: true });
-    fake.storage.set(LEGACY_PROFILE_KEY, PROFILE);
-    expect(await loadMirrorProfile(fake.rt)).toEqual(PROFILE);
-    expect(fake.storage.get(LEGACY_PROFILE_KEY)).toEqual(PROFILE);
+    fake.profile = { version: 1, savedAt: 1, kind: 'mirror-reflection', data: OLD_FORMAT };
+    expect(await loadMirrorProfile(fake.rt)).toBeNull();
     expect(fake.warnings).toHaveLength(1);
+    // Nothing is rewritten: the mirror simply counts as uncalibrated.
+    expect(fake.profile.data).toEqual(OLD_FORMAT);
   });
 
-  test('returns null without a valid profile', async () => {
+  test('returns null without a profile, and says nothing about it', async () => {
     const fake = new FakeRuntime();
     expect(await loadMirrorProfile(fake.rt)).toBeNull();
-    fake.storage.set(LEGACY_PROFILE_KEY, { tilt_deg: 9, scale: 1, affine: [1, 2] });
-    expect(await loadMirrorProfile(fake.rt)).toBeNull();
-    expect(fake.profile).toBeNull();
-    fake.profile = { version: 1, savedAt: 1, kind: 'mirror-reflection', data: { scale: 1 } };
+    expect(fake.warnings).toEqual([]);
+  });
+
+  test('returns null for a profile that would make the rig path guess', async () => {
+    const fake = new FakeRuntime();
+    fake.profile = {
+      version: 1,
+      savedAt: 1,
+      kind: 'mirror-reflection',
+      data: { ...RIG_PROFILE, rig: { ...RIG_PROFILE.rig, width_mm: 0 } },
+    };
     expect(await loadMirrorProfile(fake.rt)).toBeNull();
   });
 });
 
-describe('entering and leaving the calibration', () => {
-  test('the menu switches to the calibration experience', async () => {
+describe('the lens profile', () => {
+  test("is saved under the app's own storage key and read back", async () => {
     const fake = new FakeRuntime();
-    openCalibration(fake.rt);
-    await Promise.resolve();
-    expect(fake.switched).toEqual(['calibrate']);
+    await saveLensProfile(fake.rt, LENS);
+    expect(fake.storage.get(LENS_PROFILE_KEY)).toEqual(LENS);
+    expect(await loadLensProfile(fake.rt)).toEqual(LENS);
+    // It belongs to the camera, not to the mirror: no calibration profile is written.
+    expect(fake.profile).toBeNull();
   });
 
+  test('is simply absent before the lens is calibrated', async () => {
+    const fake = new FakeRuntime();
+    expect(await loadLensProfile(fake.rt)).toBeNull();
+    expect(fake.warnings).toEqual([]);
+  });
+
+  test('is ignored with a warning when what was saved no longer parses', async () => {
+    const fake = new FakeRuntime();
+    fake.storage.set(LENS_PROFILE_KEY, { lens: { width: 1280 }, updatedAt: 3 });
+    expect(await loadLensProfile(fake.rt)).toBeNull();
+    expect(fake.warnings).toHaveLength(1);
+  });
+});
+
+describe('leaving the calibration', () => {
   test("GOSAI's flow gets the result and nothing switches", async () => {
     const windows: Record<string, string>[] = [
       { role: 'control', target: 'second-self' },
@@ -81,40 +125,16 @@ describe('entering and leaving the calibration', () => {
       await endCalibration(fake.rt, readCalibrationLaunch(fake.rt), CALIBRATION_CANCELLED);
       expect(fake.emitted).toEqual([{ topic: 'wizard:finished', data: CALIBRATION_CANCELLED }]);
       expect(fake.switched).toEqual([]);
-      expect(fake.storage.get(CALIBRATION_LEFT_KEY)).toBe(true);
+      // Nothing is remembered about the run: main never opens this by itself.
+      expect(fake.storage.size).toBe(0);
     }
-    const saved = new FakeRuntime({ params: { target: 'second-self' } });
-    await endCalibration(saved.rt, readCalibrationLaunch(saved.rt), { ok: true });
-    expect(saved.emitted).toEqual([{ topic: 'wizard:finished', data: { ok: true } }]);
-    expect(saved.storage.size).toBe(0);
   });
 
-  test('a run the app started goes back to main', async () => {
-    const saved = new FakeRuntime();
-    await endCalibration(saved.rt, readCalibrationLaunch(saved.rt), { ok: true });
-    expect(saved.switched).toEqual(['main']);
-    expect(saved.emitted).toEqual([]);
-    expect(saved.storage.size).toBe(0);
-
-    const left = new FakeRuntime();
-    await endCalibration(left.rt, readCalibrationLaunch(left.rt), CALIBRATION_CANCELLED);
-    expect(left.switched).toEqual(['main']);
-    expect(left.storage.get(CALIBRATION_LEFT_KEY)).toBe(true);
-  });
-
-  test('main calibrates first on a mirror rig without a profile', async () => {
-    const fake = new FakeRuntime();
-    expect(await shouldCalibrateFirst(fake.rt, REFLECTION, null)).toBe(true);
-    expect(await shouldCalibrateFirst(fake.rt, REFLECTION, PROFILE)).toBe(false);
-    expect(await shouldCalibrateFirst(fake.rt, DEFAULT_CONFIG, null)).toBe(false);
-  });
-
-  test('main does not send the user straight back after they left', async () => {
+  test('a run nobody is waiting for goes back to main', async () => {
     const fake = new FakeRuntime();
     await endCalibration(fake.rt, readCalibrationLaunch(fake.rt), CALIBRATION_CANCELLED);
-    expect(await shouldCalibrateFirst(fake.rt, REFLECTION, null)).toBe(false);
-    expect(fake.storage.has(CALIBRATION_LEFT_KEY)).toBe(false);
-    // Only once: the next start calibrates again.
-    expect(await shouldCalibrateFirst(fake.rt, REFLECTION, null)).toBe(true);
+    expect(fake.switched).toEqual(['main']);
+    expect(fake.emitted).toEqual([]);
+    expect(fake.storage.size).toBe(0);
   });
 });

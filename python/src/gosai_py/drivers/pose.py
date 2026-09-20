@@ -7,27 +7,35 @@ sha256.
 
 Hand keys are swapped relative to the model output: `right_hand_pose` holds
 the model's left hand. The SLR models were trained on this layout and
-`pose_to_mirror` anchors hands assuming it, so it is kept at the source.
+`pose_to_mirror` anchors hands assuming it, so it is kept at the source. The
+in-process world-landmark keys follow the same swap.
 
 With `face_mesh` off, `raw_data` sends an empty `face_mesh` to Node while
 in-process subscribers still find the mesh under `_face_mesh`.
+
+Underscore-prefixed keys stay in process, stripped before the payload reaches
+Node. Besides `_face_mesh` they carry what the geometry pipeline needs and the
+public payload cannot hold: `_face_xyz` (the mesh with its `z`) and
+`_left_hand_world` / `_right_hand_world` (metric hand landmarks).
 """
 
 from __future__ import annotations
 
 import time
 from collections.abc import Mapping
-from typing import Any, ClassVar
+from typing import Annotated, Any, ClassVar
 
 import cv2
 import mediapipe as mp
 import msgspec
+import numpy as np
 from mediapipe.tasks.python import vision
+from msgspec import Meta
 
 from gosai_py.clock import now_ms
 from gosai_py.driver import BaseDriver, DriverContext, Event, action
-from gosai_py.frames import clamp_window, contiguous, flip_and_crop
-from gosai_py.payloads import EpochMs, FlipResult, WindowResult
+from gosai_py.frames import capture_timing, clamp_window, contiguous, flip_and_crop, latency_ms
+from gosai_py.payloads import CaptureMs, EpochMs, FlipResult, WindowResult
 from gosai_py.runtime import RuntimeInfo, mediapipe_base_options
 from gosai_py.runtime.models import Model, resolve_model
 
@@ -48,8 +56,8 @@ class PoseConfig(msgspec.Struct, kw_only=True):
 
 
 class RawPosePayload(msgspec.Struct, kw_only=True):
-    """Landmarks `[x_px, y_px, visibility]` in the full camera frame.
-    `body_world_pose` rows are `[x_m, y_m, z_m, visibility]` from the hips."""
+    """Landmarks `[x_px, y_px, visibility]` in the full camera frame, mirrored when
+    `flipped`. `body_world_pose` rows are `[x_m, y_m, z_m, visibility]` from the hips."""
 
     face_mesh: list[list[float]]
     body_pose: list[list[float]]
@@ -58,8 +66,15 @@ class RawPosePayload(msgspec.Struct, kw_only=True):
     body_world_pose: list[list[float]]
     frame_width: float
     frame_height: float
+    flipped: Annotated[
+        bool,
+        Meta(description="Whether the landmarks sit in a horizontally flipped frame."),
+    ]
     ts: EpochMs
+    capture_ts: CaptureMs
     inference_ms: float
+    frame_age_ms: float
+    latency_ms: float
 
 
 class FaceMeshResult(msgspec.Struct, kw_only=True):
@@ -69,6 +84,34 @@ class FaceMeshResult(msgspec.Struct, kw_only=True):
 def _visibility(landmark: Any) -> float:
     vis = getattr(landmark, "visibility", None)
     return round(float(vis), 2) if vis is not None else 1.0
+
+
+def _face_xyz(landmarks: Any, x0: int, w_crop: int, h_crop: int) -> np.ndarray | None:
+    """(N, 3) face mesh: `x` and `y` in full-frame pixels, `z` in the same pixels as `x`.
+
+    MediaPipe's face `z` is normalised like its `x`, with the origin near the
+    center of the head and smaller meaning closer to the camera, so the crop
+    width converts it to the pixel scale the mesh's `x` already uses.
+    """
+    if not landmarks:
+        return None
+    return np.array(
+        [[x0 + lm.x * w_crop, lm.y * h_crop, lm.z * w_crop] for lm in landmarks],
+        dtype=np.float64,
+    )
+
+
+def _hand_world(result: Any, side: str) -> np.ndarray | None:
+    """(21, 3) hand world landmarks in meters, or None when that hand is absent.
+
+    The holistic bundle places them in the body's world frame, the same one as
+    `body_world_pose`: row 0 is the wrist and equals the matching body world
+    landmark. Only their differences within the hand are meaningful here.
+    """
+    landmarks = getattr(result, f"{side}_hand_world_landmarks", None)
+    if not landmarks:
+        return None
+    return np.array([[lm.x, lm.y, lm.z] for lm in landmarks], dtype=np.float64)
 
 
 class PoseDriver(BaseDriver):
@@ -152,9 +195,11 @@ class PoseDriver(BaseDriver):
         )
         image_format = mp.ImageFormat.SRGBA if self._uses_rgba else mp.ImageFormat.SRGB
         mp_image = mp.Image(image_format=image_format, data=img)
+        capture_ts, frame_age_ms = capture_timing(data)
+        self.record("frame_age_ms", frame_age_ms)
 
         # VIDEO mode requires strictly increasing timestamps (ms).
-        ts_ms = max(self._last_ts_ms + 1, int(time.perf_counter() * 1000))
+        ts_ms = max(self._last_ts_ms + 1, int(capture_ts))
         self._last_ts_ms = ts_ms
         start = time.perf_counter()
         result = self._landmarker.detect_for_video(mp_image, ts_ms)
@@ -180,8 +225,16 @@ class PoseDriver(BaseDriver):
             ],
             "frame_width": float(frame.shape[1]),
             "frame_height": float(frame.shape[0]),
+            "flipped": config.flip,
             "ts": now_ms(),
+            "capture_ts": capture_ts,
             "inference_ms": inference_ms,
+            "frame_age_ms": frame_age_ms,
+            "latency_ms": latency_ms(capture_ts),
+            # The face mesh with its depth, and the hands in meters, for geometry.
+            "_face_xyz": _face_xyz(result.face_landmarks, x0, w_crop, h_crop),
+            "_left_hand_world": _hand_world(result, "right"),
+            "_right_hand_world": _hand_world(result, "left"),
         }
         if not config.face_mesh:
             payload["_face_mesh"] = face_mesh

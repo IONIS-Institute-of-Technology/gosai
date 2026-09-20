@@ -19,7 +19,7 @@ to be coerced or ignored behave differently:
   Before, any non-empty string meant true.
 - `ball.set_output_size` needs both `width` and `height`.
 - `pose_to_mirror.set_mirror_config` rejects the whole update when one field is
-  invalid (unknown `mode` or `fit`, an `affine` without 4 numbers, a
+  invalid (unknown `mode` or `fit`, a `trim_px` without 2 numbers, a
   non-numeric setting). Before, bad values were logged and skipped.
 - `calibration.compute` raises on a `focus_quad` that isn't 4 points or a
   non-positive `frame_size`, instead of ignoring them.
@@ -45,32 +45,67 @@ of those.
 
 Projects MediaPipe landmarks onto an augmented mirror so the on-screen skeleton
 lines up with the user's reflection, then maps the result into mirror pixel
-space.
+space. Two paths, chosen by `set_mirror_config`:
+
+- `mode: "direct"` — a webcam selfie overlay, no calibration.
+- `mode: "reflection"` — the calibrated projection. Landmarks are placed in
+  camera millimeters by `geometry.placement`, then projected from the viewer's
+  eye onto the screen behind the mirror by `geometry.mirror_rig`. `lens`
+  supplies the intrinsics, `rig` the mirror pose, and `trim_px` is a perceptual
+  nudge added to every projected pixel. Without a `rig` there is no geometry:
+  every landmark comes out invalid and the driver warns once.
 
 - **Subscribes:** `pose.raw_data`
 - **Emits:**
   - `mirrored_data` — landmarks in mirror pixel space (default `1080x1920`),
-    temporally smoothed. Payload:
-    `{ body_pose, right_hand_pose, left_hand_pose, face_mesh, body_world_pose, ts }`,
-    each landmark `[x, y, depth_mm, visibility]`.
-  - `projected_data` — same reflection but still in millimeters (pre
-    pixel-mapping); useful for calibration/debugging.
+    smoothed by a One Euro filter timed on the frame's capture timestamp.
+    Payload:
+    `{ body_pose, right_hand_pose, left_hand_pose, face_mesh, body_world_pose, ts, capture_ts, latency_ms }`,
+    each landmark `[x, y, depth_mm, visibility]`. A row the projection has no
+    answer for reads `(-1, -1)`, and `-1` in its depth as well.
+  - `projected_data` — reflection mode only, the same rows as canvas-centered
+    screen millimeters before smoothing and before `trim_px`.
+  - `viewer` — reflection mode only: both pupils in camera millimeters, where
+    they came from (`face`, `body`, `none`), this visitor's `body_scale`, the
+    `scale_cues` it was fused from (`eyes` and `floor`, each null until its
+    window fills), and the eye midpoint's distance in front of the mirror.
 - **Actions:**
-  - `set_mirror_config` — change any of the settings in `MirrorSettings`,
-    including the fitted `affine` (`[ax, bx, ay, by]` mm→px mapping) and
-    `face_mesh` (false sends empty face meshes), and return all of them.
-  - `capture_calibration_sample` — `{ target: [x_px, y_px], landmark? }`:
-    snapshot the recent raw-pose frames for one calibration target (the user's
-    index fingertip reflection aligned with a dot at `target`).
-  - `solve_calibration` — grid-search `tilt_deg` × `scale` and least-squares
-    the affine from the captured samples; applies the fit (unless
-    `{"apply": false}`) and returns it with residuals in pixels. See
-    `tests/test_pose_to_mirror_calibration.py` for a synthetic round trip.
-  - `clear_calibration_samples` — drop captured samples.
+  - `set_mirror_config` — change any of the settings in `MirrorSettings` and
+    return all of them. Changing `mode`, `rig`, `lens`, the canvas size or
+    `ipd_mm` drops the smoothing state and the visitor's size, which was
+    estimated through the old ones.
+  - `reset_viewer` — forget the visitor's size and the smoothing state, for the
+    next person.
 
-Reflection-mode geometry is therefore _fitted_ by the second-self in-app
-wizard, never measured by hand; the legacy mm config keys remain only as the
-fallback used to derive the affine when no fit has been applied.
+### Nobody is measured
+
+The mirror stands in a public space, so no setting describes the person in
+front of it: there is no chosen eye and no entered body size. The viewpoint is
+always the eye midpoint, because a flat display can register with only one eye
+at a time and nobody walking up to a mirror picks one.
+
+Size is the one thing a single camera cannot see, and it matters: a depth off
+by a factor `s` moves the drawing by `(s - 1)` times its distance on the glass
+from the point nearest the camera, so 10 % costs about 6 cm at a hand by the
+hip. Two cues estimate it per visitor, every frame:
+
+- the pupils, through the assumed spacing `ipd_mm` (63 mm by default, the
+  population prior). Adults spread about 5 % around it; children sit well below.
+- the floor, when the rig profile carries a `camera_height_mm` and the feet are
+  in the frame. A foot on a known plane has a depth that owes nothing to the
+  person's size.
+
+`placement.SessionScale` keeps a sliding median per cue and fuses them in the
+log domain, weighted by how far each can be off for a stranger. It starts over
+when no body arrived for a second, on `reset_viewer`, or when the eye midpoint
+jumps more than 250 mm between two frames, which is another person walking in
+while the tracker still holds the first. Landmarks outside the frame are
+treated as unseen whatever visibility MediaPipe reports for them, because it
+extrapolates feet below the image with a confident-looking score.
+
+The error grows with distance on the glass from the camera, so a camera near
+the middle of the drawn area beats one on top of it, and a camera low enough to
+see feet gets the second cue for free.
 
 In direct mode, `fit` decides what gives when the camera and the screen
 disagree on aspect. `contain` (the default) keeps the whole frame and leaves a
@@ -80,12 +115,65 @@ hand, second-self among them, ask for `cover`.
 
 **Webcam-only (no RealSense).** The legacy driver needed an Intel RealSense
 depth camera. We drop that hardware: MediaPipe Holistic already produces metric
-3D (`body_world_pose`, meters), and absolute camera distance is recovered with a
-weak-perspective estimate from shoulder span (metric vs. pixel size). Hands and
-face are anchored to the nearest body joint's depth (the legacy `ref` trick).
-The pinhole back-projection is numerically identical to the legacy RealSense
-deprojection (which used zero distortion coefficients) — only the depth source
-changed.
+3D (`body_world_pose`, meters), and the metric length a single camera still
+needs comes from the two cues above. Hands keep their own relative depths,
+anchored to the body's wrist.
+
+## `mirror_calibration`
+
+Runs the guided setup that produces the profiles `pose_to_mirror` consumes:
+camera intrinsics from the printed ChArUco sheet, then the mirror rig's pose
+from a handful of alignments. It stores nothing; the app saves the returned
+`LensProfile` and `RigProfile`.
+
+- **Depends on:** `camera`, `pose`
+- **Subscribes:** `camera.frame`, `pose.raw_data`
+- **Stages** (`set_stage`): `idle` detects nothing at all, `lens` collects
+  views of the board, `align` records alignments. Detection only runs outside
+  `idle`, so the driver is free to leave loaded.
+- **Emits:**
+  - `board` — the board in the latest frame outside `idle`: `detected`,
+    `corners`, `marker_count`, `hull_px` for the preview overlay,
+    `frame_width`, `frame_height`, `sharpness`, and when the pose was
+    estimated `point_mm`, `distance_mm`, `rms_px`, `ambiguity_mm`, `tilt_deg`.
+  - `lens_progress` — `views`, `coverage`, `tilted_views`, `progress`, `hint`
+    and whether this frame was kept (`accepted`), in the `lens` stage.
+- **Actions:** `configure` (partial settings update: `lens`, `hfov_deg`,
+  `ipd_mm`, `eye`), `set_stage`, `reset_lens`, `solve_lens`,
+  `capture_alignment`, `remove_alignment`, `clear_alignments`,
+  `list_alignments`, `solve_rig`, `suggest_targets`, `check_rig`. A `configure`
+  that changes the optics or the pupil spacing drops the recent history for the
+  same reason a stage change does.
+
+`suggest_targets` answers which of a list of canvas pixels the operator could
+cover from where they stand, and how to hold the sheet for each (`corner_up`
+upright, `corner_down` after half a turn). When it could test nothing it says
+why in `reason`: `no_face` when no face has been seen yet, `too_close` when
+there is no room to hold the board in front of the viewer. Before the fit it
+runs on a nominal rig, so it is a guide; the capture itself still checks that
+the board was seen.
+
+`ipd_mm` and `eye` describe the calibration operator, who is not a member of
+the public: they are given per run and never reach `pose_to_mirror`, which
+measures nobody.
+
+`capture_alignment` averages the short window that ended when the app called
+it, which is the moment the operator confirms. Stillness alone never captures.
+It refuses a sample with a machine-readable code in front of the message:
+`board_missing:`, `face_missing:`, `unstable_board:`, `unstable_eye:` or
+`ambiguous_board:`. The histories are cleared afterwards, so the next target
+cannot reuse those frames. An operator working alone, with the keyboard on
+another display, needs nothing more: the app calls the action when its
+countdown ends and the window is the moment before that.
+
+`solve_rig` grades the fit by `predicted_error_mm` (good <= 15 mm, fair <= 30
+mm, poor beyond), never by the residuals: a set of alignments taken at a
+single standing distance fits its own targets just as tightly as a good set
+while leaving the rig loosely constrained. Mark a couple of alignments as
+`holdout` to get an independent check in the same result, and use `check_rig`
+later to score a saved calibration against every stored alignment. Its optional
+`camera_height_mm` goes straight into the returned `RigProfile`, so the app
+stores one object and `pose_to_mirror` gets the floor cue with it.
 
 ## `slr` (sign-language recognition)
 
