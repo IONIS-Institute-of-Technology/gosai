@@ -22,6 +22,13 @@ broadcasts `wizard:finished` with `{ ok: true }` or `{ ok: false, error }`, and
 main closes both windows. A window that can't load its target reports the
 failure the same way.
 
+When the target's camera has a manual-focus control (V4L2 `focus_absolute`),
+the control window's footer offers Auto or Manual focus. Drag the slider while
+watching the feed to pin the focus, which stops autofocus from hunting on a
+flat surface such as a pool table. The value is saved to the target app's
+camera settings and applied whenever that app opens the camera. This is why the
+runner requests `app-config:write`, which reaches only its launch target.
+
 ## Target app contract
 
 An app opts in from `gosai.app.json`:

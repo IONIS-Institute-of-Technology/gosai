@@ -56,10 +56,26 @@ describe('camera config', () => {
       height: 720,
       fps: 30,
       rotation: 0,
+      focus: null,
     });
     expect(resolveCameraSettings({ ...GLOBAL_CAMERA, rotation: 90 }, { fps: 60 }).rotation).toBe(
       90,
     );
+  });
+
+  test('an app follows the global focus unless it pins its own', () => {
+    const manual = { ...GLOBAL_CAMERA, focus: 120 };
+    expect(resolveCameraSettings(GLOBAL_CAMERA, undefined).focus).toBeNull();
+    expect(resolveCameraSettings(manual, { device: 2 }).focus).toBe(120);
+    expect(resolveCameraSettings(manual, { focus: 40 }).focus).toBe(40);
+  });
+
+  test('a global focus change reaches the running camera', async () => {
+    const src = sourcesFor({ camera: { ...GLOBAL_CAMERA, focus: 120 }, apps: {} });
+    const drivers = new FakeDrivers(['pool']);
+    await applyGlobalCameraSettings(drivers as unknown as DriverManager, src, GLOBAL_CAMERA, log);
+    expect(drivers.calls).toHaveLength(1);
+    expect(drivers.calls[0]).toMatchObject({ action: 'set_mode', data: { focus: 120 } });
   });
 
   test('cold start uses the same resolution as hot apply', () => {
@@ -73,9 +89,14 @@ describe('camera config', () => {
       height: 720,
       fps: 30,
       rotation: 0,
+      focus: null,
     });
     // The system binding ignores per-app settings.
-    expect(driverConfigFor(src, 'system', 'camera')).toEqual({ ...GLOBAL_CAMERA, rotation: 0 });
+    expect(driverConfigFor(src, 'system', 'camera')).toEqual({
+      ...GLOBAL_CAMERA,
+      rotation: 0,
+      focus: null,
+    });
     expect(driverConfigFor(src, 'pool', 'microphone')).toBeUndefined();
   });
 
@@ -102,13 +123,13 @@ describe('camera config', () => {
         binding: 'system',
         driver: 'camera',
         action: 'set_mode',
-        data: { device: 0, width: 1920, height: 1080, fps: 30, rotation: 0 },
+        data: { device: 0, width: 1920, height: 1080, fps: 30, rotation: 0, focus: null },
       },
       {
         binding: 'pool',
         driver: 'camera',
         action: 'set_mode',
-        data: { device: 1, width: 1920, height: 1080, fps: 30, rotation: 0 },
+        data: { device: 1, width: 1920, height: 1080, fps: 30, rotation: 0, focus: null },
       },
     ]);
   });
@@ -126,7 +147,7 @@ describe('camera config', () => {
     state.apps.pool = { ...previous, camera: { rotation: 180 } as CameraSettings };
     await applyAppDeviceSettings(drivers as unknown as DriverManager, src, 'pool', previous, log);
     expect(drivers.calls.map((c) => c.data)).toEqual([
-      { device: 0, width: 1280, height: 720, fps: 30, rotation: 180 },
+      { device: 0, width: 1280, height: 720, fps: 30, rotation: 180, focus: null },
     ]);
   });
 });

@@ -72,6 +72,7 @@ def test_mode_change_releases_the_device_before_reopening(
         "height": 480,
         "fps": 60.0,
         "rotation": 90,
+        "focus": None,
         "codec": "MJPG",
     }
     assert context.states == ["running"]
@@ -117,6 +118,7 @@ def test_list_formats_probes_a_free_device(cameras: FakeCameras) -> None:
         "device": 1,
         "formats": [{"width": 640, "height": 480, "fps": [24, 30, 60]}],
         "in_use": False,
+        "focus": None,
     }
     assert cameras.open_handles == {}
 

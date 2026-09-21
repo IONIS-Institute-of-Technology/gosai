@@ -1,6 +1,11 @@
 /** Camera mode helpers shared by the global and per-app camera pickers. */
 
-import type { AppDeviceSettingsPatch, CameraFormat, CameraSettings } from '@gosai/shared';
+import type {
+  AppDeviceSettingsPatch,
+  CameraFocusInfo,
+  CameraFormat,
+  CameraSettings,
+} from '@gosai/shared';
 
 export type CameraModePatch = Partial<Pick<CameraSettings, 'width' | 'height' | 'fps'>>;
 
@@ -56,6 +61,18 @@ export function parseCameraFormats(result: unknown): readonly CameraFormat[] {
     );
   }
   return value.formats as readonly CameraFormat[];
+}
+
+/** What a camera device offers: its modes, and its focus control when it has one. */
+export interface CameraCapabilities {
+  readonly formats: readonly CameraFormat[];
+  readonly focus: CameraFocusInfo | null;
+}
+
+/** Reads the whole `list_formats` result. Throws when it lists no mode. */
+export function parseCameraCapabilities(result: unknown): CameraCapabilities {
+  const focus = (result as { focus?: CameraFocusInfo | null } | null)?.focus ?? null;
+  return { formats: parseCameraFormats(result), focus };
 }
 
 /** The per-app patch for a camera picked in a device select. `null` clears the override. */

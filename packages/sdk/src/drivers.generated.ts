@@ -208,6 +208,8 @@ export declare namespace DriverTypes {
       fps?: number;
       /** @default 0 */
       rotation?: 0 | 90 | 180 | 270;
+      /** @default null */
+      focus?: number | null;
     }
 
     export interface FramePayload {
@@ -270,6 +272,12 @@ export declare namespace DriverTypes {
       fps?: number | null;
       /** @default null */
       rotation?: 0 | 90 | 180 | 270 | null;
+      focus?: number | null;
+    }
+
+    export interface FocusParams {
+      /** Device units, or null for autofocus. */
+      focus: number | null;
     }
 
     export interface CameraFormats {
@@ -277,12 +285,31 @@ export declare namespace DriverTypes {
       formats: CameraFormat[];
       /** @default false */
       in_use: boolean;
+      /** @default null */
+      focus: null | FocusInfo;
     }
 
     export interface CameraFormat {
       width: number;
       height: number;
       fps: number[];
+    }
+
+    /** A device's `focus_absolute` control, in device units. */
+    export interface FocusInfo {
+      min: number;
+      max: number;
+      step: number;
+      default: number;
+      /** Whether the device also has autofocus. */
+      autofocus: boolean;
+      /** @default null */
+      autofocus_enabled: boolean | null;
+      /**
+       * Current focus. Under autofocus, where it last settled.
+       * @default null
+       */
+      value: number | null;
     }
 
     export interface DeviceResult {
@@ -304,7 +331,16 @@ export declare namespace DriverTypes {
       height: number;
       fps: number;
       rotation: number;
+      focus: number | null;
       codec: string;
+    }
+
+    export interface FocusStatus {
+      supported: boolean;
+      /** The pinned focus, or null under autofocus. */
+      focus: number | null;
+      /** @default null */
+      info: null | FocusInfo;
     }
   }
 
@@ -1250,6 +1286,16 @@ export interface BuiltinDrivers {
       set_mode: {
         params: null | DriverTypes.camera.ModeParams;
         result: DriverTypes.camera.ModeResult;
+      };
+      /** Pin the focus, or restore autofocus with null. Applies without a reopen. */
+      set_focus: {
+        params: DriverTypes.camera.FocusParams;
+        result: DriverTypes.camera.FocusStatus;
+      };
+      /** The pinned focus and the device's focus control, when it has one. */
+      get_focus: {
+        params: undefined;
+        result: DriverTypes.camera.FocusStatus;
       };
       /** The newest frame as a base64 JPEG, or null before the first frame. */
       snapshot: {

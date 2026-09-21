@@ -89,7 +89,7 @@ describe('capabilities', () => {
     pool: [],
     logger: ['logs:read', 'app-config:write'],
     greedy: ['apps:manage', 'config:write', 'devices:read'],
-    calibration: ['calibration:write'],
+    calibration: ['calibration:write', 'app-config:write'],
   };
   const grant = (scope: TokenScope): Grant => grantFor(scope, (slug) => manifests[slug]);
   const app = (slug: string, claims: { driverBinding?: string; target?: string } = {}): Grant =>
@@ -230,6 +230,18 @@ describe('capabilities', () => {
     expect(
       commandDenial(runner, 'experience:stop', { appSlug: 'pool', experienceSlug: 'main' }),
     ).not.toBeNull();
+  });
+
+  test('the calibration runner sets the device settings of its launch target only', () => {
+    const settings = { camera: { focus: 120 } };
+    const runner = app('calibration', { driverBinding: 'pool', target: 'pool' });
+    expect(commandDenial(runner, 'app:config:set', { appSlug: 'pool', settings })).toBeNull();
+    expect(commandDenial(runner, 'app:config:set', { appSlug: 'second-self', settings })).toContain(
+      'outside',
+    );
+    // Both capabilities are needed to reach the target.
+    const logger = app('logger', { target: 'pool' });
+    expect(commandDenial(logger, 'app:config:set', { appSlug: 'pool', settings })).not.toBeNull();
   });
 
   test('calibration:write reaches only the calibration profile of the launch target', () => {

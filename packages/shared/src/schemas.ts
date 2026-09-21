@@ -633,6 +633,7 @@ const cameraSettingsObject = z.strictObject({
   height: positiveInt,
   fps: z.number().positive(),
   rotation: rotationSchema.optional(),
+  focus: z.number().int().nullable().optional(),
 }) satisfies z.ZodType<CameraSettings>;
 
 export const cameraSettingsSchema: z.ZodType<CameraSettings> = cameraSettingsObject;
@@ -668,6 +669,7 @@ export const globalConfigFileSchema: z.ZodType<GlobalConfig> = z.object({
       height: positiveInt.default(DEFAULT_CAMERA_SETTINGS.height),
       fps: z.number().positive().default(DEFAULT_CAMERA_SETTINGS.fps),
       rotation: rotationSchema.optional(),
+      focus: z.number().int().nullable().optional(),
     })
     .default(DEFAULT_CAMERA_SETTINGS),
 });

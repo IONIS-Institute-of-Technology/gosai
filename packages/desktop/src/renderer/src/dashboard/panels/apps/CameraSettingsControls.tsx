@@ -1,6 +1,7 @@
 import type { AppDeviceSettingsPatch, CameraSettings, DeviceOption } from '@gosai/shared';
 import { cameraDevicePatch } from '../../../lib/camera.js';
 import { useCameraFormats } from '../../../lib/use-camera-formats.js';
+import { CameraFocusControl } from '../../components/CameraFocusControl.js';
 import { CameraModePicker } from '../../components/CameraModePicker.js';
 import { DeviceSelect } from './DeviceSelect.js';
 
@@ -16,7 +17,7 @@ interface CameraSettingsControlsProps {
 }
 
 /**
- * Per-app camera: device, resolution and frame rate. The modes come from the
+ * Per-app camera: device, resolution, frame rate and focus. The modes come from the
  * camera the app would use, so each app only offers what its device supports.
  */
 export function CameraSettingsControls({
@@ -43,7 +44,7 @@ export function CameraSettingsControls({
         onChange={(next) => onSave(cameraDevicePatch(next))}
       />
       <CameraModePicker
-        formats={formats.data}
+        formats={formats.data?.formats}
         probing={formats.loading}
         probeError={formats.error}
         width={camera?.width ?? defaults?.width ?? null}
@@ -52,6 +53,15 @@ export function CameraSettingsControls({
         disabled={saving}
         onChange={(patch) => onSave({ camera: patch })}
         onRefresh={() => void formats.reload()}
+      />
+      <CameraFocusControl
+        info={formats.data?.focus}
+        focus={camera?.focus}
+        autoLabel={
+          defaults?.focus != null ? `Default (manual ${defaults.focus})` : 'Default (autofocus)'
+        }
+        disabled={saving}
+        onSave={(focus) => onSave({ camera: { focus } })}
       />
     </div>
   );

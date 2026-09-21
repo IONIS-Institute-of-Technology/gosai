@@ -13,6 +13,12 @@ release the device, then open it with the new settings. V4L2 refuses a second
 handle on a busy device, so the old one must go first. If the new mode fails,
 the previous one is restored and the action raises.
 
+Focus is the exception. A camera with a manual-focus control can be pinned
+with the `focus` config key, `set_focus`, or `set_mode`; `None` hands it back
+to autofocus. It is written straight to the device node (see
+`gosai_py.camera_focus`), so a change that touches only the focus applies
+live, without the reopen. A UI can sweep it while watching the feed.
+
 `list_formats` runs without an instance. For a device a camera instance has
 open it answers from the cache (or the current mode), since probing would
 need the device.
@@ -30,6 +36,7 @@ import cv2
 import msgspec
 from msgspec import Meta
 
+from gosai_py.camera_focus import FocusInfo, apply_focus, query_focus
 from gosai_py.clock import now_ms
 from gosai_py.devices import open_capture
 from gosai_py.driver import BaseDriver, DriverContext, Event, action
@@ -65,6 +72,8 @@ class CameraConfig(msgspec.Struct, kw_only=True):
     height: PositiveInt = 720
     fps: float = 30.0
     rotation: Rotation = 0
+    # Fixed focus in device units. None keeps autofocus.
+    focus: int | None = None
 
 
 class FramePayload(msgspec.Struct, kw_only=True):
@@ -109,6 +118,8 @@ class CameraFormats(msgspec.Struct, kw_only=True):
     formats: list[CameraFormat]
     # True when a camera instance holds the device and the list may be partial.
     in_use: bool = False
+    # None when the device has no manual-focus control.
+    focus: FocusInfo | None = None
 
 
 class ListFormatsParams(msgspec.Struct, kw_only=True):
@@ -139,6 +150,8 @@ class ModeParams(msgspec.Struct, kw_only=True):
     height: PositiveInt | None = None
     fps: float | None = None
     rotation: Rotation | None = None
+    # Null means autofocus, so an omitted focus has to be told apart from it.
+    focus: int | msgspec.UnsetType | None = msgspec.UNSET
 
 
 class ModeResult(msgspec.Struct, kw_only=True):
@@ -147,7 +160,18 @@ class ModeResult(msgspec.Struct, kw_only=True):
     height: int
     fps: float
     rotation: int
+    focus: int | None
     codec: str
+
+
+class FocusParams(msgspec.Struct, kw_only=True):
+    focus: Annotated[int | None, Meta(description="Device units, or null for autofocus.")]
+
+
+class FocusStatus(msgspec.Struct, kw_only=True):
+    supported: bool
+    focus: Annotated[int | None, Meta(description="The pinned focus, or null under autofocus.")]
+    info: FocusInfo | None = None
 
 
 _devices_lock = threading.Lock()
@@ -178,7 +202,9 @@ def probe_formats(device: int) -> CameraFormats:
     camera returns.
     """
     with _holding_devices(device):
-        return _probe_formats(device)
+        formats = _probe_formats(device)
+    # Read outside the cache: the value moves with autofocus and with sweeps.
+    return msgspec.structs.replace(formats, focus=query_focus(device))
 
 
 def _probe_formats(device: int) -> CameraFormats:
@@ -236,6 +262,8 @@ class CameraDriver(BaseDriver):
     def __init__(self, context: DriverContext) -> None:
         super().__init__(context)
         self._config = CameraConfig()
+        # What `_open` was last asked for. `_config` holds what it delivered.
+        self._requested = CameraConfig()
         self._reconfigure_lock = threading.Lock()
         self._cap: Any = None
         self._codec = "native"
@@ -282,15 +310,29 @@ class CameraDriver(BaseDriver):
 
     @action("Change several settings with one reopen. Omitted fields keep their value.")
     def set_mode(self, params: ModeParams | None) -> ModeResult:
-        config = self._reconfigure(**(_given(params) if params is not None else {}))
+        changes = _given(params) if params is not None else {}
+        if params is not None and params.focus is not msgspec.UNSET:
+            changes["focus"] = params.focus
+        config = self._reconfigure(**changes)
         return ModeResult(
             device=config.device,
             width=config.width,
             height=config.height,
             fps=config.fps,
             rotation=config.rotation,
+            focus=config.focus,
             codec=self._codec,
         )
+
+    @action("Pin the focus, or restore autofocus with null. Applies without a reopen.")
+    def set_focus(self, params: FocusParams) -> FocusStatus:
+        self._reconfigure(focus=params.focus)
+        return self.get_focus()
+
+    @action("The pinned focus and the device's focus control, when it has one.")
+    def get_focus(self) -> FocusStatus:
+        info = query_focus(self._config.device)
+        return FocusStatus(supported=info is not None, focus=self._config.focus, info=info)
 
     @action("The newest frame as a base64 JPEG, or null before the first frame.")
     def snapshot(self) -> ColorPayload | None:
@@ -339,10 +381,27 @@ class CameraDriver(BaseDriver):
         return True
 
     def _reconfigure(self, **changes: Any) -> CameraConfig:
-        """Reopen the device with `changes`, restoring the previous mode on failure."""
+        """Reopen the device with `changes`, restoring the previous mode on failure.
+
+        A change to the focus alone is written to the open device instead.
+        """
         with self._reconfigure_lock:
             previous = self._config
             target = msgspec.structs.replace(previous, **changes)
+            # The delivered size can differ from the one asked for, so a caller
+            # repeating its request must match too.
+            same_mode = msgspec.structs.replace(target, focus=None) in (
+                msgspec.structs.replace(previous, focus=None),
+                msgspec.structs.replace(self._requested, focus=None),
+            )
+            if self._cap is not None and same_mode:
+                if target.focus != previous.focus:
+                    error = apply_focus(previous.device, target.focus)
+                    if error is not None:
+                        raise RuntimeError(f"camera device={previous.device}: {error}")
+                    self._config = msgspec.structs.replace(previous, focus=target.focus)
+                    self._requested = msgspec.structs.replace(self._requested, focus=target.focus)
+                return self._config
             with _holding_devices(previous.device, target.device):
                 return self._reopen(previous, target)
 
@@ -383,8 +442,13 @@ class CameraDriver(BaseDriver):
                 f"(requested {config.width}x{config.height})",
             )
         self._cap = cap
+        self._requested = config
         self._config = msgspec.structs.replace(config, width=width, height=height)
         self._codec = _current_fourcc(cap)
+        # A camera that cannot take the focus still starts: most have no control.
+        focus_error = apply_focus(config.device, config.focus)
+        if focus_error is not None:
+            self.log("warn", f"camera device={config.device} focus not applied: {focus_error}")
         with _devices_lock:
             _devices_in_use[config.device] = CameraFormat(
                 width=width, height=height, fps=[round(config.fps)]
@@ -412,7 +476,8 @@ class CameraDriver(BaseDriver):
         self.log(
             "info",
             f"camera open: device={config.device} {width}x{height} target_fps={config.fps:g} "
-            f"codec={self._codec} rotation={config.rotation}",
+            f"codec={self._codec} rotation={config.rotation} "
+            f"focus={'auto' if config.focus is None else config.focus}",
         )
         self.emit(
             "frame_size",
@@ -464,7 +529,7 @@ def _given(params: msgspec.Struct) -> dict[str, Any]:
     return {
         field: value
         for field in params.__struct_fields__
-        if (value := getattr(params, field)) is not None
+        if (value := getattr(params, field)) is not None and value is not msgspec.UNSET
     }
 
 

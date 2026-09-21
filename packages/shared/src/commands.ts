@@ -68,6 +68,8 @@ export const COMMANDS: { readonly [C in CommandName]: CommandSpec<C> } = {
   'app:config:set': {
     capability: Capabilities.AppConfigWrite,
     apps: appSlug,
+    // The calibration window pins the camera focus of the app it calibrates.
+    target: Capabilities.CalibrationWrite,
     timeoutMs: 3 * MINUTE,
   },
 

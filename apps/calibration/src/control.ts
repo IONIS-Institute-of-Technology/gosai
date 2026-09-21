@@ -18,6 +18,7 @@ import {
   type ExperienceRuntimeContext,
 } from '@gosai/sdk';
 import type { CalibrationTarget } from './calibrate.js';
+import { mountFocusControl } from './focus.js';
 import {
   DEFAULT_MARKER_TRANSFORM,
   MARKER_COUNT,
@@ -84,6 +85,8 @@ interface View {
   readonly next: HTMLButtonElement;
   readonly cancel: HTMLButtonElement;
   readonly reset: HTMLButtonElement;
+  /** Where the focus control goes, between the left and right buttons. */
+  readonly tools: HTMLDivElement;
 }
 
 interface Rect {
@@ -152,6 +155,8 @@ class ControlWindow {
     view.back.addEventListener('click', () => this.back(), { signal });
     view.cancel.addEventListener('click', () => this.cancel(), { signal });
     view.reset.addEventListener('click', () => this.update(resetCorners(this.wizard)), { signal });
+
+    void mountFocusControl(rt, this.target.appSlug, view.tools);
 
     this.resize();
     this.render();
@@ -556,7 +561,7 @@ function createView(): View {
   };
   const cancelButton = button('Cancel (Esc)', '#7f1d1d');
   const reset = button('Reset corners (r)');
-  element('div', 'flex:1;', footer);
+  const tools = element('div', 'flex:1;display:flex;justify-content:center;', footer);
   const back = button('Back (⌫)');
   const next = button('Next (Space)', '#166534');
 
@@ -572,6 +577,7 @@ function createView(): View {
     next,
     cancel: cancelButton,
     reset,
+    tools,
   };
 }
 

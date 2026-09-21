@@ -335,6 +335,11 @@ export interface CameraSettings {
   readonly fps: number;
   /** Clockwise software rotation applied once at capture, before all consumers. */
   readonly rotation?: 0 | 90 | 180 | 270;
+  /**
+   * Fixed manual focus in device units, which turns autofocus off. `null` or
+   * absent keeps autofocus. Ignored by cameras without a manual-focus control.
+   */
+  readonly focus?: number | null;
 }
 
 /** One resolution and the frame rates that work at that size on the current device. */
@@ -345,10 +350,25 @@ export interface CameraFormat {
   readonly codecs?: readonly string[];
 }
 
+/** A camera's manual-focus control, as the driver's `list_formats` reports it. */
+export interface CameraFocusInfo {
+  readonly min: number;
+  readonly max: number;
+  readonly step: number;
+  readonly default: number;
+  /** Whether the device also has autofocus. */
+  readonly autofocus: boolean;
+  readonly autofocus_enabled: boolean | null;
+  /** Current focus. Under autofocus, where it last settled. */
+  readonly value: number | null;
+}
+
 export interface CameraFormatsResult {
   readonly ok: boolean;
   readonly device: number;
   readonly formats?: readonly CameraFormat[];
+  /** `null` when the device has no manual-focus control. */
+  readonly focus?: CameraFocusInfo | null;
   readonly error?: string;
 }
 

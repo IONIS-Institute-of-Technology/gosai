@@ -31,6 +31,8 @@ export function resolveCameraSettings(
     height: app?.height ?? global.height,
     fps: app?.fps ?? global.fps,
     rotation: app?.rotation ?? global.rotation ?? 0,
+    // `null` is autofocus. An app without its own focus follows the global one.
+    focus: app?.focus ?? global.focus ?? null,
   };
 }
 
@@ -67,7 +69,8 @@ function sameCamera(a: ResolvedCameraSettings, b: ResolvedCameraSettings): boole
     a.width === b.width &&
     a.height === b.height &&
     a.fps === b.fps &&
-    a.rotation === b.rotation
+    a.rotation === b.rotation &&
+    a.focus === b.focus
   );
 }
 

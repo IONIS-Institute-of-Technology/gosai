@@ -6,6 +6,7 @@ import { useServer } from '../../lib/server-context.js';
 import { useCameraFormats } from '../../lib/use-camera-formats.js';
 import { useServerResource } from '../../lib/use-server-resource.js';
 import { Button } from '../components/Button.js';
+import { CameraFocusControl } from '../components/CameraFocusControl.js';
 import { CameraModePicker } from '../components/CameraModePicker.js';
 import { EmptyState } from '../components/EmptyState.js';
 import { ErrorText } from '../components/ErrorText.js';
@@ -93,7 +94,7 @@ export function SettingsPanel(): React.ReactElement {
               the camera driver starts, and right away when it is running.
             </p>
             <CameraModePicker
-              formats={formats.data}
+              formats={formats.data?.formats}
               probing={formats.loading}
               probeError={formats.error}
               width={current.camera.width}
@@ -102,6 +103,12 @@ export function SettingsPanel(): React.ReactElement {
               disabled={saving}
               onChange={(camera) => void update({ camera })}
               onRefresh={() => void formats.reload()}
+            />
+            <CameraFocusControl
+              info={formats.data?.focus}
+              focus={current.camera.focus}
+              disabled={saving}
+              onSave={(focus) => void update({ camera: { focus } })}
             />
           </div>
         )}

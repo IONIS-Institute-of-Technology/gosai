@@ -8,7 +8,7 @@
   "author": "GOSAI",
   "default": "calibrate",
   "requirements": { "display": true, "camera": true },
-  "capabilities": ["calibration:write"],
+  "capabilities": ["calibration:write", "app-config:write"],
   "experiences": [
     {
       "slug": "calibrate",
