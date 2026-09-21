@@ -29,6 +29,10 @@ hsv_h: 0.015
 hsv_s: 0.7
 hsv_v: 0.5
 fliplr: 0.5
+# The camera looks straight down, so a vertical flip or a small rotation is
+# still a valid view; both stretch the small custom set further.
+flipud: 0.5
+degrees: 10
 mosaic: 1.0
 
 # Offline motion-blur synthesis, applied by `prepare`: a fraction of train
