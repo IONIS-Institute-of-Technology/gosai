@@ -4,7 +4,7 @@
 model: yolo26s.pt # base weights, downloaded by Ultralytics on first run
 # sha256 published with the ultralytics/assets v8.4.0 release; `train` refuses other bytes.
 model_sha256: 646f8bc3fe0a656803d95c294f7852321748cb29d13466a1af8862e2db384a1b
-epochs: 100
+epochs: 250 # early stopping (patience) usually ends the run well before
 imgsz: 1280 # training resolution; matches the 720p (1280 long-side) feeds
 # Fast-iteration tip: set imgsz: 960 while experimenting (roughly 2x faster on
 # MPS), then do the final run at 1280.
@@ -17,7 +17,7 @@ infer_imgsz: [736, 1280] # exported ONNX input [h, w]: 720p 16:9 (stride-32 vali
 # only); on MPS/CPU a negative value is auto-scaled by imgsz instead.
 batch: 4
 device: auto # auto | mps | cpu | 0 | 0,1
-patience: 30 # early-stop patience (epochs without improvement)
+patience: 60 # early-stop patience (epochs without improvement)
 seed: 0
 
 # Dataloading. `cache: disk` decodes each image once to a .npy next to it (the
