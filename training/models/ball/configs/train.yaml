@@ -17,10 +17,11 @@ device: auto # auto | mps | cpu | 0 | 0,1
 patience: 30 # early-stop patience (epochs without improvement)
 seed: 0
 
-# Dataloading. `cache: true` keeps decoded images in RAM (the merged set is a
-# few GB at 1280 -- the main training speedup on Apple Silicon). Use
-# `cache: disk` if RAM is tight, or false to disable.
-cache: true
+# Dataloading. `cache: disk` decodes each image once to a .npy next to it (the
+# merged set is ~9 GB at 1280). `cache: true` (RAM) is a little faster on
+# Linux/macOS, but on Windows every dataloader worker receives a pickled copy
+# of the cache and the spawn fails past a few GB (OSError 22).
+cache: disk
 workers: 8
 cos_lr: true
 
