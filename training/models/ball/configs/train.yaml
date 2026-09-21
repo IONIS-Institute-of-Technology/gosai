@@ -12,7 +12,10 @@ imgsz: 1280 # training resolution; matches the 720p (1280 long-side) feeds
 # we train square (mosaic on for crowded racks) and infer rectangular instead.
 rect: false
 infer_imgsz: [736, 1280] # exported ONNX input [h, w]: 720p 16:9 (stride-32 valid)
-batch: -1 # -1 = AutoBatch (CUDA only); auto-scaled by imgsz on MPS/CPU
+# 4 fills a 16 GB card at 1280 with AMP (~12.8 GB); AutoBatch's 60% memory
+# target picks 2, which halves throughput for nothing. -1 = AutoBatch (CUDA
+# only); on MPS/CPU a negative value is auto-scaled by imgsz instead.
+batch: 4
 device: auto # auto | mps | cpu | 0 | 0,1
 patience: 30 # early-stop patience (epochs without improvement)
 seed: 0
