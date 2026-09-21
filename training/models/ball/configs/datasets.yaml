@@ -22,19 +22,19 @@ datasets:
   - name: billiard-8
     workspace: object-detection-billiard
     project: billiard-8
-    version: latest # TODO: pin once the version behind the shipped ball.onnx is known
+    version: 3
 
   - name: wdzpn
     workspace: '-ahcxq'
     project: '-wdzpn'
-    version: latest # TODO: pin once the version behind the shipped ball.onnx is known
+    version: 1
 
   # Sloppy labelling (junk class names, unlabelled stock photos): its no-ball
   # frames cannot be trusted as negatives.
   - name: pool-v2
     workspace: pool-table
     project: pool-v2
-    version: latest # TODO: pin once the version behind the shipped ball.onnx is known
+    version: 1
     trust_negatives: false
 
   # Broadcast side-view snooker: useful variety, but a domain mismatch with a
@@ -42,5 +42,5 @@ datasets:
   - name: snooker-vision
     workspace: morganlewis
     project: snooker-vision-tjn0z
-    version: latest # TODO: pin once the version behind the shipped ball.onnx is known
+    version: 6
     cap: 800
