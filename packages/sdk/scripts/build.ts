@@ -68,15 +68,27 @@ copyFileSync(
 );
 
 const leaks: string[] = [];
+const hollow: string[] = [];
 for (const file of readdirSync(dist)) {
   if (!file.endsWith('.js') && !file.endsWith('.d.ts')) continue;
   const text = readFileSync(join(dist, file), 'utf8');
   if (/from\s+['"](?:@gosai\/shared|zod)/.test(text) || /import\s+['"]zod/.test(text)) {
     leaks.push(file);
   }
+  // Bun 1.4.0's splitting emitted entries as a bare `export { ... }` with no
+  // chunk import and no chunk file, which only fails when a browser loads it.
+  if (file.endsWith('.js') && /^\s*export\s*\{[^}]*\};?\s*$/.test(text)) {
+    hollow.push(file);
+  }
 }
 if (leaks.length > 0) {
   throw new Error(`these outputs still import @gosai/shared or zod: ${leaks.join(', ')}`);
+}
+if (hollow.length > 0) {
+  throw new Error(
+    `these outputs export names they neither define nor import (broken code splitting; ` +
+      `check \`bun --version\` against packageManager): ${hollow.join(', ')}`,
+  );
 }
 
 console.log(`built ${readdirSync(dist).length} files into ${dist}`);
