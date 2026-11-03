@@ -1,10 +1,7 @@
 # Changelog
 
 Changes to `@gosai/sdk`. Versions follow [semver](https://semver.org); while the
-SDK is `0.x`, a minor version may break the API. Pushing an `sdk-v<version>` tag
-publishes the version to npm with the section below as its release notes. The
-Release SDK workflow needs an `NPM_TOKEN` secret; see
-`.github/workflows/release-sdk.yml`.
+SDK is `0.x`, a minor version may break the API.
 
 ## Unreleased
 

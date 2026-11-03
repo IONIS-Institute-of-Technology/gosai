@@ -43,8 +43,7 @@ The prepare step writes `packages/desktop/release/bundle/`:
   its Python runtime on them without hashing the tree at each launch.
 
 The server and uv are prepared for any target from any host, but
-electron-builder only makes a DMG on macOS. The `Release` GitHub workflow builds all
-three on tags and manual runs and keeps the files as workflow artifacts.
+electron-builder only makes a DMG on macOS.
 
 Outputs:
 
