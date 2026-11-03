@@ -47,7 +47,7 @@ describe('sdk version contract', () => {
         .map((entry) => join('apps', entry.name, 'gosai.app.json')),
       join('templates', 'basic', 'gosai.app.json'),
     ];
-    expect(manifests.length).toBeGreaterThanOrEqual(4);
+    expect(manifests.length).toBeGreaterThanOrEqual(3);
     for (const path of manifests) {
       const manifest = validateManifest(
         path,

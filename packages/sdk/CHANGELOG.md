@@ -7,6 +7,9 @@ SDK is `0.x`, a minor version may break the API.
 
 Breaking:
 
+- The `pose_to_mirror` and `mirror_calibration` drivers are gone, and with them
+  `DriverTypes.pose_to_mirror` and `DriverTypes.mirror_calibration`. They served
+  Second Self, which now lives in its own repository.
 - `DriverTypes.calibration.ReprojectedPoints.points` is `(null | Point)[]`. The
   calibration driver's `reproject_points` returns `null` for a point that maps
   to infinity, where it used to return (0, 0).

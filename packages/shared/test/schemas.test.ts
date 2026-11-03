@@ -75,7 +75,6 @@ describe('manifest JSON Schema', () => {
     for (const path of [
       'apps/calibration/gosai.app.json',
       'apps/interactive-pool/gosai.app.json',
-      'apps/second-self/gosai.app.json',
       'templates/basic/gosai.app.json',
     ]) {
       const result = appManifestSchema.safeParse(

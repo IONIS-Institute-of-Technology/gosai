@@ -177,8 +177,8 @@ Artifacts land in `packages/desktop/release/kiosk/<slug>/`.
 ### Running and configuring on the kiosk machine
 
 ```bash
-chmod +x "Second Self-kiosk-1.0.0-linux-x86_64.AppImage"
-"./Second Self-kiosk-1.0.0-linux-x86_64.AppImage"
+chmod +x "Interactive Pool-kiosk-1.0.0-linux-x86_64.AppImage"
+"./Interactive Pool-kiosk-1.0.0-linux-x86_64.AppImage"
 ```
 
 Settings are read from command-line flags first, then environment variables,
@@ -206,7 +206,7 @@ start, and uninstalling an app keeps its data.
 
 Apps that declare a built-in `calibration` kind in their manifest (e.g.
 `interactive-pool`) are packaged together with the built-in calibration app.
-Apps with their own flow (`calibration.experience`, e.g. `second-self`) run it
+Apps with their own flow (`calibration.experience`) run it
 themselves. On the kiosk:
 
 - **First boot:** if the app has `calibration.required: true` and isn't
@@ -239,7 +239,7 @@ Description=GOSAI kiosk
 After=graphical-session.target
 
 [Service]
-ExecStart=/opt/gosai/second-self.AppImage
+ExecStart=/opt/gosai/interactive-pool.AppImage
 Environment=GOSAI_KIOSK_DISPLAY=0
 Restart=on-failure
 RestartSec=3

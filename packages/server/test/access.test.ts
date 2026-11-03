@@ -236,7 +236,7 @@ describe('capabilities', () => {
     const settings = { camera: { focus: 120 } };
     const runner = app('calibration', { driverBinding: 'pool', target: 'pool' });
     expect(commandDenial(runner, 'app:config:set', { appSlug: 'pool', settings })).toBeNull();
-    expect(commandDenial(runner, 'app:config:set', { appSlug: 'second-self', settings })).toContain(
+    expect(commandDenial(runner, 'app:config:set', { appSlug: 'other-app', settings })).toContain(
       'outside',
     );
     // Both capabilities are needed to reach the target.
@@ -250,9 +250,9 @@ describe('capabilities', () => {
     expect(commandDenial(runner, 'calibration:save', { appSlug: 'pool', profile })).toBeNull();
     expect(commandDenial(runner, 'calibration:get', { appSlug: 'pool' })).toBeNull();
     // Another app than the target.
-    expect(
-      commandDenial(runner, 'calibration:save', { appSlug: 'second-self', profile }),
-    ).toContain('outside');
+    expect(commandDenial(runner, 'calibration:save', { appSlug: 'other-app', profile })).toContain(
+      'outside',
+    );
     // Raw storage of the target stays out of reach.
     expect(
       commandDenial(runner, 'storage:set', {

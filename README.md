@@ -55,7 +55,7 @@ gosai/
 │        ├── bridge.py    Node↔Python JSON-lines bridge
 │        ├── driver.py    BaseDriver
 │        └── drivers/     Built-in drivers (camera, pose, hand_pose, ...)
-├── apps/               Built-in apps (calibration, interactive-pool, second-self)
+├── apps/               Built-in apps (calibration, interactive-pool)
 ├── templates/basic/    Starter template, a standalone project outside the workspaces
 └── training/           Model training pipeline (per-model under training/models/)
 ```
@@ -90,8 +90,7 @@ bun run dev
 ```
 
 Without the `git lfs pull`, every binary asset in the repository is a
-130-byte pointer stub: the ONNX drivers refuse to start, and Second Self shows
-an empty avatar, an empty dance and a black sign game.
+130-byte pointer stub and the ONNX drivers refuse to start.
 
 Two processes start:
 

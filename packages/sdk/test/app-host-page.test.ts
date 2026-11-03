@@ -11,7 +11,7 @@ import { MANIFEST } from './fakes.js';
 
 describe('app host page', () => {
   test('reads the app slug from the hostname', () => {
-    expect(appSlugFromHostname('second-self.localhost')).toBe('second-self');
+    expect(appSlugFromHostname('interactive-pool.localhost')).toBe('interactive-pool');
     expect(appSlugFromHostname('localhost')).toBeNull();
     expect(appSlugFromHostname('127.0.0.1')).toBeNull();
     expect(appSlugFromHostname('a.b.localhost')).toBeNull();

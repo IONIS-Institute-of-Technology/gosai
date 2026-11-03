@@ -6,8 +6,8 @@ model bundle is downloaded once into `~/.gosai/models` and checked against its
 sha256.
 
 Hand keys are swapped relative to the model output: `right_hand_pose` holds
-the model's left hand. The SLR models were trained on this layout and
-`pose_to_mirror` anchors hands assuming it, so it is kept at the source. The
+the model's left hand. The SLR models were trained on this layout, so it is
+kept at the source. The
 in-process world-landmark keys follow the same swap.
 
 With `face_mesh` off, `raw_data` sends an empty `face_mesh` to Node while

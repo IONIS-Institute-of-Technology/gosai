@@ -249,7 +249,7 @@ def test_frequency_amplitude_keeps_the_unwindowed_scale() -> None:
             "microphone", "audio_stream", {"_block": block.reshape(-1, 1), "samplerate": 16_000}
         )
 
-    # second-self gates on amplitude > 2; a 0.2 sine must stay far above it.
+    # A 0.2 sine must stay far above an amplitude gate of 2.
     assert context.emitted("frequency")[-1]["amplitude"] == pytest.approx(0.2 * 8192 / 2, rel=0.02)
 
 

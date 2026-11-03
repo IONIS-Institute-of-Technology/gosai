@@ -1,1 +1,1 @@
-"""Pure geometry used by the calibration, tracking and mirror drivers."""
+"""Pure geometry used by the calibration and tracking drivers."""

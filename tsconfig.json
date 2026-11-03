@@ -7,7 +7,6 @@
     { "path": "./packages/desktop" },
     { "path": "./apps/calibration" },
     { "path": "./apps/interactive-pool" },
-    { "path": "./apps/second-self" },
     { "path": "./scripts" }
   ]
 }
